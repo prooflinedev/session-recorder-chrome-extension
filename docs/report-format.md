@@ -131,12 +131,13 @@ that config.
 | --- | --- | --- |
 | `REPRODUCED` | fails | A recorded error happened again. |
 | `INCONCLUSIVE` | fails | The replay did not reach the bug: a step failed, an element was not found, a variable was missing, a recorded failing request was never made, a step was skipped, or a request was blocked. |
-| `NOT REPRODUCED` | passes | An earlier run reproduced the bug against the same server and sign-in state, every step ran, each failing request was sent again after its step with the recorded fields and succeeded (2xx or 304), nothing was left pending or blocked, and no recorded error happened again. It does not prove the bug is fixed. |
+| `NOT REPRODUCED` | passes | Earlier runs against the same server and storage-state file reproduced every checked signal, every step ran, each failing request was sent again after its step with the recorded fields and succeeded (2xx or 304), nothing was left pending or blocked, and no recorded error happened again. It does not prove the bug is fixed. |
 
 Run it once on the unfixed code. A run that says `REPRODUCED` writes
-`.repro-baseline.json` next to the test, and `NOT REPRODUCED` is only possible
-with that file for the same plan and server, so a replay that never reproduced
-the bug here cannot report a fix. To run the test in CI, commit the baseline
+`.repro-baseline.json` next to the test with the signals it reproduced, and
+`NOT REPRODUCED` is only possible when earlier runs against the same server and
+storage-state file reproduced every checked signal, so a replay that never
+reproduced the bug here cannot report a fix. To run the test in CI, commit the baseline
 file with it. A recording with no error or failed request gives a `fixme` test
 that quotes your notes; add an assertion for what went wrong.
 
@@ -154,8 +155,9 @@ that change data (anything but GET, HEAD and OPTIONS) there, unless
 always be stopped before they are sent; a run that reaches one is
 `INCONCLUSIVE`. After the last step the test waits up to `REPRO_WAIT_MS`
 (30000) for pending requests; one still pending gives `INCONCLUSIVE`, and
-`REPRO_IGNORE_PENDING` names paths, such as a long poll, not to wait for. A
-retried run (`--retries`) cannot pass.
+`REPRO_IGNORE_PENDING` is a regular expression of paths, such as a long poll,
+not to wait for. A retried run (`--retries`) cannot pass. A failing request
+reproduces only with the recorded status and content type.
 Redacted fields read `REPRO_INPUT_<n>`; `REPRO_STORAGE_STATE` names a Playwright
 storage-state file to start signed in, since cookies are never recorded. Other
 tabs, hover, scroll and drag are not replayed. Steps inside iframes are not
@@ -166,15 +168,22 @@ told apart from the page, so they usually end the replay as `INCONCLUSIVE`.
 `NOT REPRODUCED` means the checks above passed, not that the bug is gone:
 
 - Exceptions and console errors are checked by their absence only. The
-  baseline shows that the replay once reproduced them; it cannot show that a
-  later replay reached the same point.
+  baseline shows that an earlier replay reproduced each of them; it cannot
+  show that a later replay reached the same point.
+- Errors that logged only an object (or too little text to match) are not
+  checked; report.md lists them.
+- The baseline compares the storage-state file name, not the sign-in state on
+  the server, and an environment error with the recorded status and content
+  type (for example a backend that is down) can still be taken for the bug.
 - Failing requests are checked by method, path, status and the top-level JSON
   or form fields that had values. Multipart and query-string bodies get no
   field check.
 - Messages are matched with numbers, ids containing digits, hosts and logged
   objects left open. Ids made only of letters are not.
 - A value typed less than 800 ms before a click or Enter is flagged, so a fixed
-  build reports `INCONCLUSIVE` rather than `NOT REPRODUCED`.
+  build reports `INCONCLUSIVE` rather than `NOT REPRODUCED`. When the page put
+  the field's earlier value back, that late value looks like a repeat and is
+  dropped; the replay then relies on the baseline.
 - An error recorded more than 15 s after the last step is flagged; the replay
   does not wait that long.
 - Other tabs, iframes, shadow DOM, hover, drag and dropped files are not

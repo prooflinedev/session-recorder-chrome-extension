@@ -70,6 +70,20 @@ const request = (t: number, method: string, url: string, status: number, extra =
   });
 
 const noAssets = (_id: string): string | undefined => undefined;
+
+/** Mirrors the runner: each part is found in order, after the previous one. */
+function matchParts(parts: string[], text: string): boolean {
+  let from = 0;
+  for (const part of parts) {
+    const re = new RegExp(part, 'g');
+    re.lastIndex = from;
+    const m = re.exec(text);
+    if (!m) return false;
+    from = m.index + m[0].length;
+  }
+  return true;
+}
+const matcher = (s: unknown) => ({ test: (t: string) => matchParts((s as { parts: string[] }).parts, t) });
 function plan(
   events: SessionEvent[],
   s: Session = session(),
@@ -345,7 +359,7 @@ describe('buildReproPlan signals', () => {
       expect.objectContaining({ kind: 'request', method: 'GET', path: '/api/cart', status: 'failed' }),
     ]);
     const [exc, con, , orders] = p.signals;
-    const re = (s: (typeof p.signals)[number] | undefined) => new RegExp((s as { pattern: string }).pattern);
+    const re = (s: (typeof p.signals)[number] | undefined) => matcher(s);
     expect(re(exc).test("TypeError: Cannot read properties of undefined (reading 'total')")).toBe(true);
     expect(re(con).test('Order 98 failed at http://localhost:3000/api')).toBe(true);
     expect(re(con).test('Order 98 succeeded')).toBe(false);
@@ -409,12 +423,45 @@ describe('buildReproPlan signals', () => {
       ev('console', 220, { level: 'error', text: 'retry Object in Array(2) ms' }),
       ev('console', 230, { level: 'error', text: 'socket wss://rt.example.com/live closed at localhost:3000' }),
     ]);
-    const res = built.plan.signals.map((s) => new RegExp((s as { pattern: string }).pattern));
+    const res = built.plan.signals.map(matcher);
     expect(res).toHaveLength(3);
     expect(res[0]!.test('{status: 500} save failed')).toBe(true);
     expect(res[1]!.test('retry {a: 1} in [1, 2] ms')).toBe(true);
     expect(res[2]!.test('socket ws://localhost:4000/live closed at 127.0.0.1:5173')).toBe(true);
     expect(built.gaps).toEqual([expect.stringContaining('only an object')]);
+  });
+
+  it('matches messages with many logged objects in time linear in the text', () => {
+    const { plan: p } = plan([
+      ev('console', 200, { level: 'error', text: `Error${' Object'.repeat(15)} zzzz` }),
+    ]);
+    const stack = `Error in render: x\n${'    at f (app.js:1:1)\n'.repeat(400)}`;
+    const started = Date.now();
+    expect(matcher(p.signals[0]).test(stack)).toBe(false);
+    expect(matcher(p.signals[0]).test(`Error {a:1} ${'{b:2} '.repeat(15)}zzzz`)).toBe(true);
+    expect(Date.now() - started).toBeLessThan(200);
+  });
+
+  it('keeps the content type of a failing response, so a proxy error is not the recorded failure', () => {
+    const { plan: p } = plan([
+      click(100, apply),
+      request(110, 'POST', 'https://shop.example.com/api/coupon', 500, { mime: 'application/json; charset=utf-8' }),
+    ]);
+    expect(p.signals[0]).toMatchObject({ kind: 'request', mime: 'application/json' });
+  });
+
+  it('says when an error that logged only an object is the only error', () => {
+    const built = plan([click(100, apply), exception(200, 'Object')]);
+    expect(built.gaps).toEqual([expect.stringContaining('an error that logged only an object')]);
+    expect(built.plan.fixme).toContain('cannot be matched');
+  });
+
+  it('flags a dropped file captured within seconds of the error it caused', () => {
+    const { plan: p } = plan([
+      exception(1000, 'Error: bad drop'),
+      ev('file-captured', 4000, { assetId: 'ast_big', fileName: 'big.csv', mime: 'text/csv', size: 9 }),
+    ]);
+    expect(p.blockers).toEqual([expect.stringContaining('big.csv')]);
   });
 
   it('flags a signal that came later than the replay waits', () => {
@@ -465,14 +512,14 @@ describe('buildReproPlan signals', () => {
       ev('console', 200, { level: 'error', text: 'Failed to save Object' }),
       ev('console', 210, { level: 'error', text: 'Bad rows Array(2) in import' }),
     ]);
-    const res = p.signals.map((s) => new RegExp((s as { pattern: string }).pattern));
+    const res = p.signals.map(matcher);
     expect(res[0]!.test('Failed to save {status: 500}')).toBe(true);
     expect(res[1]!.test('Bad rows [1, 2] in import')).toBe(true);
   });
 
   it('treats ids made of letters and digits as variable', () => {
     const { plan: p } = plan([exception(200, 'Error: Order ord_8f3kLm2QzX not found (pi_3NcQ9fL2abc)')]);
-    const re = new RegExp((p.signals[0] as { pattern: string }).pattern);
+    const re = matcher(p.signals[0]);
     expect(re.test('Error: Order ord_1Ab2Cd3EfG not found (pi_9ZzYy8XxWw)')).toBe(true);
     expect(re.test('Error: Order lookup timed out')).toBe(false);
   });

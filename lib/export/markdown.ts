@@ -221,13 +221,13 @@ function renderRepro(repro: ReproSummary, lines: string[]): void {
     lines.push('The test is marked `fixme` until you add an assertion.');
   } else {
     lines.push(
-      '- `REPRODUCED` (fails): a recorded error happened again. The first such run writes `.repro-baseline.json` next to the test.',
+      '- `REPRODUCED` (fails): a recorded error happened again. The run adds the signals it reproduced to `.repro-baseline.json` next to the test.',
     );
     lines.push(
       '- `INCONCLUSIVE` (fails): the replay did not reach the bug, so it shows nothing about a fix.',
     );
     lines.push(
-      '- `NOT REPRODUCED` (passes): an earlier run reproduced the bug against the same server and sign-in state, every step ran, each failing request was sent again after its step with the recorded fields and succeeded (2xx or 304), nothing was left pending or blocked, and no recorded error happened again. It does not prove the bug is fixed.',
+      '- `NOT REPRODUCED` (passes): earlier runs against the same server and storage-state file reproduced every checked signal, every step ran, each failing request was sent again after its step with the recorded fields and succeeded (2xx or 304), nothing was left pending or blocked, and no recorded error happened again. It does not prove the bug is fixed.',
     );
     lines.push('');
     lines.push(
@@ -236,7 +236,7 @@ function renderRepro(repro: ReproSummary, lines: string[]): void {
   }
   lines.push('');
   lines.push(
-    '`BASE_URL` is the server to test. The test refuses non-local addresses, including navigation to them, and blocks requests that change data on non-local hosts, unless `REPRO_ALLOW_REMOTE=1`. It waits up to `REPRO_WAIT_MS` (30000) for pending requests; `REPRO_IGNORE_PENDING` names paths, such as a long poll, not to wait for. `REPRO_STORAGE_STATE` names a Playwright storage-state file to start signed in.',
+    '`BASE_URL` is the server to test. The test refuses non-local addresses, including navigation to them, and blocks requests that change data on non-local hosts, unless `REPRO_ALLOW_REMOTE=1`. It waits up to `REPRO_WAIT_MS` (30000) for pending requests; `REPRO_IGNORE_PENDING` is a regular expression of paths, such as a long poll, not to wait for. `REPRO_STORAGE_STATE` names a Playwright storage-state file to start signed in.',
   );
   // Items are recorded text: one line each, with backticks neutralised.
   const list = (title: string, items: string[]) => {

@@ -61,7 +61,8 @@ export type Signal =
   | {
       kind: 'exception' | 'console';
       text: string;
-      pattern: string;
+      /** Regular expressions for the text around logged objects, found in order. */
+      parts: string[];
       at: number;
       /** Index of the step this signal followed in the recording. */
       afterStep: number;
@@ -74,6 +75,8 @@ export type Signal =
       status: number | 'failed';
       /** Body fields that had a value in the recorded request. */
       fields: string[];
+      /** Base content type of the recorded failing response. */
+      mime?: string;
       at: number;
       afterStep: number;
     };
@@ -98,7 +101,7 @@ const PLAN: Plan = /*@repro-plan*/ ({} as Plan);
 // --- Settings ----------------------------------------------------------------
 
 /** Changes when the verdict rules change, so an older baseline stops counting. */
-const RUNNER_VERSION = 3;
+const RUNNER_VERSION = 4;
 const ENV: Record<string, string | undefined> =
   (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
     ?.env ?? {};
@@ -111,7 +114,13 @@ const WAIT_MS = Number(ENV.REPRO_WAIT_MS) > 0 ? Number(ENV.REPRO_WAIT_MS) : 30_0
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 /** Requests that stay open by design; the replay does not wait for them. */
 const STREAMING = new Set(['eventsource', 'websocket']);
-const IGNORE_PENDING = ENV.REPRO_IGNORE_PENDING ? new RegExp(ENV.REPRO_IGNORE_PENDING) : undefined;
+let IGNORE_PENDING: RegExp | undefined;
+let SETUP_ERROR: string | undefined;
+try {
+  IGNORE_PENDING = ENV.REPRO_IGNORE_PENDING ? new RegExp(ENV.REPRO_IGNORE_PENDING) : undefined;
+} catch {
+  SETUP_ERROR = `REPRO_IGNORE_PENDING is not a valid regular expression: ${ENV.REPRO_IGNORE_PENDING}`;
+}
 const BASELINE_FILE = '.repro-baseline.json';
 
 if (ENV.REPRO_STORAGE_STATE) test.use({ storageState: ENV.REPRO_STORAGE_STATE });
@@ -127,10 +136,12 @@ function isLocalHost(hostname: string): boolean {
   );
 }
 
+/** Network URLs (http, https, ws, wss) count only when their host is local. */
 function isLocalUrl(url: string): boolean {
   try {
     const u = new URL(url);
-    return (u.protocol !== 'http:' && u.protocol !== 'https:') || isLocalHost(u.hostname);
+    const network = ['http:', 'https:', 'ws:', 'wss:'].includes(u.protocol);
+    return !network || isLocalHost(u.hostname);
   } catch {
     return false;
   }
@@ -175,34 +186,39 @@ interface Baseline {
   runner: number;
   target: string;
   storageState: string;
+  /** Indexes into PLAN.signals of the signals that some run reproduced. */
+  reproduced: number[];
 }
 
-/** What a baseline must share with this run: plan, rules, server and sign-in state. */
-function baselineKey(origin: string): Baseline {
+/** What a baseline must share with this run: plan, rules, server and sign-in state file. */
+function baselineKey(origin: string): Omit<Baseline, 'reproduced'> {
   return { plan: PLAN.id, runner: RUNNER_VERSION, target: origin, storageState: ENV.REPRO_STORAGE_STATE ?? '' };
 }
 
-async function writeBaseline(origin: string, reproduced: string[]): Promise<void> {
-  const record = { ...baselineKey(origin), reproduced, at: new Date().toISOString() };
+/** The signals earlier runs reproduced against this target (none when there is no baseline). */
+async function readBaseline(origin: string): Promise<Set<number>> {
+  try {
+    const b = JSON.parse((await fileSystem()).readFileSync(baselinePath(), 'utf8')) as Baseline;
+    const want = baselineKey(origin);
+    const same =
+      b.plan === want.plan &&
+      b.runner === want.runner &&
+      b.target === want.target &&
+      (b.storageState ?? '') === want.storageState;
+    return same && Array.isArray(b.reproduced) ? new Set(b.reproduced) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+/** Adds the signals this run reproduced to the baseline. */
+async function writeBaseline(origin: string, reproduced: number[]): Promise<void> {
+  const all = [...new Set([...(await readBaseline(origin)), ...reproduced])].sort((a, b) => a - b);
+  const record = { ...baselineKey(origin), reproduced: all, at: new Date().toISOString() };
   try {
     (await fileSystem()).writeFileSync(baselinePath(), `${JSON.stringify(record, null, 2)}\n`);
   } catch {
     /* read-only folder: the next pass stays INCONCLUSIVE */
-  }
-}
-
-async function hasBaseline(origin: string): Promise<boolean> {
-  try {
-    const b = JSON.parse((await fileSystem()).readFileSync(baselinePath(), 'utf8')) as Baseline;
-    const want = baselineKey(origin);
-    return (
-      b.plan === want.plan &&
-      b.runner === want.runner &&
-      b.target === want.target &&
-      (b.storageState ?? '') === want.storageState
-    );
-  } catch {
-    return false;
   }
 }
 
@@ -313,6 +329,8 @@ interface Seen {
   method: string;
   path: string;
   status: number | 'failed' | 'pending';
+  /** Base content type of the response. */
+  mime?: string;
   /** Index of the step that was running when the request started. */
   step: number;
   body: string | null;
@@ -349,6 +367,19 @@ function sameRequest(signal: Extract<Signal, { kind: 'request' }>, r: Seen): boo
   return r.method === signal.method && new RegExp(signal.pathPattern).test(r.path);
 }
 
+/** Each part found in order, after the previous one: no backtracking across parts. */
+function partsMatch(parts: string[], text: string): boolean {
+  let from = 0;
+  for (const part of parts) {
+    const re = new RegExp(part, 'g');
+    re.lastIndex = from;
+    const m = re.exec(text);
+    if (!m) return false;
+    from = m.index + m[0].length;
+  }
+  return true;
+}
+
 function succeeded(status: Seen['status']): boolean {
   return typeof status === 'number' && ((status >= 200 && status < 300) || status === 304);
 }
@@ -356,10 +387,15 @@ function succeeded(status: Seen['status']): boolean {
 /** The recorded failure again: the same status, not just any error (a 502 is not the recorded 500). */
 function matches(signal: Signal, errors: string[], consoleErrors: string[], requests: Seen[]): boolean {
   if (signal.kind === 'request') {
-    return requests.some((r) => sameRequest(signal, r) && r.status === signal.status);
+    // Also the same kind of body: a dev-server proxy error is a 500 too.
+    return requests.some(
+      (r) =>
+        sameRequest(signal, r) &&
+        r.status === signal.status &&
+        (signal.mime === undefined || r.mime === undefined || r.mime === signal.mime),
+    );
   }
-  const re = new RegExp(signal.pattern);
-  return (signal.kind === 'exception' ? errors : consoleErrors).some((s) => re.test(s));
+  return (signal.kind === 'exception' ? errors : consoleErrors).some((s) => partsMatch(signal.parts, s));
 }
 
 /**
@@ -406,7 +442,7 @@ test(PLAN.title, async ({ page, context }) => {
   const outcome = (description: string) =>
     test.info().annotations.push({ type: 'repro-outcome', description });
 
-  let stopped: string | undefined;
+  let stopped: string | undefined = SETUP_ERROR;
   let origin = PLAN.recordedOrigin;
   let rewrite = (url: string) => url;
   try {
@@ -425,11 +461,20 @@ test(PLAN.title, async ({ page, context }) => {
     if (msg.type() === 'error' || msg.type() === 'assert') consoleErrors.push(msg.text());
   });
   const leaked: string[] = [];
-  page.on('request', (req) => {
-    // Redirect hops are not routed, so they cannot be blocked before they are sent.
+  // Redirect hops are not routed, so they cannot be blocked before they are
+  // sent; they are reported for every page, popups included.
+  context.on('request', (req) => {
     if (!ALLOW_REMOTE && req.redirectedFrom() !== null && !isLocalUrl(req.url())) {
       leaked.push(`${req.method()} ${new URL(req.url()).origin} (redirect)`);
     }
+  });
+  const watchSockets = (p: Page) =>
+    p.on('websocket', (ws) => {
+      if (!ALLOW_REMOTE && !isLocalUrl(ws.url())) leaked.push(`WebSocket ${new URL(ws.url()).origin}`);
+    });
+  watchSockets(page);
+  context.on('page', watchSockets);
+  page.on('request', (req) => {
     seen.set(req, {
       method: req.method(),
       path: pathOf(req.url()),
@@ -439,9 +484,6 @@ test(PLAN.title, async ({ page, context }) => {
       streaming:
         STREAMING.has(req.resourceType()) || (IGNORE_PENDING?.test(pathOf(req.url())) ?? false),
     });
-  });
-  page.on('websocket', (ws) => {
-    if (!ALLOW_REMOTE && !isLocalUrl(ws.url())) leaked.push(`WebSocket ${new URL(ws.url()).origin}`);
   });
   // Older Playwright versions have no WebSocket routing; the leak check above still reports them.
   const routeWebSocket = (context as { routeWebSocket?: typeof context.routeWebSocket }).routeWebSocket;
@@ -457,11 +499,15 @@ test(PLAN.title, async ({ page, context }) => {
   }
   page.on('response', (res) => {
     const s = seen.get(res.request());
-    if (s) s.status = res.status();
+    if (s) {
+      s.status = res.status();
+      s.mime = (res.headers()['content-type'] ?? '').split(';')[0]!.trim().toLowerCase() || undefined;
+    }
   });
   page.on('requestfailed', (req) => {
+    // An empty response the page never reads can be aborted after it arrived.
     const s = seen.get(req);
-    if (s) s.status = 'failed';
+    if (s && s.status === 'pending') s.status = 'failed';
   });
   await context.route('**/*', async (route) => {
     const req = route.request();
@@ -515,7 +561,7 @@ test(PLAN.title, async ({ page, context }) => {
   const again = PLAN.signals.filter((s) => matches(s, errors, consoleErrors, requests));
   if (again.length > 0) {
     outcome('REPRODUCED');
-    await writeBaseline(origin, again.map(label));
+    await writeBaseline(origin, again.map((s) => PLAN.signals.indexOf(s)));
     throw new Error(`REPRODUCED: the recorded bug happened again:\n- ${again.map(label).join('\n- ')}`);
   }
   const reasons = [
@@ -551,10 +597,18 @@ test(PLAN.title, async ({ page, context }) => {
     ...(test.info().retry > 0 ? ['this is a retry; a retry cannot report a fix (run without --retries)'] : []),
     ...PLAN.blockers,
   ];
-  if (reasons.length === 0 && !(await hasBaseline(origin))) {
-    reasons.push(
-      `no earlier run of this test reproduced the bug against ${origin}. Run it on the unfixed code first; it records ${BASELINE_FILE} when it reproduces the bug.`,
-    );
+  if (reasons.length === 0) {
+    const baseline = await readBaseline(origin);
+    const never = PLAN.signals.filter((_, i) => !baseline.has(i));
+    if (baseline.size === 0) {
+      reasons.push(
+        `no earlier run of this test reproduced the bug against ${origin}. Run it on the unfixed code first; it records ${BASELINE_FILE} when it reproduces the bug.`,
+      );
+    } else if (never.length > 0) {
+      reasons.push(
+        `no earlier run reproduced ${never.map(label).join(', ')} against ${origin}, so its absence now shows nothing`,
+      );
+    }
   }
   if (reasons.length > 0) {
     outcome('INCONCLUSIVE');

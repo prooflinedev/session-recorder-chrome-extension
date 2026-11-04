@@ -64,7 +64,7 @@ const LABEL_ACTIVATION_MS = 50;
 const SETTLE_EXTRA_MS = 1500;
 const SETTLE_MAX_MS = 15_000;
 /** A dropped file is captured just after the error its drop handler throws. */
-const DROPPED_FILE_AFTER_SIGNAL_MS = 1000;
+const DROPPED_FILE_AFTER_SIGNAL_MS = 5000;
 const NOTE_CAP = 300;
 const PATTERN_TEXT_CAP = 160;
 
@@ -255,7 +255,7 @@ export function buildReproPlan(input: BuildReproInput): BuiltRepro | undefined {
     gaps.push('the debugger detached during recording, so some errors may be missing');
   }
   for (const text of collected.unmatchable) {
-    gaps.push(`a console error that logged only an object is not checked: ${text}`);
+    gaps.push(`an error that logged only an object (or too little text to match) is not checked: ${text}`);
   }
 
   // Each signal counts only for what the replay does after the step that was
@@ -297,7 +297,7 @@ export function buildReproPlan(input: BuildReproInput): BuiltRepro | undefined {
         : SETTLE_EXTRA_MS,
     blockers,
   };
-  if (signals.length === 0) body.fixme = fixmeReason(events);
+  if (signals.length === 0) body.fixme = fixmeReason(events, collected.unmatchable.length > 0);
   // Identifies this plan in the replay's baseline file.
   const id = bytesToHex(sha256(new TextEncoder().encode(JSON.stringify(body)))).slice(0, 16);
   return { plan: { id, ...body }, gaps: [...blockers, ...gaps], envVars };
@@ -508,16 +508,24 @@ function tokenPattern(text: string): string {
 }
 
 /**
- * A search pattern for a message: origins, ids, numbers and logged objects may
- * differ. Undefined when nothing but objects is left to match.
+ * Search patterns for the text around each logged object, matched in order
+ * (one regular expression with lazy gaps between them backtracks without
+ * bound). Origins, ids and numbers may differ. Undefined when nothing but
+ * objects is left to match.
  */
-function messagePattern(raw: string): string | undefined {
-  const parts = raw.split(OBJECT_PLACEHOLDER);
+function messageParts(raw: string): string[] | undefined {
+  const parts = raw.split(OBJECT_PLACEHOLDER).map((p) => p.trim()).filter(Boolean);
   if (parts.join('').replace(/\s/g, '').length < MIN_LITERAL) return undefined;
-  return parts.map(tokenPattern).join('[\\s\\S]+?');
+  return parts.map(tokenPattern);
 }
 
 const REDACTED = '«redacted»';
+
+/** The base content type of a recorded response, such as `application/json`. */
+function mimeOf(p: { mime?: string; responseBody?: NetBody }): string | undefined {
+  const mime = (p.mime ?? p.responseBody?.mime ?? '').split(';')[0]!.trim().toLowerCase();
+  return mime || undefined;
+}
 
 /**
  * Top-level fields of a recorded request body that had a value. A replay whose
@@ -577,14 +585,15 @@ function collectSignals(events: SessionEvent[], sessionStart: number): Collected
   const message = (kind: 'exception' | 'console', raw: string, at: number) => {
     const text = messageText(raw);
     if (!text) return;
-    const pattern = messagePattern(text);
-    if (pattern === undefined) {
+    const parts = messageParts(text);
+    if (parts === undefined) {
       unmatchable.push(text);
       return;
     }
-    if (seen.has(`${kind}:${pattern}`)) return;
-    seen.add(`${kind}:${pattern}`);
-    add({ kind, text, pattern, at, afterStep: 0 }, at);
+    const key = `${kind}:${JSON.stringify(parts)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    add({ kind, text, parts, at, afterStep: 0 }, at);
   };
 
   for (const e of events) {
@@ -621,6 +630,7 @@ function collectSignals(events: SessionEvent[], sessionStart: number): Collected
           pathPattern,
           status: p.failed === true || p.status === undefined ? 'failed' : p.status,
           fields: filledFields(p.requestBody),
+          ...(mimeOf(p) ? { mime: mimeOf(p) } : {}),
           at: e.t,
           afterStep: 0,
         },
@@ -632,7 +642,7 @@ function collectSignals(events: SessionEvent[], sessionStart: number): Collected
   return { signals, startedAt, unmatchable };
 }
 
-function fixmeReason(events: SessionEvent[]): string {
+function fixmeReason(events: SessionEvent[], unmatchable: boolean): string {
   const deep = events.some(
     (e) => e.type === 'session-note' && /deep capture unavailable/i.test(e.payload.text),
   );
@@ -652,7 +662,9 @@ function fixmeReason(events: SessionEvent[]): string {
     .join(' / ')
     .slice(0, NOTE_CAP);
   return (
-    `Nothing to check: the recording has no error or failed request` +
+    (unmatchable
+      ? 'Nothing to check: the recorded errors logged only objects, so they cannot be matched'
+      : `Nothing to check: the recording has no error or failed request`) +
     (deep ? ' (deep capture was unavailable)' : '') +
     `. Add an assertion for what went wrong` +
     (noted ? `: ${noted}` : '.')

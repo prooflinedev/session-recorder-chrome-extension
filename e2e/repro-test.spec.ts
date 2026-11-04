@@ -14,7 +14,19 @@ import { unzipSync } from 'fflate';
 import type { BrowserContext, Page, Worker } from '@playwright/test';
 import { test, expect, extUrl, dispatch, tabIdForUrl } from './support';
 
-type Mode = 'buggy' | 'fixed' | 'moved' | 'swallowed' | 'hidden' | 'slow-buggy' | 'signed-out' | 'down';
+type Mode =
+  | 'buggy'
+  | 'fixed'
+  | 'moved'
+  | 'swallowed'
+  | 'hidden'
+  | 'slow-buggy'
+  | 'signed-out'
+  | 'down'
+  | 'proxy-down'
+  | 'fixed-204'
+  | 'ws-leak'
+  | 'popup-leak';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = path.join(ROOT, 'node_modules', '@playwright', 'test', 'cli.js');
@@ -30,6 +42,15 @@ function page(mode: Mode): string {
     mode === 'swallowed'
       ? 'if (data.total !== undefined) total.textContent = data.total.toFixed(2);'
       : 'total.textContent = data.total.toFixed(2);';
+  // Extra behaviour of some fixed builds: no body to read, or traffic to a non-local host.
+  const before =
+    mode === 'fixed-204'
+      ? 'if (res.status === 204) return;'
+      : mode === 'ws-leak'
+        ? "new WebSocket('ws://localhost.:' + location.port + '/live');"
+        : mode === 'popup-leak'
+          ? "window.open('/r302');"
+          : '';
   return `<!doctype html><html><head><meta charset="utf-8"><title>Coupon</title></head><body>
 <label>Coupon code <input id="code" aria-label="Coupon code"></label>
 <label>Receipt <input id="receipt" type="file"></label>
@@ -41,6 +62,7 @@ ${button}
   document.querySelector('button').addEventListener('click', async () => {
     const code = document.getElementById('code').value;
     const res = await fetch('/api/carts/4211/coupon', { method: 'POST', body: JSON.stringify({ code }) });
+    ${before}
     const data = await res.json();
     ${show}
   });
@@ -63,6 +85,15 @@ async function startApp() {
         }
         if (mode === 'down') {
           res.writeHead(502).end('bad gateway');
+          return;
+        }
+        if (mode === 'proxy-down') {
+          // What a dev-server proxy answers when the backend is not running.
+          res.writeHead(500, { 'content-type': 'text/plain' }).end();
+          return;
+        }
+        if (mode === 'fixed-204') {
+          res.writeHead(204).end();
           return;
         }
         // A slow server, such as a dev server still compiling the change.
@@ -88,7 +119,12 @@ async function startApp() {
       });
       return;
     }
-    if (req.url === '/help' || req.url === '/login') {
+    if (req.url === '/r302') {
+      const port = (server.address() as AddressInfo).port;
+      res.writeHead(302, { location: `http://localhost.:${port}/sink` }).end();
+      return;
+    }
+    if (req.url === '/help' || req.url === '/login' || req.url === '/sink') {
       res.writeHead(200, { 'content-type': 'text/html' });
       res.end('<!doctype html><p>page</p>');
       return;
@@ -236,6 +272,8 @@ test('the exported repro test reproduces, clears and stays honest', async ({
       const popup = tab.context().waitForEvent('page');
       await tab.click('#help');
       await (await popup).close();
+      // A person takes longer than the 50 ms the late-input rule cannot tell apart.
+      await tab.waitForTimeout(300);
       await tab.setInputFiles('#receipt', PLANTED);
       await tab.fill('#code', 'SAVE20');
       await tab.waitForTimeout(1200);
@@ -291,6 +329,38 @@ test('the exported repro test reproduces, clears and stays honest', async ({
     expect(down.outcome, down.output).toBe('INCONCLUSIVE');
     expect(down.output).toContain('got 502, not the recorded 500');
     expect(fs.existsSync(path.join(fresh, '.repro-baseline.json')), 'no baseline from a 502').toBe(false);
+
+    // 3b4) A dev-server proxy's empty text/plain 500 is not the recorded JSON
+    //     500 either.
+    app.setMode('proxy-down');
+    const proxy = await runExported(fresh, { BASE_URL: app.origin });
+    expect(proxy.outcome, proxy.output).toBe('INCONCLUSIVE');
+    expect(fs.existsSync(path.join(fresh, '.repro-baseline.json')), 'no baseline from a proxy error').toBe(false);
+
+    // 3b5) A baseline counts only for the signals it reproduced: here only the
+    //     request failed, so the exception's absence later shows nothing.
+    app.setMode('swallowed');
+    expect((await runExported(fresh, { BASE_URL: app.origin })).outcome).toBe('REPRODUCED');
+    app.setMode('fixed');
+    const partial = await runExported(fresh, { BASE_URL: app.origin });
+    expect(partial.outcome, partial.output).toBe('INCONCLUSIVE');
+    expect(partial.output).toContain('no earlier run reproduced exception');
+
+    // 3b6) A fix that answers 204 No Content passes.
+    app.setMode('fixed-204');
+    const noContent = await runExported(dir, { BASE_URL: app.origin });
+    expect(noContent.outcome, noContent.output).toBe('NOT REPRODUCED');
+
+    // 3b7) Traffic to a non-local host the route cannot stop first: a
+    //     WebSocket, and a popup redirected there.
+    app.setMode('ws-leak');
+    const ws = await runExported(dir, { BASE_URL: app.origin });
+    expect(ws.outcome, ws.output).toBe('INCONCLUSIVE');
+    expect(ws.output).toContain('WebSocket');
+    app.setMode('popup-leak');
+    const popupLeak = await runExported(dir, { BASE_URL: app.origin });
+    expect(popupLeak.outcome, popupLeak.output).toBe('INCONCLUSIVE');
+    expect(popupLeak.output).toContain('(redirect)');
 
     // 3c) Still buggy behind a slow server: the replay waits for the request.
     app.setMode('slow-buggy');
