@@ -217,6 +217,30 @@ describe('buildReproPlan steps', () => {
     ]);
   });
 
+  it('drops the repeat that older recordings posted after the blur, without a flag', () => {
+    // Typed, paused, then clicked: the blur's change posted the same value again.
+    const { plan: p } = plan([
+      input(1667, promo, 'SAVE20'),
+      click(2092, apply),
+      input(2893, promo, 'SAVE20'),
+      exception(3000, 'Error: x'),
+    ]);
+    expect(p.steps.map((s) => s.kind)).toEqual(['goto', 'fill', 'click']);
+    expect(p.blockers).toEqual([]);
+  });
+
+  it('uses one variable per redacted field', () => {
+    const pass = el({ tag: 'input', id: 'pw', selector: '#pw' });
+    const built = plan([
+      input(100, pass, '«redacted»', 'password', true),
+      click(1500, apply),
+      input(2300, pass, '«redacted»', 'password', true),
+      exception(2400, 'Error: x'),
+    ]);
+    expect(built.envVars).toEqual([{ name: 'REPRO_INPUT_1', label: 'input #pw' }]);
+    expect(built.plan.steps.map((s) => s.kind)).toEqual(['goto', 'fill', 'click']);
+  });
+
   it('keeps an input that was recorded well after the previous action', () => {
     const { plan: p } = plan([click(1000, apply), input(2000, promo, 'SAVE20'), exception(2100, 'Error: x')]);
     expect(p.steps.map((s) => s.kind)).toEqual(['goto', 'click', 'fill']);

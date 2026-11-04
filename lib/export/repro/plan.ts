@@ -167,8 +167,11 @@ export function buildReproPlan(input: BuildReproInput): BuiltRepro | undefined {
         } else if (UNFILLABLE_TYPES.has(type)) {
           blockers.push(`input type "${type}" cannot be replayed (${target.label})`);
         } else if (p.redacted) {
-          const name = `REPRO_INPUT_${envVars.length + 1}`;
-          envVars.push({ name, label: target.label });
+          let name = envVars.find((v) => v.label === target.label)?.name;
+          if (!name) {
+            name = `REPRO_INPUT_${envVars.length + 1}`;
+            envVars.push({ name, label: target.label });
+          }
           steps.push({ kind: 'fill', target, env: name, at: e.t });
         } else {
           steps.push({ kind: 'fill', target, value: p.value, at: e.t });
@@ -326,10 +329,21 @@ function capturedFile(events: SessionEvent[], name: string, t: number) {
   return best;
 }
 
+type ValueStep = Extract<Step, { kind: 'fill' | 'select' | 'upload' }>;
+
+function sameValue(a: ValueStep, b: ValueStep): boolean {
+  if (a.kind !== b.kind || a.target.label !== b.target.label) return false;
+  if (a.kind === 'fill' && b.kind === 'fill') return a.value === b.value && a.env === b.env;
+  if (a.kind === 'select' && b.kind === 'select') return a.value === b.value;
+  return a.kind === 'upload' && b.kind === 'upload' && a.file === b.file;
+}
+
 /**
  * Older recordings posted a value after the click or key that ended the typing.
  * Moves such a value in front of those actions and returns one reason per move:
- * its value may be what the page left in the field, not what was typed.
+ * its value may be what the page left in the field, not what was typed. A late
+ * value that repeats the field's previous one is the re-post that the blur
+ * caused; it adds nothing and is dropped.
  */
 function moveLateInputs(steps: Step[]): string[] {
   const reasons: string[] = [];
@@ -346,6 +360,19 @@ function moveLateInputs(steps: Step[]): string[] {
       j -= 1;
     }
     if (j < i) {
+      const earlier = steps
+        .slice(0, j)
+        .reverse()
+        .find(
+          (s): s is ValueStep =>
+            (s.kind === 'fill' || s.kind === 'select' || s.kind === 'upload') &&
+            s.target.label === step.target.label,
+        );
+      if (earlier && sameValue(earlier, step)) {
+        steps.splice(i, 1);
+        i -= 1;
+        continue;
+      }
       steps.splice(i, 1);
       steps.splice(j, 0, step);
       reasons.push(
