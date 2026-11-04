@@ -1043,11 +1043,9 @@ class Orchestrator {
         );
 
       // --- manual capture actions ---
-      case 'screenshot/capture': {
-        const tabId = await this.activeSessionTabId();
-        if (tabId >= 0) await this.screenshots.capture(tabId, 'manual');
+      case 'screenshot/capture':
+        await this.captureManualScreenshot();
         return { ok: true };
-      }
       case 'marker/add':
         this.addMarker(msg.name);
         return { ok: true };
@@ -1392,7 +1390,17 @@ class Orchestrator {
       await this.toggleAnnotation();
     } else if (command === 'add-marker') {
       this.addMarker();
+    } else if (command === 'capture-screenshot') {
+      // A paused session captures nothing, so the shortcut does nothing either.
+      if (!this.paused) await this.captureManualScreenshot();
+    } else if (command === 'toggle-pause') {
+      await (this.paused ? this.resume() : this.pause());
     }
+  }
+
+  private async captureManualScreenshot(): Promise<void> {
+    const tabId = await this.activeSessionTabId();
+    if (tabId >= 0) await this.screenshots.capture(tabId, 'manual');
   }
 
   private addMarker(name?: string): void {
