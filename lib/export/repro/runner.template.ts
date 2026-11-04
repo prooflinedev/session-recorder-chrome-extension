@@ -269,7 +269,14 @@ test(PLAN.title, async ({ page, context }) => {
   const outcome = (description: string) =>
     test.info().annotations.push({ type: 'repro-outcome', description });
 
-  const { origin, rewrite } = target();
+  let stopped: string | undefined;
+  let origin = PLAN.recordedOrigin;
+  let rewrite = (url: string) => url;
+  try {
+    ({ origin, rewrite } = target());
+  } catch {
+    stopped = `BASE_URL is not a valid URL: ${ENV.BASE_URL}`;
+  }
   const errors: string[] = [];
   const consoleErrors: string[] = [];
   const requests: Seen[] = [];
@@ -304,8 +311,7 @@ test(PLAN.title, async ({ page, context }) => {
     await route.fallback();
   });
 
-  let stopped: string | undefined;
-  if (!ALLOW_REMOTE && !isLocalHost(new URL(origin).hostname)) {
+  if (!stopped && !ALLOW_REMOTE && !isLocalHost(new URL(origin).hostname)) {
     stopped = `${origin} is not a local address. Set BASE_URL to a local server, or REPRO_ALLOW_REMOTE=1 to replay against it.`;
   }
   for (const [i, step] of PLAN.steps.entries()) {

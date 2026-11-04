@@ -35,10 +35,28 @@ describe('buildBundle repro test', () => {
     expect(specs[0]).toContain('cannot read property total of undefined');
   });
 
+  it('pins Playwright to the root test, so captured files never run as tests', async () => {
+    const b = new SessionBuilder({ name: 'Planted', initialUrl: 'https://app.example.com/' })
+      .click('Upload')
+      .file('repro.spec.ts', 64)
+      .error('Uncaught Error: x');
+    const { session, events, assets } = b.build();
+    const files = await buildBundle({ session, events, assets, level: 'L1', includeReproTest: true });
+    const paths = files.map((f) => f.path);
+    expect(paths).toContain('repro.spec.ts');
+    expect(paths).toContain('files/repro.spec.ts');
+    const config = files.find((f) => f.path === 'playwright.config.mjs')?.text;
+    expect(config).toContain("testMatch: 'repro.spec.ts'");
+    expect(config).toContain("'files/**'");
+    const report = files.find((f) => f.path === 'report.md')!.text!;
+    expect(report).toContain('BASE_URL=http://localhost:3000 npx playwright test\n');
+  });
+
   it('leaves the bundle unchanged when not asked', async () => {
     const { session, events, assets } = recording();
     const files = await buildBundle({ session, events, assets, level: 'L1' });
     expect(files.some((f) => f.path === 'repro.spec.ts')).toBe(false);
+    expect(files.some((f) => f.path === 'playwright.config.mjs')).toBe(false);
     expect(files.find((f) => f.path === 'report.md')!.text).not.toContain('Repro test');
   });
 

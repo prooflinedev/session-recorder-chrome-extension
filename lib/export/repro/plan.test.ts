@@ -209,7 +209,7 @@ describe('buildReproPlan steps', () => {
   });
 
   it('moves an input recorded after the action that ended it, and flags it', () => {
-    // Older recordings posted values 800 ms after the last edit.
+    // The recorder posts a value 800 ms after the last edit.
     const { plan: p } = plan([click(1000, apply), input(1802, promo, 'SAVE20'), exception(2000, 'Error: x')]);
     expect(p.steps.map((s) => s.kind)).toEqual(['goto', 'fill', 'click']);
     expect(p.blockers).toEqual([
@@ -217,7 +217,39 @@ describe('buildReproPlan steps', () => {
     ]);
   });
 
-  it('drops the repeat that older recordings posted after the blur, without a flag', () => {
+  it('keeps a value posted after the bug it caused, moved before the trigger and flagged', () => {
+    // Typed "boom", pressed Enter at once; the exception came before the debounced value.
+    const search = el({ tag: 'input', id: 'q', selector: '#q' });
+    const { plan: p } = plan([
+      click(100, search),
+      ev('key', 575, { key: 'Enter', modifiers: [] }),
+      exception(581, 'Error: boom'),
+      input(1382, search, 'boom'),
+    ]);
+    expect(p.steps.map((s) => s.kind)).toEqual(['goto', 'click', 'fill', 'press']);
+    expect(p.steps[2]).toMatchObject({ kind: 'fill', value: 'boom' });
+    expect(p.blockers).toEqual([expect.stringContaining('input #q')]);
+  });
+
+  it('does not replay a value typed after the bug', () => {
+    const { plan: p } = plan([click(100, apply), exception(200, 'Error: x'), input(1200, promo, 'later')]);
+    expect(p.steps.map((s) => s.kind)).toEqual(['goto', 'click']);
+    expect(p.blockers).toEqual([]);
+  });
+
+  it('flags a field the page cleared on submit, so the replay cannot claim a fix', () => {
+    // Typed, paused, clicked Apply; the page cleared the field and the blur posted "".
+    const { plan: p } = plan([
+      input(1000, promo, 'SAVE20'),
+      click(2092, apply),
+      input(2893, promo, ''),
+      exception(3000, 'Error: x'),
+    ]);
+    expect(p.steps.map((s) => s.kind)).toEqual(['goto', 'fill', 'fill', 'click']);
+    expect(p.blockers).toEqual([expect.stringContaining('input #promo')]);
+  });
+
+  it('drops the repeat that the blur posted after the click, without a flag', () => {
     // Typed, paused, then clicked: the blur's change posted the same value again.
     const { plan: p } = plan([
       input(1667, promo, 'SAVE20'),

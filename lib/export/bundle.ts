@@ -25,7 +25,9 @@ import { apiBodyAssetIds, buildOpenApiSpec } from './openapi';
 import {
   buildReproPlan,
   describeSignals,
+  renderReproConfig,
   renderReproSpec,
+  REPRO_CONFIG_PATH,
   REPRO_SPEC_PATH,
 } from './repro/plan';
 import { estimateTokens } from './tokens';
@@ -356,14 +358,18 @@ export async function buildBundle(
 
   // 2d) The repro test, also from the UNTRIMMED events, so every level gives
   // the same steps. Uploaded files resolve to their zip paths.
-  let reproFile: ExportFile | undefined;
+  const reproFiles: ExportFile[] = [];
   let repro: ReproSummary | undefined;
   if (input.includeReproTest) {
     const built = buildReproPlan({ session, events, assetPath });
     if (built) {
-      reproFile = { path: REPRO_SPEC_PATH, text: renderReproSpec(built.plan) };
+      reproFiles.push(
+        { path: REPRO_SPEC_PATH, text: renderReproSpec(built.plan) },
+        { path: REPRO_CONFIG_PATH, text: renderReproConfig() },
+      );
       repro = {
         path: REPRO_SPEC_PATH,
+        configPath: REPRO_CONFIG_PATH,
         steps: built.plan.steps.length,
         signals: describeSignals(built.plan),
         gaps: built.gaps,
@@ -416,7 +422,7 @@ export async function buildBundle(
     { path: 'transcript.json', text: JSON.stringify(transcript, null, 2) },
   ];
   if (openapiFile) files.push(openapiFile);
-  if (reproFile) files.push(reproFile);
+  files.push(...reproFiles);
 
   // 4) Every surviving (deduped) asset as raw bytes, written once.
   for (const [path, bytes] of bytesByPath) {

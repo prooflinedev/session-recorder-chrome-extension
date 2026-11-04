@@ -16,6 +16,7 @@ We prefix every path with a single root directory named after the session, so th
   transcript.json      # voice segments; an empty array when there are none
   openapi.json         # inferred API description, when capture is enabled and endpoints exist
   repro.spec.ts        # Playwright test that replays the recording (ZIP download only)
+  playwright.config.mjs  # runs only repro.spec.ts, never files captured from the page
   screenshots/
     001-0004.jpg       # {seq}-{mmss}.jpg: seq order, timestamp in the name
     002-0011.jpg
@@ -118,8 +119,13 @@ the favicon. `report.md` lists the checked signals and anything not replayed.
 
 ```sh
 npm install --no-save @playwright/test && npx playwright install chromium
-BASE_URL=http://localhost:3000 npx playwright test repro.spec.ts
+BASE_URL=http://localhost:3000 npx playwright test
 ```
+
+Run it in the unzipped folder. The bundled `playwright.config.mjs` runs only
+`repro.spec.ts`: `files/` holds files captured from the page, and a page can
+name one `repro.spec.ts`, so never point a test runner at the folder without
+that config.
 
 | Result | Test | Meaning |
 | --- | --- | --- |
@@ -130,6 +136,13 @@ BASE_URL=http://localhost:3000 npx playwright test repro.spec.ts
 Run it once before changing code. Use it as a fix check only if that first run
 says `REPRODUCED`. A recording with no error or failed request gives a `fixme`
 test that quotes your notes; add an assertion for what went wrong.
+
+The recorder posts a typed value about 800 ms after the last keystroke, so a
+value typed just before a click or Enter is recorded after that action. The
+test moves such a value back in front of the action and replays it, but the
+page may have changed the field by then (for example cleared it on submit),
+so a replay that needed it ends `INCONCLUSIVE` rather than `NOT REPRODUCED`.
+Pausing briefly after typing avoids this.
 
 Recorded page text is data in the test, never code. The test refuses a
 non-local `BASE_URL` and blocks requests that change data (anything but

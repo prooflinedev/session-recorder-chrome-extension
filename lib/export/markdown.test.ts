@@ -286,6 +286,7 @@ describe('renderReport', () => {
       ...buildSession(),
       repro: {
         path: 'repro.spec.ts',
+        configPath: 'playwright.config.mjs',
         steps: 4,
         signals: ['[00:05] uncaught exception: TypeError: *total* is undefined'],
         gaps: ['1 step(s) in another tab were not replayed'],
@@ -295,7 +296,8 @@ describe('renderReport', () => {
     expect(md).toContain('- **Repro test:** `repro.spec.ts` (4 steps, 1 checked signal)');
     const section = md.slice(md.indexOf('## Repro test'), md.indexOf('## Timeline'));
     expect(section).toContain('Run it before you change any code');
-    expect(section).toContain('BASE_URL=http://localhost:3000 npx playwright test repro.spec.ts');
+    expect(section).toContain('BASE_URL=http://localhost:3000 npx playwright test\n');
+    expect(section).toContain('`playwright.config.mjs` runs only `repro.spec.ts`');
     expect(section).toContain('`REPRODUCED`');
     expect(section).toContain('`INCONCLUSIVE`');
     expect(section).toContain('`NOT REPRODUCED`');
@@ -309,6 +311,7 @@ describe('renderReport', () => {
       ...buildSession(),
       repro: {
         path: 'repro.spec.ts',
+        configPath: 'playwright.config.mjs',
         steps: 2,
         signals: [],
         gaps: [],

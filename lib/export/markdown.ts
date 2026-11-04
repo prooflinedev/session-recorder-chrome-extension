@@ -39,6 +39,8 @@ export interface RenderInput {
 /** What the report says about the generated repro test (lib/export/repro). */
 export interface ReproSummary {
   path: string;
+  /** The Playwright config that runs only `path`. */
+  configPath: string;
   steps: number;
   /** One line per checked signal. */
   signals: string[];
@@ -206,8 +208,12 @@ function renderRepro(repro: ReproSummary, lines: string[]): void {
   lines.push('');
   lines.push('```sh');
   lines.push('npm install --no-save @playwright/test && npx playwright install chromium');
-  lines.push(`BASE_URL=http://localhost:3000 npx playwright test ${repro.path}`);
+  lines.push('BASE_URL=http://localhost:3000 npx playwright test');
   lines.push('```');
+  lines.push('');
+  lines.push(
+    `Run it in the unzipped folder: \`${repro.configPath}\` runs only \`${repro.path}\`, so files captured from the page never run as tests.`,
+  );
   lines.push('');
   if (repro.fixme) {
     lines.push(`> ${escapeInline(oneLine(repro.fixme))}`);
