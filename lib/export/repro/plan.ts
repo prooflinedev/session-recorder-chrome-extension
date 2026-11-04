@@ -1,0 +1,465 @@
+/**
+ * Repro test generation for the export bundle.
+ *
+ * `buildReproPlan` turns a recorded session into plain data: the steps to replay,
+ * the error signals to check, and the reasons a replay could not show that the
+ * bug is gone. `renderReproSpec` embeds that data in a fixed Playwright runner
+ * (`runner.template.ts`). Recorded text only ever appears inside the embedded
+ * JSON, so a hostile page cannot change the code a developer runs.
+ *
+ * Pure: no chrome/DOM/network access, inputs are not mutated, and the same
+ * input gives the same output.
+ */
+
+import type { ElementDescriptor, Session, SessionEvent } from '@/lib/session/types';
+import { isStaticAsset, isTelemetry, normalizePath } from '../trimmer';
+import { formatClock } from '../markdown';
+import template from './runner.template.ts?raw';
+import type { Candidate, Plan, Signal, Step, Target } from './runner.template';
+
+export type { Plan as ReproPlan } from './runner.template';
+
+/** Zip-relative path of the generated test. */
+export const REPRO_SPEC_PATH = 'repro.spec.ts';
+
+const PLAN_MARKER = '/*@repro-plan*/ ({} as Plan)';
+
+/**
+ * Older recordings posted an input value this long after the last edit (see
+ * entrypoints/interactions.content.ts), plus timer lateness.
+ */
+const RECORDED_INPUT_DELAY_MS = 800;
+const TIMER_SLACK_MS = 50;
+/** A label click and the browser's own click on its control arrive this close. */
+const LABEL_ACTIVATION_MS = 50;
+const SETTLE_EXTRA_MS = 1500;
+const SETTLE_MAX_MS = 15_000;
+const NOTE_CAP = 300;
+const PATTERN_TEXT_CAP = 160;
+
+const REPLAYABLE_NAV = new Set([
+  'typed',
+  'auto_bookmark',
+  'generated',
+  'keyword',
+  'keyword_generated',
+  'start_page',
+  'auto_toplevel',
+]);
+const FORM_TAGS = new Set(['input', 'select', 'textarea', 'option']);
+const CONTROL_TAGS = new Set(['input', 'select', 'textarea', 'button']);
+const UNFILLABLE_TYPES = new Set(['range', 'color', 'image', 'submit', 'reset', 'button', 'hidden']);
+const IMPLICIT_ROLES: Record<string, string> = {
+  button: 'button',
+  a: 'link',
+  select: 'combobox',
+  textarea: 'textbox',
+  summary: 'button',
+};
+/** Ids that frameworks generate per render (React useId, Radix, MUI, Ember, ...). */
+const GENERATED_ID =
+  /:|^(radix|mui|ember|headlessui|react-aria|rc|downshift|ext-gen|vaadin|ng)[-_]?\S*\d|\d{4,}/i;
+const MODIFIERS: Record<string, 'Alt' | 'Control' | 'Meta' | 'Shift'> = {
+  alt: 'Alt',
+  ctrl: 'Control',
+  meta: 'Meta',
+  shift: 'Shift',
+};
+
+export interface ReproEnvVar {
+  name: string;
+  label: string;
+}
+
+export interface BuiltRepro {
+  plan: Plan;
+  /** Everything the replay leaves out, for the report (includes the blockers). */
+  gaps: string[];
+  envVars: ReproEnvVar[];
+}
+
+export interface BuildReproInput {
+  session: Session;
+  /** Untrimmed events, so every export level gives the same test. */
+  events: SessionEvent[];
+  /** Zip-relative path of an asset, or undefined when it is not in the export. */
+  assetPath: (assetId: string) => string | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/** The replay plan for a session, or undefined when it did not start on a web page. */
+export function buildReproPlan(input: BuildReproInput): BuiltRepro | undefined {
+  const { session } = input;
+  let start: URL;
+  try {
+    start = new URL(session.initialUrl);
+  } catch {
+    return undefined;
+  }
+  if (start.protocol !== 'http:' && start.protocol !== 'https:') return undefined;
+
+  // Stable sort of a copy: equal times keep their stored order.
+  const events = input.events
+    .map((e, i) => ({ e, i }))
+    .sort((a, b) => a.e.t - b.e.t || a.i - b.i)
+    .map(({ e }) => e);
+  const primary = session.tabs.find((tab) => tab.role === 'primary')?.tabId;
+  const inPrimary = (e: SessionEvent) =>
+    primary === undefined || e.tabId === undefined || e.tabId === primary;
+
+  const signals = collectSignals(events.filter(inPrimary));
+  const lastSignalAt = signals.length > 0 ? Math.max(...signals.map((s) => s.at)) : Infinity;
+
+  const blockers: string[] = [];
+  const gaps: string[] = [];
+  const envVars: ReproEnvVar[] = [];
+  const steps: Step[] = [{ kind: 'goto', url: session.initialUrl, at: 0 }];
+  let otherTabSteps = 0;
+  let lastClick: { tag: string; at: number } | undefined;
+
+  for (const e of events) {
+    if (e.t > lastSignalAt) break;
+    if (!inPrimary(e)) {
+      if (isAction(e)) otherTabSteps += 1;
+      continue;
+    }
+    switch (e.type) {
+      case 'click': {
+        const d = e.payload.descriptor;
+        const tag = d.tag.toLowerCase();
+        if (
+          lastClick?.tag === 'label' &&
+          CONTROL_TAGS.has(tag) &&
+          e.t - lastClick.at <= LABEL_ACTIVATION_MS
+        ) {
+          break; // the browser's own click on the labelled control
+        }
+        lastClick = { tag, at: e.t };
+        const button = e.payload.button === 1 ? 'middle' : e.payload.button === 2 ? 'right' : undefined;
+        const modifiers = e.payload.modifiers
+          .map((m) => MODIFIERS[m])
+          .filter((m): m is NonNullable<typeof m> => m !== undefined);
+        steps.push({
+          kind: 'click',
+          target: targetOf(d),
+          ...(button ? { button } : {}),
+          ...(modifiers.length > 0 ? { modifiers } : {}),
+          at: e.t,
+        });
+        break;
+      }
+      case 'input': {
+        const p = e.payload;
+        const type = (p.inputType ?? '').toLowerCase();
+        const target = targetOf(p.descriptor);
+        if (type === 'checkbox' || type === 'radio') break; // the click toggles it
+        if (type === 'select' || p.descriptor.tag.toLowerCase() === 'select') {
+          steps.push({ kind: 'select', target, value: p.value, at: e.t });
+        } else if (type === 'file') {
+          const name = p.value.split(/[\\/]/).pop() ?? '';
+          const file = capturedFile(events, name, e.t);
+          const path = file?.payload.assetId ? input.assetPath(file.payload.assetId) : undefined;
+          if (path) steps.push({ kind: 'upload', target, file: path, at: e.t });
+          else blockers.push(`the file "${name}" is not in the export, so its upload to ${target.label} was skipped`);
+        } else if (UNFILLABLE_TYPES.has(type)) {
+          blockers.push(`input type "${type}" cannot be replayed (${target.label})`);
+        } else if (p.redacted) {
+          const name = `REPRO_INPUT_${envVars.length + 1}`;
+          envVars.push({ name, label: target.label });
+          steps.push({ kind: 'fill', target, env: name, at: e.t });
+        } else {
+          steps.push({ kind: 'fill', target, value: p.value, at: e.t });
+        }
+        break;
+      }
+      case 'key':
+        steps.push({ kind: 'press', key: pressKey(e.payload.key), at: e.t });
+        break;
+      case 'nav':
+        if (e.payload.transitionType === 'reload') steps.push({ kind: 'reload', at: e.t });
+        else if (REPLAYABLE_NAV.has(e.payload.transitionType ?? '')) {
+          steps.push({ kind: 'goto', url: e.payload.url, at: e.t });
+        }
+        break;
+      default:
+        break;
+    }
+  }
+
+  blockers.push(...moveLateInputs(steps));
+  if (otherTabSteps > 0) {
+    blockers.push(`${otherTabSteps} step(s) in another tab were not replayed`);
+  }
+  const otherTabSignals = collectSignals(events.filter((e) => !inPrimary(e)));
+  if (otherTabSignals.length > 0) gaps.push('errors in other tabs are not checked');
+  if (events.some((e) => e.type === 'session-note' && e.payload.kind === 'detach')) {
+    gaps.push('the debugger detached during recording, so some errors may be missing');
+  }
+
+  const lastStepAt = steps[steps.length - 1]!.at;
+  const plan: Plan = {
+    version: 1,
+    title: `Repro: ${session.name}`.slice(0, 120),
+    recordedOrigin: start.origin,
+    steps,
+    signals,
+    settleMs:
+      signals.length > 0
+        ? Math.min(SETTLE_MAX_MS, Math.max(0, lastSignalAt - lastStepAt) + SETTLE_EXTRA_MS)
+        : SETTLE_EXTRA_MS,
+    blockers,
+  };
+  if (signals.length === 0) plan.fixme = fixmeReason(events);
+  return { plan, gaps: [...blockers, ...gaps], envVars };
+}
+
+/** The generated test file: the fixed runner with `plan` embedded as JSON. */
+export function renderReproSpec(plan: Plan): string {
+  const [head, tail, extra] = template.split(PLAN_MARKER);
+  if (tail === undefined || extra !== undefined) {
+    throw new Error('runner template must contain the plan marker exactly once');
+  }
+  // JSON is valid TypeScript. U+2028/2029 are escaped so no tool reads them as line ends.
+  const json = JSON.stringify(plan, null, 2)
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+  return head + json + tail;
+}
+
+/** One line per checked signal, for the report. */
+export function describeSignals(plan: Plan): string[] {
+  return plan.signals.map((s) =>
+    s.kind === 'request'
+      ? `[${formatClock(s.at)}] ${s.method} ${s.path} returned ${s.status === 'failed' ? 'a network failure' : s.status}`
+      : `[${formatClock(s.at)}] ${s.kind === 'exception' ? 'uncaught exception' : 'console error'}: ${s.text}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Steps
+// ---------------------------------------------------------------------------
+
+function isAction(e: SessionEvent): boolean {
+  if (e.type === 'click' || e.type === 'input' || e.type === 'key') return true;
+  return (
+    e.type === 'nav' &&
+    (e.payload.transitionType === 'reload' || REPLAYABLE_NAV.has(e.payload.transitionType ?? ''))
+  );
+}
+
+/**
+ * A recorded key ("Ctrl+K", "Enter", "Ctrl++") as a Playwright key. The
+ * recorder upper-cases chord letters, so a letter is lower-cased again unless
+ * Shift was held.
+ */
+function pressKey(recorded: string): string {
+  const m = recorded.match(/^((?:(?:Ctrl|Alt|Shift|Meta)\+)*)(.+)$/);
+  const mods = (m?.[1] ?? '').split('+').filter(Boolean);
+  const raw = m?.[2] ?? recorded;
+  const key = raw.length === 1 && !mods.includes('Shift') ? raw.toLowerCase() : raw;
+  return [...mods.map((k) => MODIFIERS[k.toLowerCase()] ?? k), key].join('+');
+}
+
+function cssString(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\a ');
+}
+
+function testIdOf(selector: string | undefined): string | undefined {
+  const m = selector?.match(/^\[data-testid="((?:[^"\\]|\\.)*)"\]$/);
+  return m ? m[1]!.replace(/\\(.)/g, '$1') : undefined;
+}
+
+function targetOf(d: ElementDescriptor): Target {
+  const tag = d.tag.toLowerCase();
+  const isField = FORM_TAGS.has(tag);
+  const stableId = d.id && !GENERATED_ID.test(d.id) ? d.id : undefined;
+  const text = d.text && !isField && !d.text.endsWith('…') ? d.text : undefined;
+  const role = d.role ?? IMPLICIT_ROLES[tag];
+  const roleName = d.ariaLabel ?? (role && !isField ? text : undefined);
+
+  const candidates: Candidate[] = [];
+  const add = (c: Candidate) => {
+    if (!candidates.some((x) => x.by === c.by && x.value === c.value && x.role === c.role)) {
+      candidates.push(c);
+    }
+  };
+  const testId = testIdOf(d.selector);
+  if (testId) add({ by: 'testid', value: testId });
+  if (stableId) {
+    add({
+      by: 'css',
+      value: /^[A-Za-z_][\w-]*$/.test(stableId) ? `#${stableId}` : `[id="${cssString(stableId)}"]`,
+    });
+  }
+  if (role && roleName) add({ by: 'role', role, value: roleName });
+  if (d.ariaLabel) add({ by: 'label', value: d.ariaLabel });
+  if (d.name) add({ by: 'name', value: d.name });
+  // A selector anchored on a generated id breaks on the next render.
+  const generatedAnchor =
+    d.selector !== undefined &&
+    (d.selector.includes('\\:') || (d.id !== undefined && !stableId && d.selector.includes(d.id)));
+  if (d.selector && !generatedAnchor) add({ by: 'css', value: d.selector });
+  if (text) add({ by: 'text', value: text });
+
+  const label = d.id
+    ? `${tag} #${d.id}`
+    : text
+      ? `${tag} "${text}"`
+      : d.ariaLabel
+        ? `${tag} "${d.ariaLabel}"`
+        : d.selector
+          ? `${tag} ${d.selector}`
+          : tag;
+  return { label, candidates };
+}
+
+function capturedFile(events: SessionEvent[], name: string, t: number) {
+  let best: Extract<SessionEvent, { type: 'file-captured' | 'file-attached' }> | undefined;
+  for (const e of events) {
+    if (e.type !== 'file-captured' && e.type !== 'file-attached') continue;
+    if (e.payload.fileName !== name || Math.abs(e.t - t) > 5000) continue;
+    if (!best || Math.abs(e.t - t) < Math.abs(best.t - t)) best = e;
+  }
+  return best;
+}
+
+/**
+ * Older recordings posted a value after the click or key that ended the typing.
+ * Moves such a value in front of those actions and returns one reason per move:
+ * its value may be what the page left in the field, not what was typed.
+ */
+function moveLateInputs(steps: Step[]): string[] {
+  const reasons: string[] = [];
+  for (let i = 1; i < steps.length; i += 1) {
+    const step = steps[i]!;
+    if (step.kind !== 'fill' && step.kind !== 'select' && step.kind !== 'upload') continue;
+    const editedBy = step.at - RECORDED_INPUT_DELAY_MS - TIMER_SLACK_MS;
+    let j = i;
+    while (j > 1) {
+      const prev = steps[j - 1]!;
+      const isAct = prev.kind === 'click' || prev.kind === 'press';
+      if (!isAct || prev.at <= editedBy) break;
+      if (prev.kind === 'click' && prev.target.label === step.target.label) break;
+      j -= 1;
+    }
+    if (j < i) {
+      steps.splice(i, 1);
+      steps.splice(j, 0, step);
+      reasons.push(
+        `the value of ${step.target.label} was recorded after the action that followed it (older recording), so it may differ from what was typed`,
+      );
+    }
+  }
+  return reasons;
+}
+
+// ---------------------------------------------------------------------------
+// Signals
+// ---------------------------------------------------------------------------
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+}
+
+const VARIABLE_TOKEN =
+  /(https?:\/\/[^\s/'"`)]+)|([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})|(\b(?=[0-9a-f]*\d)[0-9a-f]{8,}\b)|(\d+)/gi;
+
+/** A search pattern for a message: origins, ids and numbers may differ. */
+function messagePattern(text: string): string {
+  let out = '';
+  let last = 0;
+  for (const m of text.matchAll(VARIABLE_TOKEN)) {
+    out += escapeRegExp(text.slice(last, m.index));
+    out += m[1] ? 'https?://[^\\s/]+' : m[4] ? '\\d+' : '[0-9a-fA-F-]+';
+    last = m.index! + m[0].length;
+  }
+  return out + escapeRegExp(text.slice(last));
+}
+
+function messageText(raw: string): string {
+  return (raw.split('\n')[0] ?? '').trim().replace(/^Uncaught\s+/, '').slice(0, PATTERN_TEXT_CAP);
+}
+
+function collectSignals(events: SessionEvent[]): Signal[] {
+  const out: Signal[] = [];
+  const seen = new Set<string>();
+  const push = (key: string, s: Signal) => {
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(s);
+  };
+  const message = (kind: 'exception' | 'console', raw: string, at: number) => {
+    const text = messageText(raw);
+    if (!text) return;
+    const pattern = messagePattern(text);
+    push(`${kind}:${pattern}`, { kind, text, pattern, at });
+  };
+
+  for (const e of events) {
+    if (e.type === 'error') {
+      const { origin, message: msg } = e.payload;
+      if (origin === 'exception') message('exception', msg, e.t);
+      else if (origin === 'console') message('console', msg, e.t);
+      else if (origin === 'log' && !/^Failed to load resource/i.test(msg)) message('console', msg, e.t);
+    } else if (e.type === 'console' && e.payload.level === 'error') {
+      message('console', e.payload.text, e.t);
+    } else if (e.type === 'net-request') {
+      const p = e.payload;
+      const failing = p.failed === true || (p.status ?? 0) >= 400;
+      if (!failing || isTelemetry(p) || isStaticAsset(p)) continue;
+      let url: URL;
+      try {
+        url = new URL(p.url);
+      } catch {
+        continue;
+      }
+      if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.pathname === '/favicon.ico') {
+        continue;
+      }
+      const method = p.method.toUpperCase();
+      const pathPattern = `^${normalizePath(p.url)
+        .split('/')
+        .map((seg) => (seg === ':id' ? '[^/]+' : escapeRegExp(seg)))
+        .join('/')}$`;
+      push(`request:${method}:${pathPattern}`, {
+        kind: 'request',
+        method,
+        path: url.pathname,
+        pathPattern,
+        status: p.failed === true || p.status === undefined ? 'failed' : p.status,
+        at: e.t,
+      });
+    }
+  }
+  return out;
+}
+
+function fixmeReason(events: SessionEvent[]): string {
+  const deep = events.some(
+    (e) => e.type === 'session-note' && /deep capture unavailable/i.test(e.payload.text),
+  );
+  const notes: string[] = [];
+  for (const e of events) {
+    if (e.type === 'marker') notes.push(e.payload.name);
+    else if (e.type === 'note') notes.push(e.payload.text);
+    else if (e.type === 'annotation') {
+      for (const shape of e.payload.shapes) if (shape.text) notes.push(shape.text);
+    } else if (e.type === 'voice-segment' && e.payload.transcript) {
+      notes.push(e.payload.transcript);
+    }
+  }
+  const noted = notes
+    .map((n) => n.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join(' / ')
+    .slice(0, NOTE_CAP);
+  return (
+    `Nothing to check: the recording has no error or failed request` +
+    (deep ? ' (deep capture was unavailable)' : '') +
+    `. Add an assertion for what went wrong` +
+    (noted ? `: ${noted}` : '.')
+  );
+}

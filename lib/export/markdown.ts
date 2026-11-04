@@ -32,6 +32,21 @@ export interface RenderInput {
   assetPath: (assetId: string) => string | undefined;
   /** Set when the bundle includes a compiled OpenAPI spec (captureApiSpec). */
   openapi?: { path: string; endpointCount: number };
+  /** Set when the bundle includes the generated repro test. */
+  repro?: ReproSummary;
+}
+
+/** What the report says about the generated repro test (lib/export/repro). */
+export interface ReproSummary {
+  path: string;
+  steps: number;
+  /** One line per checked signal. */
+  signals: string[];
+  /** What the replay leaves out. */
+  gaps: string[];
+  envVars: { name: string; label: string }[];
+  /** Set when there is nothing to check. */
+  fixme?: string;
 }
 
 // ----------------------------------------------------------------------------
@@ -59,6 +74,7 @@ export function renderReport(input: RenderInput): string {
 
   const anchors = buildAnchorMap(events);
   renderHeader(input, events, lines);
+  if (input.repro) renderRepro(input.repro, lines);
   lines.push('');
   lines.push('## Timeline');
   lines.push('');
@@ -152,6 +168,13 @@ function renderHeader(
       `- **API spec:** \`${input.openapi.path}\` (${input.openapi.endpointCount} endpoint(s) compiled from captured requests)`,
     );
   }
+  if (input.repro) {
+    const n = input.repro.signals.length;
+    const checks = n === 0 ? 'nothing to check' : `${n} checked signal${n === 1 ? '' : 's'}`;
+    lines.push(
+      `- **Repro test:** \`${input.repro.path}\` (${input.repro.steps} steps, ${checks})`,
+    );
+  }
   lines.push('');
 
   // Tab registry.
@@ -170,6 +193,54 @@ function renderHeader(
       );
     }
   }
+}
+
+/** How to run the generated repro test and what its result means. */
+function renderRepro(repro: ReproSummary, lines: string[]): void {
+  lines.push('');
+  lines.push('## Repro test');
+  lines.push('');
+  lines.push(
+    `\`${repro.path}\` replays this recording with Playwright and checks whether the recorded errors happen again. Run it before you change any code, and use it as a fix check only if that run fails with \`REPRODUCED\`.`,
+  );
+  lines.push('');
+  lines.push('```sh');
+  lines.push('npm install --no-save @playwright/test && npx playwright install chromium');
+  lines.push(`BASE_URL=http://localhost:3000 npx playwright test ${repro.path}`);
+  lines.push('```');
+  lines.push('');
+  if (repro.fixme) {
+    lines.push(`> ${escapeInline(oneLine(repro.fixme))}`);
+    lines.push('');
+    lines.push('The test is marked `fixme` until you add an assertion.');
+  } else {
+    lines.push('- `REPRODUCED` (fails): a recorded error happened again.');
+    lines.push(
+      '- `INCONCLUSIVE` (fails): the replay did not reach the bug, so it shows nothing about a fix.',
+    );
+    lines.push(
+      '- `NOT REPRODUCED` (passes): every step ran and no recorded error happened again. It does not prove the bug is fixed.',
+    );
+  }
+  lines.push('');
+  lines.push(
+    '`BASE_URL` is the server to test. The test refuses a non-local address and blocks requests that change data on non-local hosts unless `REPRO_ALLOW_REMOTE=1`. `REPRO_STORAGE_STATE` names a Playwright storage-state file to start signed in.',
+  );
+  // Items are recorded text: one line each, with backticks neutralised.
+  const list = (title: string, items: string[]) => {
+    if (items.length === 0) return;
+    lines.push('');
+    lines.push(title);
+    lines.push('');
+    for (const item of items) lines.push(`- ${item}`);
+  };
+  const text = (s: string) => escapeInline(oneLine(s));
+  list('Checked signals:', repro.signals.map(text));
+  list(
+    'Values to set (redacted when recorded):',
+    repro.envVars.map((v) => `\`${v.name}\`: ${text(v.label)}`),
+  );
+  list('Not replayed or not checked:', repro.gaps.map(text));
 }
 
 /**

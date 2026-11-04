@@ -281,6 +281,49 @@ describe('renderReport', () => {
     expect(md).not.toContain('openapi.json');
   });
 
+  it('describes an included repro test: how to run it, outcomes, signals and gaps', () => {
+    const md = renderReport({
+      ...buildSession(),
+      repro: {
+        path: 'repro.spec.ts',
+        steps: 4,
+        signals: ['[00:05] uncaught exception: TypeError: *total* is undefined'],
+        gaps: ['1 step(s) in another tab were not replayed'],
+        envVars: [{ name: 'REPRO_INPUT_1', label: 'input #password' }],
+      },
+    });
+    expect(md).toContain('- **Repro test:** `repro.spec.ts` (4 steps, 1 checked signal)');
+    const section = md.slice(md.indexOf('## Repro test'), md.indexOf('## Timeline'));
+    expect(section).toContain('Run it before you change any code');
+    expect(section).toContain('BASE_URL=http://localhost:3000 npx playwright test repro.spec.ts');
+    expect(section).toContain('`REPRODUCED`');
+    expect(section).toContain('`INCONCLUSIVE`');
+    expect(section).toContain('`NOT REPRODUCED`');
+    expect(section).toContain('- [00:05] uncaught exception: TypeError: *total* is undefined');
+    expect(section).toContain('`REPRO_INPUT_1`: input #password');
+    expect(section).toContain('1 step(s) in another tab were not replayed');
+  });
+
+  it('says when a repro test has nothing to check', () => {
+    const md = renderReport({
+      ...buildSession(),
+      repro: {
+        path: 'repro.spec.ts',
+        steps: 2,
+        signals: [],
+        gaps: [],
+        envVars: [],
+        fixme: 'Nothing to check: the recording has no error or failed request.',
+      },
+    });
+    expect(md).toContain('(2 steps, nothing to check)');
+    expect(md).toContain('Nothing to check: the recording has no error or failed request.');
+  });
+
+  it('omits the repro test when none was generated', () => {
+    expect(renderReport(buildSession())).not.toContain('Repro test');
+  });
+
   it("contains a known click's text", () => {
     const md = renderReport(buildSession());
     expect(md).toContain('CLICK "Submit order" (button#checkout, tab 1)');

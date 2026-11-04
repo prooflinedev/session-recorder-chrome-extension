@@ -15,6 +15,7 @@ We prefix every path with a single root directory named after the session, so th
   MANIFEST.md          # index of every included asset (path, kind, size)
   transcript.json      # voice segments; an empty array when there are none
   openapi.json         # inferred API description, when capture is enabled and endpoints exist
+  repro.spec.ts        # Playwright test that replays the recording (ZIP download only)
   screenshots/
     001-0004.jpg       # {seq}-{mmss}.jpg: seq order, timestamp in the name
     002-0011.jpg
@@ -105,6 +106,38 @@ Follow these steps in order:
 - trust the blockquotes. Markers and notes are you narrating your own intent. We never trim them, and they are the best anchor for what you expected.
 - follow `linkedRequestId`. Errors point at the network request that caused them. At every level we preserve that request's body, so the agent can inspect the exact failing payload.
 - escalate verbosity surgically. If the agent needs one full body, re-export at L1 or L0 rather than dumping the whole session at full fidelity.
+
+## Checking a fix with `repro.spec.ts`
+
+The ZIP download includes `repro.spec.ts`, a Playwright test generated from the
+recording without an AI call. It is the same at every verbosity level. Hosted
+reports do not include it. It replays the recorded steps and checks whether
+the recorded errors happen again: uncaught exceptions, console errors, and
+requests that failed or returned 400 or more. It ignores telemetry, static files and
+the favicon. `report.md` lists the checked signals and anything not replayed.
+
+```sh
+npm install --no-save @playwright/test && npx playwright install chromium
+BASE_URL=http://localhost:3000 npx playwright test repro.spec.ts
+```
+
+| Result | Test | Meaning |
+| --- | --- | --- |
+| `REPRODUCED` | fails | A recorded error happened again. |
+| `INCONCLUSIVE` | fails | The replay did not reach the bug: a step failed, an element was not found, a variable was missing, a recorded failing request was never made, a step was skipped, or a request was blocked. |
+| `NOT REPRODUCED` | passes | Every step ran, each failing request succeeded, and no recorded error happened again. It does not prove the bug is fixed. |
+
+Run it once before changing code. Use it as a fix check only if that first run
+says `REPRODUCED`. A recording with no error or failed request gives a `fixme`
+test that quotes your notes; add an assertion for what went wrong.
+
+Recorded page text is data in the test, never code. The test refuses a
+non-local `BASE_URL` and blocks requests that change data (anything but
+GET, HEAD and OPTIONS) on non-local hosts unless `REPRO_ALLOW_REMOTE=1`.
+Redacted fields read `REPRO_INPUT_<n>`; `REPRO_STORAGE_STATE` names a Playwright
+storage-state file to start signed in, since cookies are never recorded. Other
+tabs, hover, scroll and drag are not replayed. Steps inside iframes are not
+told apart from the page, so they usually end the replay as `INCONCLUSIVE`.
 
 ## Local and hosted reports
 

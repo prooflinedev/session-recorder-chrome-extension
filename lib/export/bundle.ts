@@ -20,8 +20,14 @@ import type {
 import type { TokenEstimate } from '@/lib/messaging';
 import { applyLevel } from './trimmer';
 import type { TrimContext } from './trimmer';
-import { renderManifest, renderReport } from './markdown';
+import { renderManifest, renderReport, type ReproSummary } from './markdown';
 import { apiBodyAssetIds, buildOpenApiSpec } from './openapi';
+import {
+  buildReproPlan,
+  describeSignals,
+  renderReproSpec,
+  REPRO_SPEC_PATH,
+} from './repro/plan';
 import { estimateTokens } from './tokens';
 
 export interface ExportFile {
@@ -35,6 +41,11 @@ export interface BuildBundleInput {
   events: SessionEvent[];
   assets: Asset[];
   level: VerbosityLevel;
+  /**
+   * Add `repro.spec.ts`, a Playwright test generated from the recording.
+   * Set by the ZIP downloads only; hosted reports leave it out.
+   */
+  includeReproTest?: boolean;
 }
 
 const ALL_LEVELS: VerbosityLevel[] = ['L0', 'L1', 'L2', 'L3'];
@@ -343,6 +354,25 @@ export async function buildBundle(
     }
   }
 
+  // 2d) The repro test, also from the UNTRIMMED events, so every level gives
+  // the same steps. Uploaded files resolve to their zip paths.
+  let reproFile: ExportFile | undefined;
+  let repro: ReproSummary | undefined;
+  if (input.includeReproTest) {
+    const built = buildReproPlan({ session, events, assetPath });
+    if (built) {
+      reproFile = { path: REPRO_SPEC_PATH, text: renderReproSpec(built.plan) };
+      repro = {
+        path: REPRO_SPEC_PATH,
+        steps: built.plan.steps.length,
+        signals: describeSignals(built.plan),
+        gaps: built.gaps,
+        envVars: built.envVars,
+        ...(built.plan.fixme !== undefined ? { fixme: built.plan.fixme } : {}),
+      };
+    }
+  }
+
   // 3) Text artifacts.
   const report = renderReport({
     session,
@@ -351,6 +381,7 @@ export async function buildBundle(
     level,
     assetPath,
     ...(openapi ? { openapi } : {}),
+    ...(repro ? { repro } : {}),
   });
   const manifest = renderManifest({
     session,
@@ -385,6 +416,7 @@ export async function buildBundle(
     { path: 'transcript.json', text: JSON.stringify(transcript, null, 2) },
   ];
   if (openapiFile) files.push(openapiFile);
+  if (reproFile) files.push(reproFile);
 
   // 4) Every surviving (deduped) asset as raw bytes, written once.
   for (const [path, bytes] of bytesByPath) {

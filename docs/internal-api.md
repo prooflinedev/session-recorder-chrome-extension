@@ -38,7 +38,7 @@ Voice events retain retry generation and request identity locally. Export remove
 
 [`lib/export/trimmer.ts`](../lib/export/trimmer.ts) applies deterministic cumulative levels to cloned events. It uses protected signals and error-linked request IDs to preserve relevant evidence. It does not call an AI provider.
 
-[`lib/export/bundle.ts`](../lib/export/bundle.ts) selects referenced assets, deduplicates bytes, assigns relative paths and rewrites exported asset references. [`lib/export/markdown.ts`](../lib/export/markdown.ts) renders the report and manifest. [`lib/export/zip.ts`](../lib/export/zip.ts) packages the files. [`lib/export/openapi.ts`](../lib/export/openapi.ts) infers an optional API description from untrimmed network events.
+[`lib/export/bundle.ts`](../lib/export/bundle.ts) selects referenced assets, deduplicates bytes, assigns relative paths and rewrites exported asset references. [`lib/export/markdown.ts`](../lib/export/markdown.ts) renders the report and manifest. [`lib/export/zip.ts`](../lib/export/zip.ts) packages the files. [`lib/export/openapi.ts`](../lib/export/openapi.ts) infers an optional API description from untrimmed network events. [`lib/export/repro/plan.ts`](../lib/export/repro/plan.ts) builds the repro test's plan from untrimmed events and embeds it as JSON in the fixed runner [`lib/export/repro/runner.template.ts`](../lib/export/repro/runner.template.ts); recorded text never becomes code.
 
 [`lib/export/report-html.ts`](../lib/export/report-html.ts) renders the shareable HTML report. Markdown and captured content are untrusted; keep sanitization and escaping at rendering boundaries. [Report format](report-format.md) describes the artifacts and trimming levels.
 

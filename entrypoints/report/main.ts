@@ -534,7 +534,7 @@ downloadBtn.addEventListener('click', async () => {
       getAssets(sessionId),
     ]);
     if (!session) return;
-    const files = await buildBundle({ session, events, assets, level });
+    const files = await buildBundle({ session, events, assets, level, includeReproTest: true });
     const folder = sessionFolderName(session);
     const bytes = await zipFiles(files, folder);
     const url = URL.createObjectURL(new Blob([bytes], { type: 'application/zip' }));
