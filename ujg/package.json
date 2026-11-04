@@ -1,0 +1,18 @@
+{
+  "name": "session-recorder-ujg",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "capture": "pnpm --dir .. build && node scripts/capture-ujg-screenshots.mjs",
+    "check": "node scripts/capture-ujg-screenshots.mjs --check",
+    "test": "node --test scripts/ujg-screenshot-capture.test.mjs",
+    "validate": "node scripts/ujg-composition-validate.mjs",
+    "verify": "pnpm run validate && pnpm run test && pnpm run check"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1",
+    "pngjs": "7.0.0"
+  },
+  "packageManager": "pnpm@11.6.0"
+}
