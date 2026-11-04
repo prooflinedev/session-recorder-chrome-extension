@@ -63,6 +63,8 @@ const TIMER_SLACK_MS = 50;
 const LABEL_ACTIVATION_MS = 50;
 const SETTLE_EXTRA_MS = 1500;
 const SETTLE_MAX_MS = 15_000;
+/** A dropped file is captured just after the error its drop handler throws. */
+const DROPPED_FILE_AFTER_SIGNAL_MS = 1000;
 const NOTE_CAP = 300;
 const PATTERN_TEXT_CAP = 160;
 
@@ -139,8 +141,9 @@ export function buildReproPlan(input: BuildReproInput): BuiltRepro | undefined {
   const inPrimary = (e: SessionEvent) =>
     primary === undefined || e.tabId === undefined || e.tabId === primary;
 
-  const signals = collectSignals(events.filter(inPrimary));
-  const lastSignalAt = signals.length > 0 ? Math.max(...signals.map((s) => s.at)) : Infinity;
+  const collected = collectSignals(events.filter(inPrimary), session.startedAt);
+  const lastSignalAt =
+    collected.signals.length > 0 ? Math.max(...collected.signals.map((s) => s.at)) : Infinity;
 
   const blockers: string[] = [];
   const gaps: string[] = [];
@@ -234,7 +237,9 @@ export function buildReproPlan(input: BuildReproInput): BuiltRepro | undefined {
 
   blockers.push(...moveLateInputs(steps));
   for (const e of events) {
-    if (e.type !== 'file-captured' || usedFiles.has(e) || e.t > lastSignalAt || !inPrimary(e)) continue;
+    if (e.type !== 'file-captured' || usedFiles.has(e) || !inPrimary(e)) continue;
+    // A drop handler that throws records its error before the file is captured.
+    if (e.t > lastSignalAt + DROPPED_FILE_AFTER_SIGNAL_MS) continue;
     blockers.push(
       `the file "${e.payload.fileName}" reached the page without a file field (for example by drag and drop) and is not replayed`,
     );
@@ -242,24 +247,44 @@ export function buildReproPlan(input: BuildReproInput): BuiltRepro | undefined {
   if (otherTabSteps > 0) {
     blockers.push(`${otherTabSteps} step(s) in another tab were not replayed`);
   }
-  const otherTabSignals = collectSignals(events.filter((e) => !inPrimary(e)));
-  if (otherTabSignals.length > 0) {
+  const otherTab = collectSignals(events.filter((e) => !inPrimary(e)), session.startedAt);
+  if (otherTab.signals.length > 0) {
     blockers.push('errors happened in another tab, which this replay does not check');
   }
   if (events.some((e) => e.type === 'session-note' && e.payload.kind === 'detach')) {
     gaps.push('the debugger detached during recording, so some errors may be missing');
   }
+  for (const text of collected.unmatchable) {
+    gaps.push(`a console error that logged only an object is not checked: ${text}`);
+  }
 
-  // Each signal counts only for what the replay does after the step it followed.
-  for (const s of signals) {
+  // Each signal counts only for what the replay does after the step that was
+  // running when its cause started. Requests that failed after the same step
+  // with the same body are one check.
+  const signals: Signal[] = [];
+  const requestKeys = new Set<string>();
+  for (const s of collected.signals) {
+    const start = collected.startedAt.get(s) ?? s.at;
     let after = 0;
     steps.forEach((step, i) => {
-      if (step.at <= s.at) after = i;
+      if (step.at <= start) after = i;
     });
     s.afterStep = after;
+    if (s.kind === 'request') {
+      const key = JSON.stringify([s.method, s.pathPattern, s.status, s.fields, s.afterStep]);
+      if (requestKeys.has(key)) continue;
+      requestKeys.add(key);
+    }
+    signals.push(s);
   }
 
   const lastStepAt = steps[steps.length - 1]!.at;
+  const lateBy = lastSignalAt - lastStepAt;
+  if (signals.length > 0 && lateBy + SETTLE_EXTRA_MS > SETTLE_MAX_MS) {
+    blockers.push(
+      `the recorded error came ${Math.round(lateBy / 1000)} s after the last step; the replay waits at most ${SETTLE_MAX_MS / 1000} s`,
+    );
+  }
   const body: Omit<Plan, 'id'> = {
     version: 1,
     title: `Repro: ${session.name}`.slice(0, 120),
@@ -456,31 +481,40 @@ function escapeRegExp(s: string): string {
 }
 
 /**
- * Parts of a message that differ between runs: URL origins, UUIDs, ids made
- * of letters and digits (`ord_8f3kLm2QzX`, `pi_3Nc…`, long hex), and numbers.
+ * Parts of a message that differ between runs: URL origins (http, ws), host
+ * and port pairs, UUIDs, ids made of letters and digits (`ord_8f3kLm2QzX`,
+ * `pi_3Nc…`, long hex), and numbers.
  */
 const VARIABLE_TOKEN =
-  /(https?:\/\/[^\s/'"`)]+)|([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})|(\b(?=[\w-]*\d)(?=[\w-]*[A-Za-z])[\w-]{6,}\b)|(\d+)/gi;
+  /((?:https?|wss?):\/\/[^\s/'"`)]+)|(\b(?:localhost|\d{1,3}(?:\.\d{1,3}){3}|[a-z0-9-]+(?:\.[a-z0-9-]+)+):\d{2,5}\b)|([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})|(\b(?=[\w-]*\d)(?=[\w-]*[A-Za-z])[\w-]{6,}\b)|(\d+)/gi;
 
 /**
- * Where the recorder's text for a logged object starts: CDP prints `Object`,
- * `Array(2)` and so on, while Playwright prints the object's contents.
+ * The recorder's text for a logged object: CDP prints `Object`, `Array(2)` and
+ * so on, while Playwright prints the object's contents.
  */
-const OBJECT_PLACEHOLDER = /\s(?:Object|Array\(\d+\)|Map\(\d+\)|Set\(\d+\))(?=\s|$)/;
-const MIN_PREFIX = 4;
+const OBJECT_PLACEHOLDER = /(?<=^|\s)(?:Object|Array\(\d+\)|Map\(\d+\)|Set\(\d+\))(?=\s|$)/g;
+/** Literal characters a pattern needs, so it does not match every message. */
+const MIN_LITERAL = 4;
 
-/** A search pattern for a message: origins, ids and numbers may differ. */
-function messagePattern(raw: string): string {
-  const cut = raw.search(OBJECT_PLACEHOLDER);
-  const text = cut >= MIN_PREFIX ? raw.slice(0, cut) : raw;
+function tokenPattern(text: string): string {
   let out = '';
   let last = 0;
   for (const m of text.matchAll(VARIABLE_TOKEN)) {
     out += escapeRegExp(text.slice(last, m.index));
-    out += m[1] ? 'https?://[^\\s/]+' : m[4] ? '\\d+' : '[\\w-]+';
+    out += m[1] ? '(?:https?|wss?)://[^\\s/]+' : m[2] ? '[\\w.-]+:\\d+' : m[5] ? '\\d+' : '[\\w-]+';
     last = m.index! + m[0].length;
   }
   return out + escapeRegExp(text.slice(last));
+}
+
+/**
+ * A search pattern for a message: origins, ids, numbers and logged objects may
+ * differ. Undefined when nothing but objects is left to match.
+ */
+function messagePattern(raw: string): string | undefined {
+  const parts = raw.split(OBJECT_PLACEHOLDER);
+  if (parts.join('').replace(/\s/g, '').length < MIN_LITERAL) return undefined;
+  return parts.map(tokenPattern).join('[\\s\\S]+?');
 }
 
 const REDACTED = '«redacted»';
@@ -518,19 +552,39 @@ function messageText(raw: string): string {
   return (raw.split('\n')[0] ?? '').trim().replace(/^Uncaught\s+/, '').slice(0, PATTERN_TEXT_CAP);
 }
 
-function collectSignals(events: SessionEvent[]): Signal[] {
-  const out: Signal[] = [];
+interface Collected {
+  signals: Signal[];
+  /** When each signal's cause started: a request's start, else the signal's time. */
+  startedAt: Map<Signal, number>;
+  /** Messages that cannot be matched (only a logged object). */
+  unmatchable: string[];
+}
+
+/**
+ * Error signals in `events`. Messages are kept once per pattern. Requests are
+ * all kept here; buildReproPlan merges the ones that follow the same step with
+ * the same body.
+ */
+function collectSignals(events: SessionEvent[], sessionStart: number): Collected {
+  const signals: Signal[] = [];
+  const startedAt = new Map<Signal, number>();
+  const unmatchable: string[] = [];
   const seen = new Set<string>();
-  const push = (key: string, s: Signal) => {
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push(s);
+  const add = (s: Signal, start: number) => {
+    signals.push(s);
+    startedAt.set(s, start);
   };
   const message = (kind: 'exception' | 'console', raw: string, at: number) => {
     const text = messageText(raw);
     if (!text) return;
     const pattern = messagePattern(text);
-    push(`${kind}:${pattern}`, { kind, text, pattern, at, afterStep: 0 });
+    if (pattern === undefined) {
+      unmatchable.push(text);
+      return;
+    }
+    if (seen.has(`${kind}:${pattern}`)) return;
+    seen.add(`${kind}:${pattern}`);
+    add({ kind, text, pattern, at, afterStep: 0 }, at);
   };
 
   for (const e of events) {
@@ -559,19 +613,23 @@ function collectSignals(events: SessionEvent[]): Signal[] {
         .split('/')
         .map((seg) => (seg === ':id' ? '[^/]+' : escapeRegExp(seg)))
         .join('/')}$`;
-      push(`request:${method}:${pathPattern}`, {
-        kind: 'request',
-        method,
-        path: url.pathname,
-        pathPattern,
-        status: p.failed === true || p.status === undefined ? 'failed' : p.status,
-        fields: filledFields(p.requestBody),
-        at: e.t,
-        afterStep: 0,
-      });
+      add(
+        {
+          kind: 'request',
+          method,
+          path: url.pathname,
+          pathPattern,
+          status: p.failed === true || p.status === undefined ? 'failed' : p.status,
+          fields: filledFields(p.requestBody),
+          at: e.t,
+          afterStep: 0,
+        },
+        // e.t is when the response finished; the step that caused it ran at the start.
+        p.timing?.startedAt !== undefined ? Math.min(e.t, p.timing.startedAt - sessionStart) : e.t,
+      );
     }
   }
-  return out;
+  return { signals, startedAt, unmatchable };
 }
 
 function fixmeReason(events: SessionEvent[]): string {

@@ -131,7 +131,7 @@ that config.
 | --- | --- | --- |
 | `REPRODUCED` | fails | A recorded error happened again. |
 | `INCONCLUSIVE` | fails | The replay did not reach the bug: a step failed, an element was not found, a variable was missing, a recorded failing request was never made, a step was skipped, or a request was blocked. |
-| `NOT REPRODUCED` | passes | An earlier run reproduced the bug against the same server, every step ran, each failing request was sent again with the recorded fields and succeeded, nothing was left pending, and no recorded error happened again. It does not prove the bug is fixed. |
+| `NOT REPRODUCED` | passes | An earlier run reproduced the bug against the same server and sign-in state, every step ran, each failing request was sent again after its step with the recorded fields and succeeded (2xx or 304), nothing was left pending or blocked, and no recorded error happened again. It does not prove the bug is fixed. |
 
 Run it once on the unfixed code. A run that says `REPRODUCED` writes
 `.repro-baseline.json` next to the test, and `NOT REPRODUCED` is only possible
@@ -150,12 +150,37 @@ Pausing briefly after typing avoids this.
 Recorded page text is data in the test, never code. The test refuses a
 non-local `BASE_URL` and navigation to non-local hosts, and blocks requests
 that change data (anything but GET, HEAD and OPTIONS) there, unless
-`REPRO_ALLOW_REMOTE=1`. After the last step it waits up to `REPRO_WAIT_MS`
-(30000) for pending requests; one still pending gives `INCONCLUSIVE`.
+`REPRO_ALLOW_REMOTE=1`. Redirect hops and WebSockets to non-local hosts cannot
+always be stopped before they are sent; a run that reaches one is
+`INCONCLUSIVE`. After the last step the test waits up to `REPRO_WAIT_MS`
+(30000) for pending requests; one still pending gives `INCONCLUSIVE`, and
+`REPRO_IGNORE_PENDING` names paths, such as a long poll, not to wait for. A
+retried run (`--retries`) cannot pass.
 Redacted fields read `REPRO_INPUT_<n>`; `REPRO_STORAGE_STATE` names a Playwright
 storage-state file to start signed in, since cookies are never recorded. Other
 tabs, hover, scroll and drag are not replayed. Steps inside iframes are not
 told apart from the page, so they usually end the replay as `INCONCLUSIVE`.
+
+### Known limits
+
+`NOT REPRODUCED` means the checks above passed, not that the bug is gone:
+
+- Exceptions and console errors are checked by their absence only. The
+  baseline shows that the replay once reproduced them; it cannot show that a
+  later replay reached the same point.
+- Failing requests are checked by method, path, status and the top-level JSON
+  or form fields that had values. Multipart and query-string bodies get no
+  field check.
+- Messages are matched with numbers, ids containing digits, hosts and logged
+  objects left open. Ids made only of letters are not.
+- A value typed less than 800 ms before a click or Enter is flagged, so a fixed
+  build reports `INCONCLUSIVE` rather than `NOT REPRODUCED`.
+- An error recorded more than 15 s after the last step is flagged; the replay
+  does not wait that long.
+- Other tabs, iframes, shadow DOM, hover, drag and dropped files are not
+  replayed; when they matter the run is `INCONCLUSIVE`.
+- A committed baseline is a record of an earlier run, not a check of the CI
+  environment.
 
 ## Local and hosted reports
 

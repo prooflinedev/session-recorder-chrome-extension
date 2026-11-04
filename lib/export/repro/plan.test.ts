@@ -372,14 +372,63 @@ describe('buildReproPlan signals', () => {
     expect(built?.plan.signals).toEqual([]);
   });
 
-  it('asserts each signal once', () => {
+  it('asserts each message once, and each failing request once per step and body', () => {
+    const body = (text: string) => ({ requestBody: { present: true, text, mime: 'application/json' } });
     const { plan: p } = plan([
       exception(200, 'Error: boom'),
       exception(300, 'Error: boom'),
       request(400, 'GET', 'https://shop.example.com/api/items/1', 500),
-      request(500, 'GET', 'https://shop.example.com/api/items/2', 502),
+      request(500, 'GET', 'https://shop.example.com/api/items/2', 500), // same step, same body
+      request(550, 'POST', 'https://shop.example.com/api/draft', 500, body('{}')), // page load
+      click(1000, apply),
+      request(1010, 'POST', 'https://shop.example.com/api/draft', 500, body('{"title":"Hi","body":"x"}')),
     ]);
-    expect(p.signals.map((s) => s.kind)).toEqual(['exception', 'request']);
+    expect(p.signals.map((s) => [s.kind, s.afterStep, s.kind === 'request' ? s.fields : null])).toEqual([
+      ['exception', 0, null],
+      ['request', 0, []],
+      ['request', 0, []],
+      ['request', 1, ['title', 'body']],
+    ]);
+  });
+
+  it('places a failing request after the step that was running when it started', () => {
+    // Apply sends a slow request; the user clicks Other before it answers.
+    const started = session().startedAt;
+    const { plan: p } = plan([
+      click(1000, apply),
+      click(1500, el({ tag: 'button', id: 'other', text: 'Other', selector: '#other' })),
+      request(2600, 'POST', 'https://shop.example.com/api/coupon', 500, { timing: { startedAt: started + 1100 } }),
+    ]);
+    expect(p.signals[0]!.afterStep).toBe(1);
+  });
+
+  it('matches console text around logged objects, and skips text that is only an object', () => {
+    const built = plan([
+      ev('console', 200, { level: 'error', text: 'Object save failed' }),
+      ev('console', 210, { level: 'error', text: 'Object' }),
+      ev('console', 220, { level: 'error', text: 'retry Object in Array(2) ms' }),
+      ev('console', 230, { level: 'error', text: 'socket wss://rt.example.com/live closed at localhost:3000' }),
+    ]);
+    const res = built.plan.signals.map((s) => new RegExp((s as { pattern: string }).pattern));
+    expect(res).toHaveLength(3);
+    expect(res[0]!.test('{status: 500} save failed')).toBe(true);
+    expect(res[1]!.test('retry {a: 1} in [1, 2] ms')).toBe(true);
+    expect(res[2]!.test('socket ws://localhost:4000/live closed at 127.0.0.1:5173')).toBe(true);
+    expect(built.gaps).toEqual([expect.stringContaining('only an object')]);
+  });
+
+  it('flags a signal that came later than the replay waits', () => {
+    const { plan: p } = plan([click(100, apply), exception(17_200, 'Error: late')]);
+    expect(p.settleMs).toBe(15_000);
+    expect(p.blockers).toEqual([expect.stringContaining('17 s after the last step')]);
+  });
+
+  it('flags a dropped file captured just after the error its drop caused', () => {
+    const { plan: p } = plan([
+      exception(1000, 'Error: bad drop'),
+      ev('file-captured', 1004, { assetId: 'ast_d', fileName: 'rows.csv', mime: 'text/csv', size: 9 }),
+    ]);
+    expect(p.blockers).toEqual([expect.stringContaining('rows.csv')]);
   });
 
   it('names the step each signal followed, so the replay counts only what happens after it', () => {
@@ -390,7 +439,12 @@ describe('buildReproPlan signals', () => {
       exception(1020, 'Error: x'),
     ]);
     expect(p.steps.map((s) => s.kind)).toEqual(['goto', 'click']);
-    expect(p.signals.map((s) => s.afterStep)).toEqual([0, 1]);
+    // The page-load failure and the one after the click are separate checks.
+    expect(p.signals.map((s) => [s.kind, s.afterStep])).toEqual([
+      ['request', 0],
+      ['request', 1],
+      ['exception', 1],
+    ]);
   });
 
   it('keeps the request fields that had values, so an emptied field does not count as reached', () => {

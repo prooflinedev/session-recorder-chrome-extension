@@ -14,7 +14,7 @@ import { unzipSync } from 'fflate';
 import type { BrowserContext, Page, Worker } from '@playwright/test';
 import { test, expect, extUrl, dispatch, tabIdForUrl } from './support';
 
-type Mode = 'buggy' | 'fixed' | 'moved' | 'swallowed' | 'hidden' | 'slow-buggy';
+type Mode = 'buggy' | 'fixed' | 'moved' | 'swallowed' | 'hidden' | 'slow-buggy' | 'signed-out' | 'down';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = path.join(ROOT, 'node_modules', '@playwright', 'test', 'cli.js');
@@ -33,6 +33,7 @@ function page(mode: Mode): string {
   return `<!doctype html><html><head><meta charset="utf-8"><title>Coupon</title></head><body>
 <label>Coupon code <input id="code" aria-label="Coupon code"></label>
 <label>Receipt <input id="receipt" type="file"></label>
+<a id="help" href="/help" target="_blank">Help</a>
 ${button}
 <p>Total: $<span id="total">120.00</span></p>
 <script>
@@ -56,6 +57,14 @@ async function startApp() {
         // The bug needs the code: an empty coupon is a plain 200.
         const code = (JSON.parse(body || '{}') as { code?: string }).code ?? '';
         const fails = code !== '' && (mode === 'buggy' || mode === 'swallowed' || mode === 'slow-buggy');
+        if (mode === 'signed-out') {
+          res.writeHead(302, { location: '/login' }).end();
+          return;
+        }
+        if (mode === 'down') {
+          res.writeHead(502).end('bad gateway');
+          return;
+        }
         // A slow server, such as a dev server still compiling the change.
         setTimeout(
           () => {
@@ -77,6 +86,11 @@ async function startApp() {
         res.writeHead(fails ? 500 : 200, { 'content-type': 'text/html' });
         res.end(fails ? '<p>coupon service failed</p>' : '<p>applied</p>');
       });
+      return;
+    }
+    if (req.url === '/help' || req.url === '/login') {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end('<!doctype html><p>page</p>');
       return;
     }
     if (req.url === '/form') {
@@ -218,6 +232,10 @@ test('the exported repro test reproduces, clears and stays honest', async ({
     // 1) Record: attach a file, type a coupon, pause like a person, apply it.
     //    The API fails and the page throws.
     const zip = await recordAndExport(context, background, extensionId, `${app.origin}/`, async (tab) => {
+      // Opens a popup, which the replay must survive.
+      const popup = tab.context().waitForEvent('page');
+      await tab.click('#help');
+      await (await popup).close();
       await tab.setInputFiles('#receipt', PLANTED);
       await tab.fill('#code', 'SAVE20');
       await tab.waitForTimeout(1200);
@@ -258,6 +276,21 @@ test('the exported repro test reproduces, clears and stays honest', async ({
     const unconfirmed = await runExported(fresh, { BASE_URL: app.origin });
     expect(unconfirmed.outcome, unconfirmed.output).toBe('INCONCLUSIVE');
     expect(unconfirmed.output).toContain('no earlier run of this test reproduced the bug');
+
+    // 3b2) Signed out: the request is redirected to the sign-in page. That is
+    //     not the request succeeding.
+    app.setMode('signed-out');
+    const signedOut = await runExported(dir, { BASE_URL: app.origin });
+    expect(signedOut.outcome, signedOut.output).toBe('INCONCLUSIVE');
+    expect(signedOut.output).toContain('got 302');
+
+    // 3b3) The backend is down: a 502 is not the recorded 500, and it must not
+    //     become a baseline.
+    app.setMode('down');
+    const down = await runExported(fresh, { BASE_URL: app.origin });
+    expect(down.outcome, down.output).toBe('INCONCLUSIVE');
+    expect(down.output).toContain('got 502, not the recorded 500');
+    expect(fs.existsSync(path.join(fresh, '.repro-baseline.json')), 'no baseline from a 502').toBe(false);
 
     // 3c) Still buggy behind a slow server: the replay waits for the request.
     app.setMode('slow-buggy');
