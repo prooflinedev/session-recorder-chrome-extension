@@ -14,7 +14,7 @@ import { unzipSync } from 'fflate';
 import type { BrowserContext, Page, Worker } from '@playwright/test';
 import { test, expect, extUrl, dispatch, tabIdForUrl } from './support';
 
-type Mode = 'buggy' | 'fixed' | 'moved' | 'swallowed' | 'hidden';
+type Mode = 'buggy' | 'fixed' | 'moved' | 'swallowed' | 'hidden' | 'slow-buggy';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = path.join(ROOT, 'node_modules', '@playwright', 'test', 'cli.js');
@@ -55,10 +55,35 @@ async function startApp() {
       req.on('end', () => {
         // The bug needs the code: an empty coupon is a plain 200.
         const code = (JSON.parse(body || '{}') as { code?: string }).code ?? '';
-        const fails = code !== '' && (mode === 'buggy' || mode === 'swallowed');
-        res.writeHead(fails ? 500 : 200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify(fails ? { error: 'coupon service failed' } : { total: code ? 96 : 120 }));
+        const fails = code !== '' && (mode === 'buggy' || mode === 'swallowed' || mode === 'slow-buggy');
+        // A slow server, such as a dev server still compiling the change.
+        setTimeout(
+          () => {
+            res.writeHead(fails ? 500 : 200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify(fails ? { error: 'coupon service failed' } : { total: code ? 96 : 120 }));
+          },
+          mode === 'slow-buggy' ? 2500 : 0,
+        );
       });
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/a/coupon') {
+      // A plain HTML form post: the page navigates, and the typed value goes with it.
+      let body = '';
+      req.on('data', (d) => (body += d));
+      req.on('end', () => {
+        const code = new URLSearchParams(body).get('code') ?? '';
+        const fails = code !== '' && mode === 'buggy';
+        res.writeHead(fails ? 500 : 200, { 'content-type': 'text/html' });
+        res.end(fails ? '<p>coupon service failed</p>' : '<p>applied</p>');
+      });
+      return;
+    }
+    if (req.url === '/form') {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end(
+        '<!doctype html><form method="post" action="/a/coupon"><input id="fcode" name="code" aria-label="Code"><button id="fapply">Apply</button></form>',
+      );
       return;
     }
     if (req.url === '/') {
@@ -89,12 +114,12 @@ async function recordAndExport(
   context: BrowserContext,
   background: Worker,
   extensionId: string,
-  origin: string,
+  url: string,
   act: (tab: Page) => Promise<void>,
 ): Promise<Record<string, Uint8Array>> {
   const tab = await context.newPage();
-  await tab.goto(origin + '/');
-  const tabId = await tabIdForUrl(background, origin);
+  await tab.goto(url);
+  const tabId = await tabIdForUrl(background, url);
   const started = await dispatch<{ ok: boolean; session?: { id: string } }>(background, {
     kind: 'session/start',
     tabId,
@@ -122,9 +147,13 @@ async function recordAndExport(
   return unzipSync(Uint8Array.from(bytes));
 }
 
-/** Writes every ZIP entry into a fresh folder outside the repository. */
+/**
+ * Writes every ZIP entry into a fresh folder outside the repository, under a
+ * parent folder named like a bundle folder ("Files"), which must not matter.
+ */
 function unpack(zip: Record<string, Uint8Array>): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'repro-export-'));
+  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'repro-export-')), 'Files', 'export');
+  fs.mkdirSync(dir, { recursive: true });
   for (const [name, data] of Object.entries(zip)) {
     const rel = name.split('/').slice(1).join('/'); // drop the session folder
     if (!rel || name.endsWith('/')) continue;
@@ -188,7 +217,7 @@ test('the exported repro test reproduces, clears and stays honest', async ({
   try {
     // 1) Record: attach a file, type a coupon, pause like a person, apply it.
     //    The API fails and the page throws.
-    const zip = await recordAndExport(context, background, extensionId, app.origin, async (tab) => {
+    const zip = await recordAndExport(context, background, extensionId, `${app.origin}/`, async (tab) => {
       await tab.setInputFiles('#receipt', PLANTED);
       await tab.fill('#code', 'SAVE20');
       await tab.waitForTimeout(1200);
@@ -215,11 +244,25 @@ test('the exported repro test reproduces, clears and stays honest', async ({
     expect(buggy.outcome, buggy.output).toBe('REPRODUCED');
     expect(buggy.output).toContain('POST /api/carts/4211/coupon');
 
+    expect(fs.existsSync(path.join(dir, '.repro-baseline.json')), 'baseline written').toBe(true);
+
     // 3) Fixed: every step ran, the request succeeded, no exception.
     app.setMode('fixed');
     const fixed = await runExported(dir, { BASE_URL: app.origin });
     expect(fixed.status, fixed.output).toBe(0);
     expect(fixed.outcome, fixed.output).toBe('NOT REPRODUCED');
+
+    // 3b) The same export never run on the unfixed code cannot report a fix.
+    const fresh = unpack(zip);
+    dirs.push(fresh);
+    const unconfirmed = await runExported(fresh, { BASE_URL: app.origin });
+    expect(unconfirmed.outcome, unconfirmed.output).toBe('INCONCLUSIVE');
+    expect(unconfirmed.output).toContain('no earlier run of this test reproduced the bug');
+
+    // 3c) Still buggy behind a slow server: the replay waits for the request.
+    app.setMode('slow-buggy');
+    const slow = await runExported(dir, { BASE_URL: app.origin });
+    expect(slow.outcome, slow.output).toBe('REPRODUCED');
 
     // 4) The page changed and the button is gone: not a fix, just unknown.
     app.setMode('moved');
@@ -243,15 +286,17 @@ test('the exported repro test reproduces, clears and stays honest', async ({
     const remote = await runExported(dir, { BASE_URL: 'http://example.invalid' });
     expect(remote.outcome, remote.output).toBe('INCONCLUSIVE');
     expect(remote.output).toContain('is not a local address');
-    const malformed = await runExported(dir, { BASE_URL: 'not a url' });
-    expect(malformed.outcome, malformed.output).toBe('INCONCLUSIVE');
-    expect(malformed.output).toContain('BASE_URL is not a valid URL');
+    for (const bad of ['not a url', 'localhost:3000']) {
+      const malformed = await runExported(dir, { BASE_URL: bad });
+      expect(malformed.outcome, malformed.output).toBe('INCONCLUSIVE');
+      expect(malformed.output).toContain('BASE_URL must be an http(s) URL');
+    }
 
     // 8) Typed and applied at once: the value is recorded after the click and
     //    the error. The replay still types it, so the bug reproduces; a fixed
     //    build cannot be confirmed (the value may be stale), never a false pass.
     app.setMode('buggy');
-    const fastZip = await recordAndExport(context, background, extensionId, app.origin, async (tab) => {
+    const fastZip = await recordAndExport(context, background, extensionId, `${app.origin}/`, async (tab) => {
       await tab.fill('#code', 'SAVE20');
       const failed = tab.waitForResponse('**/api/carts/4211/coupon');
       await tab.click('#apply');
@@ -266,6 +311,22 @@ test('the exported repro test reproduces, clears and stays honest', async ({
     const fastFixed = await runExported(fastDir, { BASE_URL: app.origin });
     expect(fastFixed.outcome, fastFixed.output).toBe('INCONCLUSIVE');
     expect(fastFixed.output).toContain('was recorded after the action that followed it');
+
+    // 9) A plain form typed and submitted at once: the page unloads before the
+    //    typed value is recorded. The buggy build must not look fixed.
+    app.setMode('buggy');
+    const formZip = await recordAndExport(context, background, extensionId, `${app.origin}/form`, async (tab) => {
+      await tab.fill('#fcode', 'SAVE20');
+      await Promise.all([tab.waitForURL('**/a/coupon'), tab.click('#fapply')]);
+      await tab.waitForTimeout(1500);
+    });
+    const formReport = new TextDecoder().decode(formZip[Object.keys(formZip).find((k) => k.endsWith('/report.md'))!]);
+    expect(formReport).toContain('POST /a/coupon returned 500');
+    const formDir = unpack(formZip);
+    dirs.push(formDir);
+    const formBuggy = await runExported(formDir, { BASE_URL: app.origin });
+    expect(formBuggy.outcome, formBuggy.output).toBe('INCONCLUSIVE');
+    expect(formBuggy.output).toContain('with code filled in');
   } finally {
     await app.close();
     for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });

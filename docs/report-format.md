@@ -131,11 +131,14 @@ that config.
 | --- | --- | --- |
 | `REPRODUCED` | fails | A recorded error happened again. |
 | `INCONCLUSIVE` | fails | The replay did not reach the bug: a step failed, an element was not found, a variable was missing, a recorded failing request was never made, a step was skipped, or a request was blocked. |
-| `NOT REPRODUCED` | passes | Every step ran, each failing request succeeded, and no recorded error happened again. It does not prove the bug is fixed. |
+| `NOT REPRODUCED` | passes | An earlier run reproduced the bug against the same server, every step ran, each failing request was sent again with the recorded fields and succeeded, nothing was left pending, and no recorded error happened again. It does not prove the bug is fixed. |
 
-Run it once before changing code. Use it as a fix check only if that first run
-says `REPRODUCED`. A recording with no error or failed request gives a `fixme`
-test that quotes your notes; add an assertion for what went wrong.
+Run it once on the unfixed code. A run that says `REPRODUCED` writes
+`.repro-baseline.json` next to the test, and `NOT REPRODUCED` is only possible
+with that file for the same plan and server, so a replay that never reproduced
+the bug here cannot report a fix. To run the test in CI, commit the baseline
+file with it. A recording with no error or failed request gives a `fixme` test
+that quotes your notes; add an assertion for what went wrong.
 
 The recorder posts a typed value about 800 ms after the last keystroke, so a
 value typed just before a click or Enter is recorded after that action. The
@@ -145,8 +148,10 @@ so a replay that needed it ends `INCONCLUSIVE` rather than `NOT REPRODUCED`.
 Pausing briefly after typing avoids this.
 
 Recorded page text is data in the test, never code. The test refuses a
-non-local `BASE_URL` and blocks requests that change data (anything but
-GET, HEAD and OPTIONS) on non-local hosts unless `REPRO_ALLOW_REMOTE=1`.
+non-local `BASE_URL` and navigation to non-local hosts, and blocks requests
+that change data (anything but GET, HEAD and OPTIONS) there, unless
+`REPRO_ALLOW_REMOTE=1`. After the last step it waits up to `REPRO_WAIT_MS`
+(30000) for pending requests; one still pending gives `INCONCLUSIVE`.
 Redacted fields read `REPRO_INPUT_<n>`; `REPRO_STORAGE_STATE` names a Playwright
 storage-state file to start signed in, since cookies are never recorded. Other
 tabs, hover, scroll and drag are not replayed. Steps inside iframes are not

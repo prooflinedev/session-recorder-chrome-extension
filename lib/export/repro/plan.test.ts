@@ -8,7 +8,7 @@ import type {
   SessionEvent,
 } from '@/lib/session/types';
 import template from './runner.template.ts?raw';
-import { buildReproPlan, renderReproSpec, REPRO_SPEC_PATH } from './plan';
+import { buildReproPlan, renderReproConfig, renderReproSpec, REPRO_SPEC_PATH } from './plan';
 
 const PRIMARY = 7;
 
@@ -55,7 +55,8 @@ const click = (t: number, d: ElementDescriptor, tabId?: number) =>
   ev('click', t, { descriptor: d, modifiers: [], button: 0 }, tabId);
 const input = (t: number, d: ElementDescriptor, value: string, inputType = 'text', redacted = false) =>
   ev('input', t, { descriptor: d, value, redacted, inputType });
-const exception = (t: number, message: string) => ev('error', t, { message, origin: 'exception' });
+const exception = (t: number, message: string, tabId?: number) =>
+  ev('error', t, { message, origin: 'exception' }, tabId);
 const request = (t: number, method: string, url: string, status: number, extra = {}) =>
   ev('net-request', t, {
     requestId: `r${t}`,
@@ -379,6 +380,86 @@ describe('buildReproPlan signals', () => {
       request(500, 'GET', 'https://shop.example.com/api/items/2', 502),
     ]);
     expect(p.signals.map((s) => s.kind)).toEqual(['exception', 'request']);
+  });
+
+  it('names the step each signal followed, so the replay counts only what happens after it', () => {
+    const { plan: p } = plan([
+      request(50, 'POST', 'https://shop.example.com/api/coupon', 500), // at page load
+      click(1000, apply),
+      request(1010, 'POST', 'https://shop.example.com/api/coupon', 500),
+      exception(1020, 'Error: x'),
+    ]);
+    expect(p.steps.map((s) => s.kind)).toEqual(['goto', 'click']);
+    expect(p.signals.map((s) => s.afterStep)).toEqual([0, 1]);
+  });
+
+  it('keeps the request fields that had values, so an emptied field does not count as reached', () => {
+    const body = (text: string, mime: string) => ({ requestBody: { present: true, text, mime } });
+    const { plan: p } = plan([
+      click(100, apply),
+      request(110, 'POST', 'https://shop.example.com/a/coupon', 500, body('code=SAVE20&note=&token=%C2%ABredacted%C2%BB', 'application/x-www-form-urlencoded')),
+      request(120, 'PUT', 'https://shop.example.com/api/cart', 500, body('{"qty":20,"gift":"","card":"«redacted»","items":[1]}', 'application/json')),
+    ]);
+    expect(p.signals.map((s) => (s.kind === 'request' ? s.fields : undefined))).toEqual([
+      ['code'],
+      ['qty', 'items'],
+    ]);
+  });
+
+  it('matches console errors whose objects the recorder printed as "Object"', () => {
+    const { plan: p } = plan([
+      ev('console', 200, { level: 'error', text: 'Failed to save Object' }),
+      ev('console', 210, { level: 'error', text: 'Bad rows Array(2) in import' }),
+    ]);
+    const res = p.signals.map((s) => new RegExp((s as { pattern: string }).pattern));
+    expect(res[0]!.test('Failed to save {status: 500}')).toBe(true);
+    expect(res[1]!.test('Bad rows [1, 2] in import')).toBe(true);
+  });
+
+  it('treats ids made of letters and digits as variable', () => {
+    const { plan: p } = plan([exception(200, 'Error: Order ord_8f3kLm2QzX not found (pi_3NcQ9fL2abc)')]);
+    const re = new RegExp((p.signals[0] as { pattern: string }).pattern);
+    expect(re.test('Error: Order ord_1Ab2Cd3EfG not found (pi_9ZzYy8XxWw)')).toBe(true);
+    expect(re.test('Error: Order lookup timed out')).toBe(false);
+  });
+
+  it('flags errors in other tabs, dropped files and multi-file uploads', () => {
+    const picker = el({ tag: 'input', id: 'docs', selector: '#docs' });
+    const { plan: p } = plan(
+      [
+        // Files are captured on change; the field's value is posted ~800 ms later.
+        ev('file-captured', 105, { assetId: 'ast_a', fileName: 'a.txt', mime: 'text/plain', size: 1 }),
+        ev('file-captured', 106, { assetId: 'ast_b', fileName: 'b.txt', mime: 'text/plain', size: 1 }),
+        input(905, picker, 'C:\\fakepath\\a.txt', 'file'),
+        ev('file-captured', 3000, { assetId: 'ast_c', fileName: 'dropped.csv', mime: 'text/csv', size: 1 }),
+        exception(3400, 'Error: other tab', 99),
+        exception(3500, 'Error: x'),
+      ],
+      session(),
+      (id) => `files/${id}`,
+    );
+    expect(p.blockers).toEqual([
+      expect.stringContaining('2 files'),
+      expect.stringContaining('dropped.csv'),
+      expect.stringContaining('another tab'),
+    ]);
+  });
+
+  it('identifies the plan, so a baseline from another export or runner does not count', () => {
+    const a = plan([click(100, apply), exception(200, 'Error: x')]).plan;
+    const b = plan([click(100, apply), exception(200, 'Error: y')]).plan;
+    expect(a.id).toMatch(/^[0-9a-f]{8,}$/);
+    expect(plan([click(100, apply), exception(200, 'Error: x')]).plan.id).toBe(a.id);
+    expect(b.id).not.toBe(a.id);
+  });
+});
+
+describe('renderReproConfig', () => {
+  it('matches only the test next to it, wherever the folder is', () => {
+    const config = renderReproConfig();
+    expect(config).toContain('testMatch');
+    expect(config).not.toContain('testIgnore');
+    expect(config).toContain("path.join(here, 'repro.spec.ts')");
   });
 });
 

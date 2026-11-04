@@ -357,12 +357,24 @@ export async function buildBundle(
   }
 
   // 2d) The repro test, also from the UNTRIMMED events, so every level gives
-  // the same steps. Uploaded files resolve to their zip paths.
+  // the same steps. Uploads use the file's own planned path (files/<name>),
+  // which does not depend on the level, and that file is written even when
+  // its bytes were deduplicated into another path.
   const reproFiles: ExportFile[] = [];
   let repro: ReproSummary | undefined;
   if (input.includeReproTest) {
-    const built = buildReproPlan({ session, events, assetPath });
+    const fileAssetPath = (id: string): string | undefined => {
+      const path = pathById.get(id);
+      return path?.startsWith('files/') ? path : undefined;
+    };
+    const built = buildReproPlan({ session, events, assetPath: fileAssetPath });
     if (built) {
+      for (const step of built.plan.steps) {
+        if (step.kind !== 'upload' || bytesByPath.has(step.file)) continue;
+        const id = [...pathById].find(([, path]) => path === step.file)?.[0];
+        const asset = id !== undefined ? assetById.get(id) : undefined;
+        if (asset) bytesByPath.set(step.file, new Uint8Array(await asset.blob.arrayBuffer()));
+      }
       reproFiles.push(
         { path: REPRO_SPEC_PATH, text: renderReproSpec(built.plan) },
         { path: REPRO_CONFIG_PATH, text: renderReproConfig() },

@@ -220,17 +220,23 @@ function renderRepro(repro: ReproSummary, lines: string[]): void {
     lines.push('');
     lines.push('The test is marked `fixme` until you add an assertion.');
   } else {
-    lines.push('- `REPRODUCED` (fails): a recorded error happened again.');
+    lines.push(
+      '- `REPRODUCED` (fails): a recorded error happened again. The first such run writes `.repro-baseline.json` next to the test.',
+    );
     lines.push(
       '- `INCONCLUSIVE` (fails): the replay did not reach the bug, so it shows nothing about a fix.',
     );
     lines.push(
-      '- `NOT REPRODUCED` (passes): every step ran and no recorded error happened again. It does not prove the bug is fixed.',
+      '- `NOT REPRODUCED` (passes): an earlier run reproduced the bug against the same server, every step ran, each failing request was sent again with the recorded fields and succeeded, nothing was left pending, and no recorded error happened again. It does not prove the bug is fixed.',
+    );
+    lines.push('');
+    lines.push(
+      'Without a baseline the test cannot pass, so a replay that never reproduced the bug cannot report a fix. To run it in CI, commit `.repro-baseline.json` with the test.',
     );
   }
   lines.push('');
   lines.push(
-    '`BASE_URL` is the server to test. The test refuses a non-local address and blocks requests that change data on non-local hosts unless `REPRO_ALLOW_REMOTE=1`. `REPRO_STORAGE_STATE` names a Playwright storage-state file to start signed in.',
+    '`BASE_URL` is the server to test. The test refuses non-local addresses, including navigation to them, and blocks requests that change data on non-local hosts, unless `REPRO_ALLOW_REMOTE=1`. It waits up to `REPRO_WAIT_MS` (30000) for pending requests. `REPRO_STORAGE_STATE` names a Playwright storage-state file to start signed in.',
   );
   // Items are recorded text: one line each, with backticks neutralised.
   const list = (title: string, items: string[]) => {

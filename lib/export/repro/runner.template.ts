@@ -4,26 +4,29 @@
  * It replays the recorded steps with Playwright and checks whether the errors
  * the recording captured happen again:
  *
- *   REPRODUCED      fails: a recorded error happened again.
+ *   REPRODUCED      fails: a recorded error happened again. The first such run
+ *                   writes .repro-baseline.json next to this file.
  *   INCONCLUSIVE    fails: the replay did not reach the bug, so it shows nothing
  *                   about a fix.
- *   NOT REPRODUCED  passes: every step ran, each failing request was made again
- *                   and succeeded, and no recorded error happened again. This is
- *                   not proof that the bug is fixed.
+ *   NOT REPRODUCED  passes: an earlier run reproduced the bug against the same
+ *                   target, every step ran, each failing request was sent again
+ *                   with the recorded fields and succeeded, nothing was left
+ *                   pending, and no recorded error happened again. This is not
+ *                   proof that the bug is fixed.
  *
- * Run it before changing code; use it as a fix check only if that run says
- * REPRODUCED. Environment variables:
+ * Run it on the unfixed code first. Environment variables:
  *
  *   BASE_URL              origin to replay against (default: the recorded origin)
- *   REPRO_ALLOW_REMOTE=1  allow a non-local target and mutating requests to
- *                         non-local hosts (blocked by default)
+ *   REPRO_ALLOW_REMOTE=1  allow a non-local target, navigation to non-local
+ *                         hosts and requests that change data there
  *   REPRO_STORAGE_STATE   Playwright storage-state file to start signed in
  *   REPRO_INPUT_<n>       values for redacted fields (see PLAN.steps)
+ *   REPRO_WAIT_MS         how long to wait for pending requests (default 30000)
  *
  * PLAN below is data recorded from the page. The code in this file does not
  * change between recordings.
  */
-import { test, type Locator, type Page } from '@playwright/test';
+import { test, type Locator, type Page, type Request } from '@playwright/test';
 
 // --- Plan types --------------------------------------------------------------
 
@@ -54,17 +57,29 @@ export type Step =
   | { kind: 'press'; key: string; at: number };
 
 export type Signal =
-  | { kind: 'exception' | 'console'; text: string; pattern: string; at: number }
+  | {
+      kind: 'exception' | 'console';
+      text: string;
+      pattern: string;
+      at: number;
+      /** Index of the step this signal followed in the recording. */
+      afterStep: number;
+    }
   | {
       kind: 'request';
       method: string;
       path: string;
       pathPattern: string;
       status: number | 'failed';
+      /** Body fields that had a value in the recorded request. */
+      fields: string[];
       at: number;
+      afterStep: number;
     };
 
 export interface Plan {
+  /** Identifies this plan in .repro-baseline.json. */
+  id: string;
   version: 1;
   title: string;
   recordedOrigin: string;
@@ -81,6 +96,8 @@ const PLAN: Plan = /*@repro-plan*/ ({} as Plan);
 
 // --- Settings ----------------------------------------------------------------
 
+/** Changes when the verdict rules change, so an older baseline stops counting. */
+const RUNNER_VERSION = 2;
 const ENV: Record<string, string | undefined> =
   (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
     ?.env ?? {};
@@ -89,7 +106,11 @@ const FIND_TIMEOUT_MS = 10_000;
 /** Bounded, so a stuck step is reported as INCONCLUSIVE instead of a test timeout. */
 const ACTION_TIMEOUT_MS = 10_000;
 const NAVIGATION_TIMEOUT_MS = 30_000;
+const WAIT_MS = Number(ENV.REPRO_WAIT_MS) > 0 ? Number(ENV.REPRO_WAIT_MS) : 30_000;
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+/** Requests that stay open by design; the replay does not wait for them. */
+const STREAMING = new Set(['eventsource', 'websocket']);
+const BASELINE_FILE = '.repro-baseline.json';
 
 if (ENV.REPRO_STORAGE_STATE) test.use({ storageState: ENV.REPRO_STORAGE_STATE });
 
@@ -104,9 +125,23 @@ function isLocalHost(hostname: string): boolean {
   );
 }
 
+function isLocalUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return (u.protocol !== 'http:' && u.protocol !== 'https:') || isLocalHost(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
 /** The origin to replay against and a rewrite of recorded URLs onto it. */
 function target(): { origin: string; rewrite: (url: string) => string } {
-  const origin = ENV.BASE_URL ? new URL(ENV.BASE_URL).origin : PLAN.recordedOrigin;
+  let origin = PLAN.recordedOrigin;
+  if (ENV.BASE_URL) {
+    const u = new URL(ENV.BASE_URL);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('not http(s)');
+    origin = u.origin;
+  }
   return {
     origin,
     rewrite: (url) => {
@@ -115,6 +150,46 @@ function target(): { origin: string; rewrite: (url: string) => string } {
       return origin + u.pathname + u.search + u.hash;
     },
   };
+}
+
+// --- Baseline ----------------------------------------------------------------
+
+interface FileSystem {
+  readFileSync(path: string, encoding: 'utf8'): string;
+  writeFileSync(path: string, data: string): void;
+}
+
+/** Node's fs, loaded without a static import so this file needs no Node typings. */
+async function fileSystem(): Promise<FileSystem> {
+  return (await import(['node', 'fs'].join(':'))) as FileSystem;
+}
+
+function baselinePath(): string {
+  return `${test.info().file.replace(/[\\/][^\\/]*$/, '')}/${BASELINE_FILE}`;
+}
+
+interface Baseline {
+  plan: string;
+  runner: number;
+  target: string;
+}
+
+async function writeBaseline(origin: string, reproduced: string[]): Promise<void> {
+  const record = { plan: PLAN.id, runner: RUNNER_VERSION, target: origin, reproduced, at: new Date().toISOString() };
+  try {
+    (await fileSystem()).writeFileSync(baselinePath(), `${JSON.stringify(record, null, 2)}\n`);
+  } catch {
+    /* read-only folder: the next pass stays INCONCLUSIVE */
+  }
+}
+
+async function hasBaseline(origin: string): Promise<boolean> {
+  try {
+    const b = JSON.parse((await fileSystem()).readFileSync(baselinePath(), 'utf8')) as Baseline;
+    return b.plan === PLAN.id && b.runner === RUNNER_VERSION && b.target === origin;
+  } catch {
+    return false;
+  }
 }
 
 // --- Finding elements --------------------------------------------------------
@@ -173,9 +248,14 @@ function describe(step: Step): string {
 
 async function run(page: Page, step: Step, rewrite: (url: string) => string): Promise<void> {
   switch (step.kind) {
-    case 'goto':
-      await page.goto(rewrite(step.url), { timeout: NAVIGATION_TIMEOUT_MS });
+    case 'goto': {
+      const url = rewrite(step.url);
+      if (!ALLOW_REMOTE && !isLocalUrl(url)) {
+        throw new Error(`refused to open ${new URL(url).origin}, which is not a local address`);
+      }
+      await page.goto(url, { timeout: NAVIGATION_TIMEOUT_MS });
       return;
+    }
     case 'reload':
       await page.reload({ timeout: NAVIGATION_TIMEOUT_MS });
       return;
@@ -218,7 +298,11 @@ async function run(page: Page, step: Step, rewrite: (url: string) => string): Pr
 interface Seen {
   method: string;
   path: string;
-  status: number | 'failed';
+  status: number | 'failed' | 'pending';
+  /** Index of the step that was running when the request started. */
+  step: number;
+  body: string | null;
+  streaming: boolean;
 }
 
 function pathOf(url: string): string {
@@ -229,24 +313,48 @@ function pathOf(url: string): string {
   }
 }
 
+/** Whether every recorded field is present with a value in the replayed body. */
+function sentFields(body: string | null, fields: string[]): boolean {
+  if (fields.length === 0) return true;
+  if (!body) return false;
+  let values: (key: string) => unknown;
+  try {
+    const obj = JSON.parse(body) as Record<string, unknown>;
+    values = (k) => obj[k];
+  } catch {
+    const params = new URLSearchParams(body);
+    values = (k) => params.get(k);
+  }
+  return fields.every((k) => {
+    const v = values(k);
+    return v !== undefined && v !== null && v !== '';
+  });
+}
+
+function sameRequest(signal: Extract<Signal, { kind: 'request' }>, r: Seen): boolean {
+  return r.method === signal.method && new RegExp(signal.pathPattern).test(r.path);
+}
+
 function matches(signal: Signal, errors: string[], consoleErrors: string[], requests: Seen[]): boolean {
   if (signal.kind === 'request') {
-    const re = new RegExp(signal.pathPattern);
     return requests.some(
-      (r) =>
-        r.method === signal.method &&
-        re.test(r.path) &&
-        (r.status === 'failed' || r.status >= 400),
+      (r) => sameRequest(signal, r) && (r.status === 'failed' || (typeof r.status === 'number' && r.status >= 400)),
     );
   }
   const re = new RegExp(signal.pattern);
   return (signal.kind === 'exception' ? errors : consoleErrors).some((s) => re.test(s));
 }
 
+/** The failing request was sent again after its step, with the recorded fields, and answered. */
 function reached(signal: Signal, requests: Seen[]): boolean {
   if (signal.kind !== 'request') return true;
-  const re = new RegExp(signal.pathPattern);
-  return requests.some((r) => r.method === signal.method && re.test(r.path));
+  return requests.some(
+    (r) =>
+      sameRequest(signal, r) &&
+      r.step >= signal.afterStep &&
+      r.status !== 'pending' &&
+      sentFields(r.body, signal.fields),
+  );
 }
 
 function label(signal: Signal): string {
@@ -263,6 +371,7 @@ test(PLAN.title, async ({ page, context }) => {
   test.setTimeout(
     NAVIGATION_TIMEOUT_MS +
       PLAN.steps.length * (NAVIGATION_TIMEOUT_MS + FIND_TIMEOUT_MS) +
+      2 * WAIT_MS +
       PLAN.settleMs +
       10_000,
   );
@@ -275,47 +384,56 @@ test(PLAN.title, async ({ page, context }) => {
   try {
     ({ origin, rewrite } = target());
   } catch {
-    stopped = `BASE_URL is not a valid URL: ${ENV.BASE_URL}`;
+    stopped = `BASE_URL must be an http(s) URL such as http://localhost:3000, not ${ENV.BASE_URL}`;
   }
   const errors: string[] = [];
   const consoleErrors: string[] = [];
-  const requests: Seen[] = [];
+  const seen = new Map<Request, Seen>();
   const blocked: string[] = [];
+  let currentStep = 0;
 
   page.on('pageerror', (err) => errors.push(`${err.name}: ${err.message}`));
   page.on('console', (msg) => {
-    if (msg.type() === 'error') consoleErrors.push(msg.text());
+    if (msg.type() === 'error' || msg.type() === 'assert') consoleErrors.push(msg.text());
+  });
+  page.on('request', (req) => {
+    seen.set(req, {
+      method: req.method(),
+      path: pathOf(req.url()),
+      status: 'pending',
+      step: currentStep,
+      body: req.postData(),
+      streaming: STREAMING.has(req.resourceType()),
+    });
   });
   page.on('response', (res) => {
-    const req = res.request();
-    if (blocked.includes(`${req.method()} ${req.url()}`)) return;
-    requests.push({ method: req.method(), path: pathOf(req.url()), status: res.status() });
+    const s = seen.get(res.request());
+    if (s) s.status = res.status();
   });
   page.on('requestfailed', (req) => {
-    if (blocked.includes(`${req.method()} ${req.url()}`)) return;
-    requests.push({ method: req.method(), path: pathOf(req.url()), status: 'failed' });
+    const s = seen.get(req);
+    if (s) s.status = 'failed';
   });
   await context.route('**/*', async (route) => {
     const req = route.request();
     const u = new URL(req.url());
-    if (
-      !ALLOW_REMOTE &&
-      !SAFE_METHODS.has(req.method()) &&
-      (u.protocol === 'http:' || u.protocol === 'https:') &&
-      !isLocalHost(u.hostname)
-    ) {
-      blocked.push(`${req.method()} ${req.url()}`);
+    const remote = (u.protocol === 'http:' || u.protocol === 'https:') && !isLocalHost(u.hostname);
+    const topLevelNavigation = req.isNavigationRequest() && req.frame().parentFrame() === null;
+    if (!ALLOW_REMOTE && remote && (!SAFE_METHODS.has(req.method()) || topLevelNavigation)) {
+      blocked.push(`${req.method()} ${u.origin}${u.pathname}`);
+      seen.delete(req);
       await route.abort('blockedbyclient');
       return;
     }
     await route.fallback();
   });
 
-  if (!stopped && !ALLOW_REMOTE && !isLocalHost(new URL(origin).hostname)) {
+  if (!stopped && !ALLOW_REMOTE && !isLocalUrl(origin)) {
     stopped = `${origin} is not a local address. Set BASE_URL to a local server, or REPRO_ALLOW_REMOTE=1 to replay against it.`;
   }
   for (const [i, step] of PLAN.steps.entries()) {
     if (stopped) break;
+    currentStep = i;
     try {
       await test.step(`${i + 1}. ${describe(step)}`, () => run(page, step, rewrite));
     } catch (err) {
@@ -323,23 +441,56 @@ test(PLAN.title, async ({ page, context }) => {
       stopped = `step ${i + 1} (${describe(step)}) did not run: ${reason}`;
     }
   }
-  if (!stopped) await page.waitForTimeout(PLAN.settleMs);
 
+  // Let the page finish: wait for its requests, then for the recorded delay,
+  // and again if that delay started more requests. A request still pending at
+  // the deadline makes the result INCONCLUSIVE, never a pass.
+  const pending = () => [...seen.values()].filter((r) => r.status === 'pending' && !r.streaming);
+  const deadline = Date.now() + WAIT_MS;
+  let settled = false;
+  while (!stopped && Date.now() < deadline) {
+    while (pending().length > 0 && Date.now() < deadline) await page.waitForTimeout(100);
+    if (pending().length > 0) break;
+    if (settled) break;
+    await page.waitForTimeout(PLAN.settleMs);
+    settled = pending().length === 0;
+  }
+  const stillPending = stopped ? [] : pending();
+
+  const requests = [...seen.values()];
   const again = PLAN.signals.filter((s) => matches(s, errors, consoleErrors, requests));
   if (again.length > 0) {
     outcome('REPRODUCED');
+    await writeBaseline(origin, again.map(label));
     throw new Error(`REPRODUCED: the recorded bug happened again:\n- ${again.map(label).join('\n- ')}`);
   }
   const reasons = [
     ...(stopped ? [stopped] : []),
+    ...(stillPending.length > 0
+      ? [
+          `${stillPending.length} request(s) were still pending after ${WAIT_MS} ms: ${stillPending
+            .slice(0, 3)
+            .map((r) => `${r.method} ${r.path}`)
+            .join(', ')}`,
+        ]
+      : []),
     ...PLAN.signals
       .filter((s) => !reached(s, requests))
-      .map((s) => `the replay never made ${label(s)}`),
+      .map((s) =>
+        s.kind === 'request' && s.fields.length > 0
+          ? `the replay did not send ${label(s)} again with ${s.fields.join(', ')} filled in`
+          : `the replay never made ${label(s)}`,
+      ),
     ...(blocked.length > 0
       ? [`blocked ${blocked.length} request(s) to non-local hosts: ${blocked.slice(0, 3).join(', ')}`]
       : []),
     ...PLAN.blockers,
   ];
+  if (reasons.length === 0 && !(await hasBaseline(origin))) {
+    reasons.push(
+      `no earlier run of this test reproduced the bug against ${origin}. Run it on the unfixed code first; it records ${BASELINE_FILE} when it reproduces the bug.`,
+    );
+  }
   if (reasons.length > 0) {
     outcome('INCONCLUSIVE');
     throw new Error(`INCONCLUSIVE: the replay cannot show whether the bug is gone:\n- ${reasons.join('\n- ')}`);
