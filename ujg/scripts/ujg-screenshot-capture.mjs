@@ -134,7 +134,7 @@ export async function createCaptureBook(root, bundleRoot) {
   if (destination === root || destination === bundleRoot || destination === '/' || destination === dirname(root)) {
     if (destination !== canonical) throw new Error('Unsafe output directory.');
   }
-  const document = JSON.parse(await readFile(resolve(bundleRoot, 'user-journeys.ujg.jsonld'), 'utf8'));
+  const document = JSON.parse(await readFile(resolve(canonical, 'user-journeys.ujg.jsonld'), 'utf8'));
   const nodes = new Map(document.nodes.map((node) => [node['@id'], node]));
   if (nodes.size !== document.nodes.length) throw new Error('Duplicate UJG IDs.');
   const surfaces = document.nodes.filter((node) => node['@type'] === 'Surface' && ['State', 'CompositeState'].includes(nodes.get(node.graphNodeRef)?.['@type']));

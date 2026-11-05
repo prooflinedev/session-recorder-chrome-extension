@@ -75,7 +75,6 @@
   "urn:proofline:session-recorder:Surface:state-settings-github-saved": "./screenshots/state-settings-github-saved.png",
   "urn:proofline:session-recorder:Surface:state-settings-github-error": "./screenshots/state-settings-github-error.png",
   "urn:proofline:session-recorder:Surface:state-settings-storage-saving": "./screenshots/state-settings-storage-saving.png",
-  "urn:proofline:session-recorder:Surface:state-settings-storage-saved": "./screenshots/state-settings-storage-saved.png",
   "urn:proofline:session-recorder:Surface:state-settings-storage-error": "./screenshots/state-settings-storage-error.png",
   "urn:proofline:session-recorder:Surface:state-workspace-unavailable": "./screenshots/state-workspace-unavailable.png",
   "urn:proofline:session-recorder:Surface:state-workspace-loading": "./screenshots/state-workspace-loading.png",

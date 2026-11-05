@@ -1,60 +1,64 @@
 # Session Recorder User Journey Graph
 
-This directory is a self-contained User Journey Graph (UJG) evidence bundle for
-the extension at source commit `0c35e4a`. It intentionally leaves the repository
-root manifests, scripts, and documentation structure unchanged.
-
-The graph was recalculated from the application source and tests. The previous
-graph and captures were treated as audit evidence, not as authoritative topology.
-See [source-audit.md](source-audit.md) for the decisions made during that audit
-and [user-journeys-spec-gaps.md](user-journeys-spec-gaps.md) for information the
-portable Editor's Draft vocabulary cannot preserve exactly.
+This directory is a self-contained User Journey Graph (UJG) bundle for the extension, built to be read by the
+[Journey Viewer](https://github.com/openuji) with a screenshot on each screen. The document contains **only what the
+viewer renders**: journeys, states, composites, transitions, state Surfaces and touchpoints. The audited revision and
+every modelling decision are in [`generated/source-audit.md`](generated/source-audit.md); what the portable vocabulary
+cannot express is in [`generated/user-journeys-spec-gaps.md`](generated/user-journeys-spec-gaps.md). The standing rules
+for anyone (or any agent) editing the bundle are in [`AGENTS.md`](AGENTS.md).
 
 ## Contents
 
-- `user-journeys.ujg.jsonld` — Editor's Draft UJG document.
-- `generated/screenshots/` — one light-theme PNG for every material state-bound
-  Surface.
-- `generated/user-journeys.screenshots.json` — exact Surface-to-PNG coverage map.
-- `generated/user-journeys.screenshots.audit.json` — capture setup, evidence
-  bounds, dimensions, and SHA-256 receipts.
-- `generated/review/index.html` — local visual-review gallery that uses the
-  canonical PNGs.
-- `scripts/` — structural validation, contracts, capture runner, tests, and
-  regression fixtures.
-- `package.json` and `pnpm-lock.yaml` — isolated capture/validation dependencies.
+- `generated/user-journeys.ujg.jsonld` - the document (Editor's Draft Core + Graph + Surface).
+- `generated/user-journeys.touchpoints.json` - touchpoint short labels and colours for the viewer filter.
+- `generated/source-audit.md`, `generated/user-journeys-spec-gaps.md` - audit record and residual gaps.
+- `generated/screenshots/`, `generated/user-journeys.screenshots.json`, `generated/user-journeys.screenshots.audit.json` -
+  one light-theme PNG per state Surface, its exact map, and capture receipts.
+- `generated/review/index.html` - local visual-review gallery of the canonical PNGs.
+- `AGENTS.md` / `CLAUDE.md` - the rules both Codex and Claude Code read (`CLAUDE.md` imports `AGENTS.md`).
+- `prompts/recalculate-model.md` - the agent-neutral regeneration task.
+- `scripts/` - the profile reducer, validator, viewer gate, agent runner, capture runner, contracts and tests.
 
 ## Commands
 
-Install only the bundle dependencies:
-
 ```sh
-pnpm --dir ujg install --frozen-lockfile
+pnpm --dir ujg install --frozen-lockfile        # isolated dependencies (capture/tests only)
+
+# The viewer commands need a built journey-viewer checkout (pnpm build inside it):
+export JOURNEY_VIEWER_DIR=/path/to/journey-viewer
+
+pnpm --dir ujg view          # open the document in the real Journey Viewer, with screenshots and touchpoints
+pnpm --dir ujg view:check    # the viewer's own document policy + `journey-viewer generate`, no browser
+pnpm --dir ujg validate      # profile projection is a no-op, then structure, reachability, budgets, Surfaces
+pnpm --dir ujg test          # validator, reducer and capture-contract tests
+pnpm --dir ujg profile       # project a richer document onto the viewer profile (rewrites in place)
+pnpm --dir ujg verify        # validate + test + view:check + check
+
+pnpm --dir ujg generate:model:codex    # regenerate with Codex, then run the gates
+pnpm --dir ujg generate:model:claude   # regenerate with Claude Code, then run the gates
+AGENT=claude pnpm --dir ujg generate:model          # same, selected by environment (default: codex)
+node ujg/scripts/ujg-generate.mjs claude --dry-run  # print the exact command without running it
+
+pnpm --dir ujg capture       # build the extension, recapture every Surface, refresh receipts and gallery
+pnpm --dir ujg check         # validate the committed map, PNGs, evidence bounds and hashes
 ```
 
-Then run any command from the repository root:
+The gates are complementary. `validate` enforces the profile (the viewer itself accepts extra node types and
+long transition lists, so `view:check` alone would pass them); `view:check` proves the real viewer opens the
+document, its screenshot map and its touchpoints. Run both.
 
-```sh
-pnpm --dir ujg capture   # build the extension, recapture every Surface, and refresh receipts/gallery
-pnpm --dir ujg check     # validate the committed map, PNGs, evidence bounds, and hashes
-pnpm --dir ujg test      # run capture-regression and exact-contract tests
-pnpm --dir ujg validate  # validate UJG vocabulary, references, ownership, and boundaries
-pnpm --dir ujg verify    # validate + test + check
-```
+`generate:model:*` is a bounded agent workflow, not a deterministic compiler. Both agents get the same
+`AGENTS.md` and the same task; the run passes only if the same gates pass (profile, validation, tests, the viewer's own
+check). Review the diff, then run `capture` whenever the Surface set or visible evidence changes. Codex needs an
+authenticated CLI; Claude Code runs headless (`claude -p`) with edits and the bundle's tooling allowed and commits,
+pushes and branch changes denied.
 
-`capture` uses the production extension build and deterministic fictional data.
-Most captures run in headless Chromium. Native browser-dialog evidence uses the
-included macOS helper and therefore requires macOS with Chromium available.
-No live provider credentials or network services are used.
-
-All committed capture outputs are regenerated atomically under `generated/`.
-The source model, audit notes, scripts, fixtures, and isolated dependency
-manifest remain directly under `ujg/`.
+`capture` uses the production extension build and deterministic fictional data. Most captures run in headless
+Chromium; native browser-dialog evidence uses the included macOS helper and therefore requires macOS with Chromium
+available. No live provider credentials or network services are used.
 
 ## Coverage invariant
 
-The capture registry derives its required set from all `Surface` nodes whose
-`graphNodeRef` targets a `State` or `CompositeState`. Validation fails when a
-contract, map entry, audit receipt, or PNG is missing or extra. The current
-recalculation contains 109 such material Surfaces; that number is reported, not
-hard-coded as the source of truth.
+The capture registry derives its required set from every `Surface` bound to a `State` or `CompositeState`. Validation
+fails when a contract, map entry, audit receipt or PNG is missing or extra. The graph's Surface ids
+(`Surface:state-<state slug>`) are the join key between the document, the screenshot map and the capture contracts.

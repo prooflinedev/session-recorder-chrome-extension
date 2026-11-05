@@ -4884,69 +4884,6 @@
       "height": 261,
       "sha256": "db0cfc6c6b263f73d4895ca7cb86efdbe9c82300f5293a35bd8ad0479e89de2a"
     },
-    "urn:proofline:session-recorder:Surface:state-settings-storage-saved": {
-      "surfaceId": "urn:proofline:session-recorder:Surface:state-settings-storage-saved",
-      "stateId": "urn:proofline:session-recorder:State:settings-storage-saved",
-      "label": "Storage settings saved",
-      "group": "settings",
-      "fixture": "Fresh section defaults or the explicitly declared fictional provider/account fixture.",
-      "setup": "Open #storage; saved through the real section action/dependency.",
-      "source": "entrypoints/sidepanel/components/SettingsForm.tsx",
-      "frame": "region",
-      "assertions": [
-        {
-          "css": "#settings-page h2, #settings-page h3",
-          "first": true
-        },
-        {
-          "role": "button",
-          "name": "Refresh",
-          "disabled": false
-        }
-      ],
-      "equivalence": "The app has no distinct success badge here; the settled control state is the visible result.",
-      "required": [
-        {
-          "description": "#settings-page h2, #settings-page h3",
-          "bounds": {
-            "x": 16,
-            "y": 16,
-            "width": 641.390625,
-            "height": 30
-          },
-          "text": "Storage"
-        },
-        {
-          "description": "Refresh",
-          "bounds": {
-            "x": 664.390625,
-            "y": 18,
-            "width": 63.609375,
-            "height": 26
-          },
-          "disabled": false,
-          "text": "Refresh"
-        }
-      ],
-      "viewport": {
-        "width": 1200,
-        "height": 1600
-      },
-      "scroll": {
-        "x": 0,
-        "y": 0
-      },
-      "crop": {
-        "x": 324,
-        "y": 92,
-        "width": 744,
-        "height": 261
-      },
-      "evidenceImages": [],
-      "width": 744,
-      "height": 261,
-      "sha256": "ecee0796a47935b23708fba39778704b16fbc7723d022f5d6481a8da44bad996"
-    },
     "urn:proofline:session-recorder:Surface:state-settings-storage-error": {
       "surfaceId": "urn:proofline:session-recorder:Surface:state-settings-storage-error",
       "stateId": "urn:proofline:session-recorder:State:settings-storage-error",

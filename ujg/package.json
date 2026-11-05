@@ -4,11 +4,17 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "generate:model": "node scripts/ujg-generate.mjs ${AGENT:-codex}",
+    "generate:model:codex": "node scripts/ujg-generate.mjs codex",
+    "generate:model:claude": "node scripts/ujg-generate.mjs claude",
     "capture": "pnpm --dir .. build && node scripts/capture-ujg-screenshots.mjs",
     "check": "node scripts/capture-ujg-screenshots.mjs --check",
-    "test": "node --test scripts/ujg-screenshot-capture.test.mjs",
-    "validate": "node scripts/ujg-composition-validate.mjs",
-    "verify": "pnpm run validate && pnpm run test && pnpm run check"
+    "test": "node --test scripts/*.test.mjs",
+    "profile": "node scripts/ujg-viewer-profile.mjs",
+    "validate": "node scripts/ujg-viewer-profile.mjs --check && node scripts/ujg-composition-validate.mjs",
+    "view": "node scripts/ujg-view.mjs",
+    "view:check": "node scripts/ujg-viewer-gate.mjs",
+    "verify": "pnpm run validate && pnpm run test && pnpm run view:check && pnpm run check"
   },
   "devDependencies": {
     "@playwright/test": "1.61.1",

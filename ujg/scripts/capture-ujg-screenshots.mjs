@@ -770,12 +770,6 @@ async function captureSettings() {
   await page.close();
 
   page = await newOptions('storage');
-  await page.getByRole('button', { name: 'Refresh' }).click();
-  await expect(page.getByRole('button', { name: 'Refresh' })).toBeEnabled();
-  await capture('settings-storage-saved', page.locator('#settings-page'));
-  await page.close();
-
-  page = await newOptions('storage');
   await page.evaluate(() => {
     IDBDatabase.prototype.transaction = function () {
       throw new Error('Fixture storage refresh failed.');

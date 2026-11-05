@@ -6,7 +6,7 @@ import { contracts } from './ujg-screenshot-contracts.mjs';
 import { decode, requireInFrame, rejectRepeatedChrome, pairBuffers } from './ujg-screenshot-capture.mjs';
 
 test('every material Surface has one explicit capture contract', async () => {
-  const document = JSON.parse(await readFile(new URL('../user-journeys.ujg.jsonld', import.meta.url), 'utf8'));
+  const document = JSON.parse(await readFile(new URL('../generated/user-journeys.ujg.jsonld', import.meta.url), 'utf8'));
   const nodes = new Map(document.nodes.map((node) => [node['@id'], node]));
   const expected = new Set(document.nodes
     .filter((node) => node['@type'] === 'Surface' && ['State', 'CompositeState'].includes(nodes.get(node.graphNodeRef)?.['@type']))

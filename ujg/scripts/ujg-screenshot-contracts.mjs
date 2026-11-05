@@ -68,7 +68,7 @@ const sectionPhases = {
   publishing: ['', '-loading', '-saving', '-saved', '-error'],
   summaries: ['', '-loading', '-saving', '-saved', '-error'],
   github: ['', '-loading', '-saving', '-saved', '-error'],
-  storage: ['', '-loading', '-saving', '-saved', '-error'],
+  storage: ['', '-loading', '-saving', '-error'],
 };
 const settings = { group: 'settings', frame: 'region', root: '.options-page', regions: ['#settings-page > [role="alert"]', '#settings-page .settings__section'], source: 'entrypoints/sidepanel/components/SettingsForm.tsx', fixture: 'Fresh section defaults or the explicitly declared fictional provider/account fixture.' };
 for (const [section, phases] of Object.entries(sectionPhases)) for (const phase of phases) {
@@ -92,12 +92,10 @@ for (const [section, phases] of Object.entries(sectionPhases)) for (const phase 
   if (phase === '-saved') {
     if (['capture', 'redaction', 'transcription'].includes(section)) required.push(text('Saved', { exact: true }));
     if (['publishing', 'github', 'summaries'].includes(section)) required.push({ role: 'status' });
-    if (section === 'storage') required.push(button('Refresh', { disabled: false }));
   }
   define(`settings-${section}${phase}`, settings, {
     required, section, pending: phase === '-loading' || phase === '-saving',
     setup: `Open #${section}; ${phase ? phase.slice(1) + ' through the real section action/dependency.' : 'wait for initial reads and report preparation.'}`,
-    ...(phase === '-saved' && section === 'storage' ? { equivalence: 'The app has no distinct success badge here; the settled control state is the visible result.' } : {}),
   });
 }
 const specialSettings = {
