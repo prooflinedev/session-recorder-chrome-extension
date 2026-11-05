@@ -24,3 +24,6 @@ local.env
 !.codex/
 .codex/*
 !.codex/hooks.json
+
+# Local Netlify folder
+.netlify

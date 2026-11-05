@@ -1,11 +1,13 @@
 # Session Recorder User Journey Graph
 
 This directory is a self-contained User Journey Graph (UJG) bundle for the extension, built to be read by the
-[Journey Viewer](https://github.com/openuji) with a screenshot on each screen. The document contains **only what the
-viewer renders**: journeys, states, composites, transitions, state Surfaces and touchpoints. The audited revision and
-every modelling decision are in [`generated/source-audit.md`](generated/source-audit.md); what the portable vocabulary
-cannot express is in [`generated/user-journeys-spec-gaps.md`](generated/user-journeys-spec-gaps.md). The standing rules
-for anyone (or any agent) editing the bundle are in [`AGENTS.md`](AGENTS.md).
+[Journey Viewer](https://github.com/openuji/journey-viewer) with a screenshot on each screen. A manually deployed
+[rendering of this bundle](https://session-recorder-journey-viewer.netlify.app/) is available for review. The document
+contains **only what the viewer renders**: journeys, states, composites, transitions, state Surfaces and touchpoints.
+The audited revision and every modelling decision are in [`generated/source-audit.md`](generated/source-audit.md);
+what the portable vocabulary cannot express is in
+[`generated/user-journeys-spec-gaps.md`](generated/user-journeys-spec-gaps.md). The standing rules for anyone (or any
+agent) editing the bundle are in [`AGENTS.md`](AGENTS.md).
 
 ## Contents
 
@@ -14,6 +16,7 @@ for anyone (or any agent) editing the bundle are in [`AGENTS.md`](AGENTS.md).
 - `generated/source-audit.md`, `generated/user-journeys-spec-gaps.md` - audit record and residual gaps.
 - `generated/screenshots/`, `generated/user-journeys.screenshots.json`, `generated/user-journeys.screenshots.audit.json` -
   one light-theme PNG per state Surface, its exact map, and capture receipts.
+- `generated/journey-viewer/index.html` - self-contained Journey Viewer build used for the manual deployment above.
 - `generated/review/index.html` - local visual-review gallery of the canonical PNGs.
 - `AGENTS.md` / `CLAUDE.md` - the rules both Codex and Claude Code read (`CLAUDE.md` imports `AGENTS.md`).
 - `prompts/recalculate-model.md` - the agent-neutral regeneration task.
