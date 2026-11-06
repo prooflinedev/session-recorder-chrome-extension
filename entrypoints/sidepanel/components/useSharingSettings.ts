@@ -18,9 +18,18 @@ import { verifyCloudflare } from '@/lib/sharing/cloudflare';
 import { validateModelConfig } from '@/lib/sharing/summary';
 import { repositoryPath, verifyGitHub } from '@/lib/sharing/github';
 import { errorMessage } from '@/lib/sharing/draft';
+import {
+  listLinearTeams,
+  verifyLinear,
+  type LinearConfig,
+  type LinearTeam,
+} from '@/lib/sharing/linear';
+
+export type SharingSection = 'publishing' | 'summaries' | 'github' | 'linear';
 
 interface State {
   settings: SharingSettings;
+  linearTeams: LinearTeam[];
   status: 'loading' | 'idle' | 'saving' | 'verifying';
   message: string;
   error: string;
@@ -34,6 +43,8 @@ type Action =
   | { type: 'add-repository'; id: string }
   | { type: 'remove-repository'; id: string }
   | { type: 'repository'; id: string; patch: Partial<GitHubRepository> }
+  | { type: 'linear'; patch: Partial<LinearConfig> }
+  | { type: 'linear-teams'; teams: LinearTeam[] }
   | { type: 'start'; verify: boolean }
   | { type: 'saved'; message: string }
   | { type: 'error'; message: string };
@@ -90,6 +101,22 @@ export function sharingSettingsReducer(state: State, action: Action): State {
           entry.id === action.id ? { ...entry, ...action.patch } : entry,
         ),
       });
+    case 'linear':
+      return {
+        ...edit({ ...state.settings, linear: { ...state.settings.linear, ...action.patch } }),
+        // Teams loaded with a different key may not be visible to the new one.
+        linearTeams: action.patch.apiKey === undefined ? state.linearTeams : [],
+      };
+    case 'linear-teams':
+      return {
+        ...state,
+        status: 'idle',
+        linearTeams: action.teams,
+        message: action.teams.length ? '' : 'This key cannot see any Linear teams.',
+        settings: action.teams.some((team) => team.id === state.settings.linear.teamId)
+          ? state.settings
+          : { ...state.settings, linear: { ...state.settings.linear, teamId: action.teams[0]?.id ?? '' } },
+      };
     case 'start':
       return {
         ...state,
@@ -115,6 +142,7 @@ export function useSharingSettings() {
     undefined,
     (): State => ({
       settings: defaultSharingSettings(),
+      linearTeams: [],
       status: 'loading',
       message: '',
       error: '',
@@ -157,7 +185,26 @@ export function useSharingSettings() {
       chrome.storage.onChanged.removeListener(changed);
     };
   }, []);
-  async function save(section: 'publishing' | 'summaries' | 'github') {
+  async function loadLinearTeams() {
+    if (inFlight.current || state.status === 'loading') return;
+    inFlight.current = true;
+    dispatch({ type: 'start', verify: true });
+    try {
+      dispatch({ type: 'linear-teams', teams: await listLinearTeams(state.settings.linear.apiKey) });
+    } catch (error) {
+      dispatch({ type: 'error', message: errorMessage(error) });
+    } finally {
+      inFlight.current = false;
+    }
+  }
+  async function verifiedLinear(): Promise<LinearConfig> {
+    const apiKey = state.settings.linear.apiKey.trim();
+    if (!apiKey) return { apiKey: '', teamId: '', teamKey: '', teamName: '' };
+    if (!state.settings.linear.teamId) throw new Error('Load teams and choose a Linear team.');
+    const team = await verifyLinear(apiKey, state.settings.linear.teamId);
+    return { apiKey, teamId: team.id, teamKey: team.key, teamName: team.name };
+  }
+  async function save(section: SharingSection) {
     const verify = section !== 'summaries';
     if (inFlight.current || state.status === 'loading') return;
     inFlight.current = true;
@@ -173,7 +220,9 @@ export function useSharingSettings() {
         repositories.length
       )
         throw new Error('Each repository only needs one entry.');
+      let linear = state.settings.linear;
       if (section === 'publishing') await verifyCloudflare(state.settings.cloudflare);
+      else if (section === 'linear') linear = await verifiedLinear();
       else if (section === 'github') {
         for (const entry of repositories)
           await verifyGitHub(entry.repository, entry.token);
@@ -185,7 +234,11 @@ export function useSharingSettings() {
         )
           validateModelConfig(state.settings.provider, model);
       }
-      await saveSharingSettings({ ...state.settings, repositories });
+      await saveSharingSettings({ ...state.settings, repositories, linear });
+      if (section === 'linear') {
+        const { apiKey, ...team } = linear;
+        dispatch({ type: 'linear', patch: apiKey ? team : linear });
+      }
       dispatch({
         type: 'saved',
         message:
@@ -193,7 +246,11 @@ export function useSharingSettings() {
             ? 'Saved. Access application and reader policies verified.'
             : section === 'github'
               ? 'Repositories verified and saved.'
-              : 'Sharing settings saved.',
+              : section === 'linear'
+                ? linear.apiKey
+                  ? `Linear team ${linear.teamKey} verified and saved.`
+                  : 'Linear settings cleared.'
+                : 'Sharing settings saved.',
       });
     } catch (error) {
       dispatch({ type: 'error', message: errorMessage(error) });
@@ -219,6 +276,8 @@ export function useSharingSettings() {
       removeRepository: (id: string) => dispatch({ type: 'remove-repository', id }),
       editRepository: (id: string, patch: Partial<GitHubRepository>) =>
         dispatch({ type: 'repository', id, patch }),
+      patchLinear: (patch: Partial<LinearConfig>) => dispatch({ type: 'linear', patch }),
+      loadLinearTeams,
     },
   };
 }

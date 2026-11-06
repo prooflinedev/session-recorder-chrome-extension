@@ -1,7 +1,8 @@
 import type { FilingStage } from '@/lib/sharing/file-issue';
 import type { Session, VerbosityLevel } from '@/lib/session/types';
 import type { ExportFile } from '@/lib/export/bundle';
-import { defaultSharingSettings, preferredRepository, type SharingSettings } from '@/lib/sharing/settings';
+import { defaultSharingSettings, linearAvailable, preferredRepository, type SharingSettings } from '@/lib/sharing/settings';
+import { isLinearDestination } from '@/lib/sharing/linear';
 import { initialDraft, type Publication, type SavedDraft } from '@/lib/sharing/draft';
 import type { IssueDraft } from '@/lib/sharing/summary';
 
@@ -64,6 +65,11 @@ export function initialShareState(level: VerbosityLevel): ShareState {
   };
 }
 
+/** A draft's unfiled Linear choice falls back to another destination while Linear is hidden. */
+function availableDestination(settings: SharingSettings, repository: string, pinned: boolean): string {
+  if (pinned || !repository || !isLinearDestination(repository) || linearAvailable(settings)) return repository;
+  return preferredRepository(settings);
+}
 export function shareReducer(state: ShareState, action: ShareAction): ShareState {
   switch (action.type) {
     case 'loaded':
@@ -74,7 +80,7 @@ export function shareReducer(state: ShareState, action: ShareAction): ShareState
         loading: false,
         preparing: true,
         draft: action.saved?.draft ?? initialDraft(action.session.name),
-        repository: action.saved?.issue?.repository ?? action.saved?.attempt?.repository ?? (action.saved?.repository || preferredRepository(action.settings)),
+        repository: action.saved?.issue?.repository ?? action.saved?.attempt?.repository ?? (availableDestination(action.settings, action.saved?.repository ?? '', false) || preferredRepository(action.settings)),
         publication: action.saved?.publication,
         summaryRequestId: action.saved?.summaryRequestId,
         issue: action.saved?.issue,
@@ -83,7 +89,7 @@ export function shareReducer(state: ShareState, action: ShareAction): ShareState
         level: action.saved?.publication?.level ?? state.level,
       };
     case 'settings':
-      return { ...state, settings: action.settings, repository: state.repository || preferredRepository(action.settings) };
+      return { ...state, settings: action.settings, repository: availableDestination(action.settings, state.repository, !!state.attempt || !!state.issue) || preferredRepository(action.settings) };
     case 'prepare':
       return {
         ...state,

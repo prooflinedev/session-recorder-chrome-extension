@@ -4,7 +4,12 @@ import type { VerbosityLevel } from '@/lib/session/types';
 import { isProoflinePublication, publicationUrl, type SavedDraft } from './draft';
 import { fileProoflineIssue, publishProoflineReport } from '@/lib/proofline/reports';
 import { requireConnection } from '@/lib/proofline/settings';
-import { tokenForRepository, type SharingSettings } from './settings';
+import {
+  linearKeyForTeam,
+  normalizeDestination,
+  tokenForRepository,
+  type SharingSettings,
+} from './settings';
 import {
   generateSummary,
   generateConfiguredSummary,
@@ -15,9 +20,19 @@ import {
   createGitHubIssue,
   findCreatedIssue,
   GitHubRequestError,
-  repositoryPath,
+  issueLabel,
   verifyGitHub,
+  type CreatedIssue,
+  type IssueAttempt,
 } from './github';
+import {
+  createLinearIssue,
+  findLinearIssue,
+  isLinearDestination,
+  LinearRequestError,
+  linearTeamId,
+  verifyLinear,
+} from './linear';
 
 export type FilingStage = 'connection' | 'summary' | 'publish' | 'issue';
 
@@ -32,6 +47,12 @@ interface FileIssueInput {
   signal: AbortSignal;
   stage?: (stage: FilingStage) => void;
 }
+function isDefinitive(error: unknown): boolean {
+  return (
+    (error instanceof GitHubRequestError || error instanceof LinearRequestError) &&
+    error.definitive
+  );
+}
 /** One transaction, with durable checkpoints before each external side effect. */
 export async function fileIssue(input: FileIssueInput): Promise<SavedDraft> {
   const { settings, files, evidence, level, save, progress, signal } = input;
@@ -42,34 +63,59 @@ export async function fileIssue(input: FileIssueInput): Promise<SavedDraft> {
   }
   if (saved.issue) return saved;
   signal.throwIfAborted();
-  // An uncertain request is permanently tied to its original repository.
-  const repository = repositoryPath(saved.attempt?.repository ?? saved.repository);
+  // An uncertain request is permanently tied to its original repository or team.
+  const repository = normalizeDestination(saved.attempt?.repository ?? saved.repository);
   saved = { ...saved, repository };
+  const linear = isLinearDestination(repository);
+  const tracker = linear ? 'Linear' : 'GitHub';
   const managedGitHub =
-    !!saved.attempt?.proofline || settings.proofline?.github === 'proofline';
-  const token = managedGitHub ? '' : tokenForRepository(settings, repository);
+    !linear && (!!saved.attempt?.proofline || settings.proofline?.github === 'proofline');
+  const token = linear
+    ? linearKeyForTeam(settings, repository)
+    : managedGitHub
+      ? ''
+      : tokenForRepository(settings, repository);
   input.stage?.('connection');
-  progress('Checking GitHub connection…');
-  if (managedGitHub) requireConnection(settings.proofline!);
+  progress(`Checking ${tracker} connection…`);
+  if (linear) await verifyLinear(token, linearTeamId(repository), signal);
+  else if (managedGitHub) requireConnection(settings.proofline!);
   else await verifyGitHub(repository, token, signal);
+  async function create(attempt: IssueAttempt): Promise<CreatedIssue> {
+    const reportUrl = publicationUrl(saved.publication!);
+    try {
+      return linear
+        ? await createLinearIssue(attempt, token, saved.draft, reportUrl, signal)
+        : managedGitHub
+          ? await fileProoflineIssue(settings.proofline!, attempt, saved.draft, signal)
+          : await createGitHubIssue(attempt, token, saved.draft, reportUrl, signal);
+    } catch (error) {
+      // A rejected request is safe to retry. An uncertain response retains its ID.
+      if (isDefinitive(error)) await checkpoint({ attempt: undefined });
+      throw error;
+    }
+  }
   if (saved.attempt) {
     input.stage?.('issue');
-    progress('Checking the previous GitHub request…');
+    progress(`Checking the previous ${tracker} request…`);
+    const attempt = saved.attempt;
     let issue;
-    try {
-      issue = saved.attempt.proofline
-        ? await fileProoflineIssue(
-            settings.proofline!,
-            saved.attempt,
-            saved.draft,
-            signal,
-            true,
-          )
-        : await findCreatedIssue(saved.attempt, token, signal);
-    } catch (error) {
-      if (error instanceof GitHubRequestError && error.definitive)
-        await checkpoint({ attempt: undefined });
-      throw error;
+    if (linear) {
+      // Linear refuses a second issue with the same ID, so resending the original ID cannot duplicate it.
+      issue = await findLinearIssue(attempt, token, signal);
+      if (!issue) {
+        if (!saved.publication) throw new Error('Publish the report again before retrying.');
+        progress('Creating Linear issue…');
+        issue = await create(attempt);
+      }
+    } else {
+      try {
+        issue = attempt.proofline
+          ? await fileProoflineIssue(settings.proofline!, attempt, saved.draft, signal, true)
+          : await findCreatedIssue(attempt, token, signal);
+      } catch (error) {
+        if (isDefinitive(error)) await checkpoint({ attempt: undefined });
+        throw error;
+      }
     }
     if (!issue)
       throw new Error(
@@ -166,7 +212,7 @@ export async function fileIssue(input: FileIssueInput): Promise<SavedDraft> {
     await checkpoint({ publication: { deployment, destination, level } });
   }
   signal.throwIfAborted();
-  const managedRepository = settings.proofline?.connection?.account.repositories.find(
+  const managedRepository = managedGitHub && settings.proofline?.connection?.account.repositories.find(
     (entry) => entry.full_name.toLowerCase() === repository.toLowerCase(),
   );
   if (
@@ -181,12 +227,12 @@ export async function fileIssue(input: FileIssueInput): Promise<SavedDraft> {
   const attempt = {
     id: crypto.randomUUID(),
     repository,
-    ...(managedGitHub && saved.publication && isProoflinePublication(saved.publication)
+    ...(managedRepository && saved.publication && isProoflinePublication(saved.publication)
       ? {
           proofline: {
             organizationId: saved.publication.organizationId,
             reportId: saved.publication.id,
-            repositoryId: managedRepository!.id,
+            repositoryId: managedRepository.id,
           },
         }
       : {}),
@@ -198,24 +244,9 @@ export async function fileIssue(input: FileIssueInput): Promise<SavedDraft> {
     signal.throwIfAborted();
   }
   input.stage?.('issue');
-  progress('Creating GitHub issue…');
-  try {
-    const issue = managedGitHub
-      ? await fileProoflineIssue(settings.proofline!, attempt, saved.draft, signal)
-      : await createGitHubIssue(
-          attempt,
-          token,
-          saved.draft,
-          publicationUrl(saved.publication!),
-          signal,
-        );
-    await checkpoint({ issue, attempt: undefined });
-  } catch (error) {
-    // A rejected request is safe to retry. An uncertain response retains its marker.
-    if (error instanceof GitHubRequestError && error.definitive)
-      await checkpoint({ attempt: undefined });
-    throw error;
-  }
-  progress(`Issue #${saved.issue!.number} created.`);
+  progress(`Creating ${tracker} issue…`);
+  const issue = await create(attempt);
+  await checkpoint({ issue, attempt: undefined });
+  progress(`Issue ${issueLabel(issue)} created.`);
   return saved;
 }

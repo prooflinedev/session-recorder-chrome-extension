@@ -9,6 +9,7 @@ import {
   ShieldCheck,
   CloudUpload,
   Sparkles,
+  SquareKanban,
 } from 'lucide-react';
 import type { ScreenshotPolicy } from '@/lib/session/types';
 import { PROVIDERS, type TranscriptionConfig } from '@/lib/transcription';
@@ -16,7 +17,7 @@ import { DEFAULT_HEADER_BLOCKLIST, DEFAULT_KEY_PATTERN } from '@/lib/capture/red
 import { ProoflineSettings } from './ProoflineSettings';
 import { ServicesSettings } from './ServicesSettings';
 import { SharingSettings } from './SharingSettings';
-import { useSharingSettings } from './useSharingSettings';
+import { useSharingSettings, type SharingSection } from './useSharingSettings';
 import { useCaptureSettings } from './useCaptureSettings';
 import { useSettingsNavigation } from './useSettingsNavigation';
 import { formatBytes, totalEvents, clampInt } from './settings-utils';
@@ -30,6 +31,7 @@ const SETTINGS_PAGES = [
   { id: 'publishing', label: 'Publishing', icon: CloudUpload },
   { id: 'summaries', label: 'AI summaries', icon: Sparkles },
   { id: 'github', label: 'GitHub', icon: GitHubIcon },
+  { id: 'linear', label: 'Linear', icon: SquareKanban },
   { id: 'storage', label: 'Storage', icon: Database },
 ] as const;
 export type SettingsPage = (typeof SETTINGS_PAGES)[number]['id'];
@@ -93,9 +95,9 @@ export function SettingsForm(): React.JSX.Element {
         <fieldset className="settings-fields" disabled={!loaded || busy}>
           {page === 'proofline' && <ProoflineSettings />}
           {page === 'services' && <ServicesSettings />}
-          {['publishing', 'summaries', 'github'].includes(page) && (
+          {['publishing', 'summaries', 'github', 'linear'].includes(page) && (
             <SharingSettings
-              section={page as 'publishing' | 'summaries' | 'github'}
+              section={page as SharingSection}
               controller={sharing}
             />
           )}

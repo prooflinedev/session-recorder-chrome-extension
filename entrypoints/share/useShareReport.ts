@@ -15,6 +15,7 @@ import {
 } from '@/lib/sharing/cloudflare';
 import {
   loadSharingSettings,
+  normalizeDestination,
   rememberRepository,
   LAST_REPOSITORY_KEY,
   SHARING_KEY,
@@ -32,7 +33,8 @@ import {
   type IssueDraft,
 } from '@/lib/sharing/summary';
 import { fileIssue } from '@/lib/sharing/file-issue';
-import { issueBody, repositoryPath } from '@/lib/sharing/github';
+import { issueBody, issueLabel } from '@/lib/sharing/github';
+import { isLinearDestination } from '@/lib/sharing/linear';
 import { initialShareState, shareReducer, type ShareState } from './reducer';
 
 type Recording = Omit<BuildBundleInput, 'level'>;
@@ -182,10 +184,12 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
     if (operation.current || state.attempt || state.issue) return;
     dispatch({ type: 'repository', repository });
     persistEdit({ draft: state.draft, repository, publication: state.publication });
+    let destination;
     try {
-      const path = repositoryPath(repository);
-      void rememberRepository(path).catch(() => dispatch({ type: 'error', message: 'Could not remember the repository selection.' }));
+      destination = normalizeDestination(repository);
     } catch { /* An incomplete typed repository is saved only with this draft. */ }
+    if (destination)
+      void rememberRepository(destination).catch(() => dispatch({ type: 'error', message: 'Could not remember the repository selection.' }));
   }
   async function remember(publication?: Publication) {
     dispatch({ type: 'publication', publication });
@@ -202,10 +206,11 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
     try {
       await task(controller.signal);
     } catch (error) {
+      const tracker = isLinearDestination(state.attempt?.repository ?? state.repository) ? 'Linear' : 'GitHub';
       dispatch({
         type: 'error',
         message: controller.signal.aborted
-          ? 'Cancelled. Saved drafts and published reports are kept. If GitHub received the request, use Check GitHub issue before retrying.'
+          ? `Cancelled. Saved drafts and published reports are kept. If ${tracker} received the request, use Check ${tracker} issue before retrying.`
           : errorMessage(error),
       });
     } finally {
@@ -321,7 +326,7 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
             },
           });
           dispatch({ type: 'saved', saved: result });
-          progress(`Issue #${result.issue!.number} created.`);
+          progress(`Issue ${issueLabel(result.issue!)} created.`);
           await chrome.tabs.create({ url: result.issue!.url });
         },
       );
