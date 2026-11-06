@@ -207,3 +207,37 @@ test('keeps a value the page clears on Enter, as TodoMVC does', async ({
   expect(enter).toBeTruthy();
   expect(inputs[0]!.t).toBeLessThanOrEqual(enter!.t);
 });
+
+test('records a value once, before the Tab that leaves the field', async ({
+  context,
+  background,
+}) => {
+  const page = await context.newPage();
+  await page.goto('/');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Demo');
+
+  const tabId = await tabIdForUrl(background, 'http://localhost:5319');
+  const started = await dispatch<StartRes>(background, {
+    kind: 'session/start',
+    tabId,
+  });
+  expect(started.ok).toBe(true);
+  const sessionId = started.session!.id;
+  await page.waitForTimeout(800);
+
+  // Tab flushes the pending input, then blurs the field, which fires `change`.
+  await page.fill('#f-user', 'ada');
+  await page.press('#f-user', 'Tab');
+  await page.waitForTimeout(1000);
+
+  await dispatch(background, { kind: 'session/stop' });
+
+  const { events } = await dispatch<{
+    events: Array<{ type: string; t: number; payload: any }>;
+  }>(background, { kind: 'events/get', sessionId });
+  const inputs = events.filter((e) => e.type === 'input');
+  expect(inputs.map((e) => e.payload?.value)).toEqual(['ada']);
+  const tab = events.find((e) => e.type === 'key' && e.payload?.key === 'Tab');
+  expect(tab).toBeTruthy();
+  expect(inputs[0]!.t).toBeLessThanOrEqual(tab!.t);
+});
