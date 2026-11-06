@@ -162,3 +162,48 @@ test('records interactions and exports a readable, valid zip', async ({
   expect(jsonKey).toBeTruthy();
   JSON.parse(new TextDecoder().decode(files[jsonKey!]));
 });
+
+test('keeps a value the page clears on Enter, as TodoMVC does', async ({
+  context,
+  background,
+}) => {
+  const page = await context.newPage();
+  await page.goto('/');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Demo');
+  // A field that clears itself on Enter in its own (bubble-phase) handler,
+  // before the recorder's input debounce would fire.
+  await page.evaluate(() => {
+    const field = document.createElement('input');
+    field.id = 'f-todo';
+    field.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') field.value = '';
+    });
+    document.body.appendChild(field);
+  });
+
+  const tabId = await tabIdForUrl(background, 'http://localhost:5319');
+  const started = await dispatch<StartRes>(background, {
+    kind: 'session/start',
+    tabId,
+  });
+  expect(started.ok).toBe(true);
+  const sessionId = started.session!.id;
+  await page.waitForTimeout(800);
+
+  await page.fill('#f-todo', 'buy milk');
+  await page.press('#f-todo', 'Enter');
+  await page.waitForTimeout(1000);
+
+  await dispatch(background, { kind: 'session/stop' });
+
+  const { events } = await dispatch<{
+    events: Array<{ type: string; t: number; payload: any }>;
+  }>(background, { kind: 'events/get', sessionId });
+  const inputs = events.filter((e) => e.type === 'input');
+  expect(inputs.map((e) => e.payload?.value)).toEqual(['buy milk']);
+  // Both events can share a millisecond and their storage order varies, so
+  // compare timestamps rather than positions.
+  const enter = events.find((e) => e.type === 'key' && e.payload?.key === 'Enter');
+  expect(enter).toBeTruthy();
+  expect(inputs[0]!.t).toBeLessThanOrEqual(enter!.t);
+});

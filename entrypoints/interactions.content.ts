@@ -138,6 +138,27 @@ export default defineContentScript({
       return { container: 'window', pos: { x: window.scrollX, y: window.scrollY } };
     }
 
+    function postInput(el: Element): void {
+      inputTimers.delete(el);
+      const sensitive = isSensitiveInput(el);
+      post('input', {
+        descriptor: buildDescriptor(el),
+        value: sensitive ? REDACTED : readValue(el),
+        redacted: sensitive,
+        inputType: inputTypeOf(el),
+      });
+    }
+
+    // The click or key being captured may submit the field, and apps often
+    // clear it in their own handler, which runs after these capture-phase
+    // listeners but before the debounce would fire. Record the value now.
+    function flushPendingInputs(): void {
+      for (const [el, timer] of inputTimers) {
+        clearTimeout(timer);
+        postInput(el);
+      }
+    }
+
     // -- capture handlers ----------------------------------------------------
 
     const onClick = (e: MouseEvent): void => {
@@ -146,6 +167,7 @@ export default defineContentScript({
       // Clicks land on the annotation overlay (retargeted to its host) while the
       // user is drawing — those are recorder chrome, not page interactions.
       if (isAnnotationOverlay(target)) return;
+      flushPendingInputs();
       post('click', {
         descriptor: buildDescriptor(target),
         modifiers: modifiersOf(e),
@@ -160,16 +182,7 @@ export default defineContentScript({
       const el = target;
       const existing = inputTimers.get(el);
       if (existing) clearTimeout(existing);
-      const timer = setTimeout(() => {
-        inputTimers.delete(el);
-        const sensitive = isSensitiveInput(el);
-        post('input', {
-          descriptor: buildDescriptor(el),
-          value: sensitive ? REDACTED : readValue(el),
-          redacted: sensitive,
-          inputType: inputTypeOf(el),
-        });
-      }, INPUT_DEBOUNCE_MS);
+      const timer = setTimeout(() => postInput(el), INPUT_DEBOUNCE_MS);
       inputTimers.set(el, timer);
     };
 
@@ -200,6 +213,7 @@ export default defineContentScript({
       if (isAnnotationOverlay(e.target)) return; // typing an annotation label
       const chord = e.ctrlKey || e.metaKey || e.altKey;
       if (!chord && !NAMED_KEYS.has(e.key)) return;
+      flushPendingInputs();
       const focused = document.activeElement;
       post('key', {
         key: keyString(e),
