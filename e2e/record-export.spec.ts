@@ -241,3 +241,57 @@ test('records a value once, before the Tab that leaves the field', async ({
   expect(tab).toBeTruthy();
   expect(inputs[0]!.t).toBeLessThanOrEqual(tab!.t);
 });
+
+test('never records secrets typed into key, code, PIN and phrase fields', async ({
+  context,
+  background,
+}) => {
+  const page = await context.newPage();
+  await page.goto('/');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Demo');
+  // One field per kind of secret hint; each is filled with a unique marker.
+  const fields = [
+    '<input id="s-api-camel" name="apiKey">',
+    '<input id="s-api-snake" name="api_key">',
+    '<label>API key <input id="s-api-label"></label>',
+    '<input id="s-secret-aria" aria-label="Secret key">',
+    '<input id="s-otp" autocomplete="one-time-code">',
+    '<input id="s-pin" name="pin">',
+    '<input id="s-mnemonic" name="mnemonic">',
+  ];
+  await page.evaluate((html) => {
+    const form = document.createElement('div');
+    form.innerHTML = html.join('');
+    document.body.appendChild(form);
+  }, fields);
+  const ids = fields.map((html) => /id="([^"]+)"/.exec(html)![1]!);
+
+  const tabId = await tabIdForUrl(background, 'http://localhost:5319');
+  const started = await dispatch<StartRes>(background, {
+    kind: 'session/start',
+    tabId,
+  });
+  expect(started.ok).toBe(true);
+  const sessionId = started.session!.id;
+  await page.waitForTimeout(800);
+
+  for (const id of ids) {
+    await page.fill(`#${id}`, `leak-${id}`);
+    await page.press(`#${id}`, 'Enter');
+  }
+  await page.waitForTimeout(1000);
+
+  await dispatch(background, { kind: 'session/stop' });
+
+  const { events } = await dispatch<EventsRes>(background, {
+    kind: 'events/get',
+    sessionId,
+  });
+  const inputs = events.filter((e) => e.type === 'input');
+  expect(inputs).toHaveLength(ids.length);
+  for (const ev of inputs) {
+    expect(ev.payload?.redacted).toBe(true);
+    expect(ev.payload?.value).toBe('«redacted»');
+  }
+  expect(JSON.stringify(events)).not.toContain('leak-');
+});

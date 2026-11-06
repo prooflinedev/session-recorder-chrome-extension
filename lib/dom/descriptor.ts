@@ -15,6 +15,13 @@ import type { ElementDescriptor, Rect } from '@/lib/session/types';
 /** Matches names/ids/autocomplete tokens/placeholders of secret-bearing fields. */
 const SENSITIVE_RE = /pass|secret|token|cc-|card|cvv|ssn/i;
 
+/**
+ * Secret-bearing hints that must be whole words of the normalized hint (see
+ * `hintWords`), so "keyword", "monkey", "spinner" and "author" stay unredacted.
+ */
+const SENSITIVE_WORD_RE =
+  /\b(?:(?:api|secret|private|access)\s?)?key\b|\bone\s?time\s?(?:code|pin)\b|\botp\b|\bpin(?:\s?code)?\b|\bcvc\b|\bmnemonic|\bseed\s?phrase\b|\bauth(?:orization)?\b|\bcredentials?\b/i;
+
 /** Selector for heading-like elements used by `nearestHeading`. */
 const HEADING_SELECTOR = 'h1,h2,h3,h4,h5,h6,[role="heading"],legend';
 
@@ -105,19 +112,38 @@ export function visibleText(el: Element, cap: number = DEFAULT_TEXT_CAP): string
 // isSensitiveInput
 // ----------------------------------------------------------------------------
 
+/** Split camelCase, snake_case and kebab-case into space-separated words. */
+function hintWords(hint: string): string {
+  return hint
+    .replace(/([a-z\d])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/[^A-Za-z\d]+/g, ' ');
+}
+
+function isSensitiveHint(hint: string): boolean {
+  return SENSITIVE_RE.test(hint) || SENSITIVE_WORD_RE.test(hintWords(hint));
+}
+
+/** Text of the labels associated with a field (wrapping label or label[for]). */
+function labelTexts(el: Element): string[] {
+  const labels = (el as Partial<HTMLInputElement>).labels;
+  return labels ? Array.from(labels, (label) => label.textContent ?? '') : [];
+}
+
 /**
  * True when an element is likely to hold a secret: `type=password`, or any of
- * its name/id/autocomplete/placeholder attributes matching the sensitive pattern.
+ * its name/id/autocomplete/placeholder/aria-label attributes or associated
+ * label text matching the sensitive patterns.
  */
 export function isSensitiveInput(el: Element): boolean {
   const type = (el.getAttribute('type') ?? '').toLowerCase();
   if (type === 'password') return true;
 
-  for (const attr of ['name', 'id', 'autocomplete', 'placeholder'] as const) {
+  for (const attr of ['name', 'id', 'autocomplete', 'placeholder', 'aria-label'] as const) {
     const value = el.getAttribute(attr);
-    if (value && SENSITIVE_RE.test(value)) return true;
+    if (value && isSensitiveHint(value)) return true;
   }
-  return false;
+  return labelTexts(el).some(isSensitiveHint);
 }
 
 // ----------------------------------------------------------------------------
