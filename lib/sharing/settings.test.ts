@@ -65,13 +65,19 @@ describe('Linear destinations', () => {
     await rememberRepository('linear:team-1');
     expect(stored[LAST_REPOSITORY_KEY]).toBe('linear:team-1');
   });
-  it('hides Linear while Proofline is connected', () => {
+  it('offers Linear with its personal key while Proofline is connected', () => {
     const settings = configured();
     settings.lastRepository = 'linear:team-1';
-    settings.proofline = { connection: { account: { repositories: [] } } } as unknown as SharingSettings['proofline'];
-    expect(issueDestinations(settings).some((entry) => entry.value.startsWith('linear:'))).toBe(false);
-    expect(preferredRepository(settings)).not.toBe('linear:team-1');
-    expect(() => linearKeyForTeam(settings, 'linear:team-1')).toThrow('Disconnect Proofline');
+    settings.proofline = {
+      github: 'proofline',
+      connection: { account: { repositories: [{ id: 'r1', full_name: 'alice/product' }] } },
+    } as unknown as SharingSettings['proofline'];
+    expect(issueDestinations(settings)).toEqual([
+      { value: 'alice/product', label: 'alice/product' },
+      { value: 'linear:team-1', label: 'Linear · ENG' },
+    ]);
+    expect(preferredRepository(settings)).toBe('linear:team-1');
+    expect(linearKeyForTeam(settings, 'linear:team-1')).toBe('linear-key');
   });
   it('hides Linear until a key and team are saved, and stores them with the other credentials', async () => {
     const settings = configured();

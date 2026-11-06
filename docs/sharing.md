@@ -73,13 +73,13 @@ In **Settings → GitHub**, choose **Add repository** and enter a repository and
 
 ## Linear setup
 
-Linear filing uses your own Linear API key. It is available only while Proofline is disconnected, because Proofline files issues through its GitHub App.
+Linear filing always uses your own Linear API key, whether or not Proofline is connected. The connection decides only where the report is hosted. While Proofline is connected, the report is published as a private Proofline report, as it is for GitHub filing, and the Linear issue links to it. While Proofline is disconnected, the report is published to your Cloudflare Pages project. Proofline never receives your Linear key.
 
 1. In **Settings → Linear**, use **Create a Linear personal API key** and create a key in Linear.
 2. Paste the key into **Linear API key** and choose **Load teams**.
 3. Choose the team and select **Save Linear settings**. Saving checks that the key can see that team.
 
-The key is stored locally with your other personal credentials and is never exported. The team appears in the **File issue** menu as **Linear · KEY**, and the button files a Linear issue with the same Markdown summary and protected report link as a GitHub issue. Titles are limited to 120 characters.
+The key is stored locally with your other personal credentials and is never exported. The team appears in the **File issue** menu as **Linear · KEY**, next to your repositories (or, while connected, next to the Proofline workspace's repositories), and the button files a Linear issue with the same Markdown summary and protected report link as a GitHub issue. Titles are limited to 120 characters.
 
 Each Linear request carries an issue ID that is saved before sending. If the response is lost, **Check Linear issue** first looks that ID up. Only when Linear has no such issue does it resend, with the same ID, and Linear refuses a second issue with an ID it already has. A rejected key, missing access or rate limit clears the request so you can retry. Error messages never include Linear's response text. See [Linear's GraphQL API](https://linear.app/developers/graphql).
 

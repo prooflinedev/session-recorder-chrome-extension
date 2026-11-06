@@ -23,17 +23,8 @@ export function SharingSettings({
   const cf = settings.cloudflare;
   const { patchCloudflare: patchCf, patchModel, save } = actions;
   if (!loaded) return <p role={error ? "alert" : "status"}>{error || "Loading settings…"}</p>;
-  if (settings.proofline?.connection && section === 'linear')
-    return (
-      <section className="settings__section" aria-label="Linear issues">
-        <h3 className="settings__title">Linear issues</h3>
-        <p className="settings__hint">
-          Proofline files issues through its GitHub App. Disconnect Proofline to file Linear issues with your own key.
-        </p>
-        <a href="#proofline">Manage connection</a>
-      </section>
-    );
-  if (settings.proofline?.connection) {
+  // Linear keeps its personal key while connected; Proofline only hosts the report.
+  if (settings.proofline?.connection && section !== 'linear') {
     const title = section === 'summaries' ? 'AI summaries' : section === 'github' ? 'GitHub issues' : 'Publishing';
     const service = section === 'summaries' ? 'AI summaries' : section === 'github' ? 'GitHub issues' : 'private report hosting';
     return (

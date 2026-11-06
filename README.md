@@ -42,7 +42,7 @@ The extension supports your own accounts and API keys. **Settings → Services**
 | Voice transcription and annotation dictation | Deepgram, ElevenLabs or OpenAI-compatible transcription |
 | Private report publishing | Your Cloudflare Pages project, protected by Cloudflare Access |
 | GitHub issues | Repository-specific tokens; multiple repositories supported |
-| Linear issues | A personal Linear API key and one team; available while Proofline is disconnected |
+| Linear issues | A personal Linear API key and one team; works with or without a Proofline connection |
 
 With a model configured, stopping a recording also generates its session-list title. Page vocabulary can help Deepgram and ElevenLabs recognize unusual terms during annotation dictation. Provider and hosting charges are separate from the free extension.
 

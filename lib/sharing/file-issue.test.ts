@@ -10,7 +10,8 @@ import {
   verifyGitHub,
   GitHubRequestError,
 } from './github';
-import type { SavedDraft } from './draft';
+import type { ProoflinePublication, SavedDraft } from './draft';
+import { fileProoflineIssue, publishProoflineReport } from '@/lib/proofline/reports';
 import {
   createLinearIssue,
   findLinearIssue,
@@ -30,6 +31,11 @@ vi.mock('./github', async (importOriginal) => ({
   verifyGitHub: vi.fn(),
   createGitHubIssue: vi.fn(),
   findCreatedIssue: vi.fn(),
+}));
+vi.mock('@/lib/proofline/reports', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/proofline/reports')>()),
+  publishProoflineReport: vi.fn(),
+  fileProoflineIssue: vi.fn(),
 }));
 vi.mock('./linear', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./linear')>()),
@@ -289,11 +295,63 @@ describe('Linear issue filing', () => {
     expect(input.snapshots.every((s) => s.attempt)).toBe(true);
   });
 
-  it('refuses Linear while Proofline is connected', async () => {
-    const input = linearFixture();
-    input.settings.proofline = { connection: {} } as SharingSettings['proofline'];
-    await expect(fileIssue(input)).rejects.toThrow('Disconnect Proofline');
-    expect(verifyLinear).not.toHaveBeenCalled();
-    expect(createLinearIssue).not.toHaveBeenCalled();
+  describe('while Proofline is connected', () => {
+    const prooflineUrl =
+      'https://proofline.sh/recorder/reports/10000000-0000-4000-8000-000000000001/20000000-0000-4000-8000-000000000001';
+    const hosted: ProoflinePublication = {
+      provider: 'proofline',
+      id: '20000000-0000-4000-8000-000000000001',
+      organizationId: '10000000-0000-4000-8000-000000000001',
+      url: prooflineUrl,
+      level: 'L1',
+      requestId: 'report-request',
+      attachments: [],
+    };
+    function connectedFixture() {
+      const input = linearFixture();
+      input.saved.publication = undefined;
+      input.settings.proofline = {
+        aiMode: 'proofline',
+        publishing: 'proofline',
+        github: 'proofline',
+        model: '',
+        connection: { accessToken: 'proofline-token', organizationId: hosted.organizationId, expiresAt: Date.now() + 3600000, account: { repositories: [] } },
+      } as unknown as SharingSettings['proofline'];
+      vi.mocked(publishProoflineReport).mockImplementation(async (_s, _f, _t, _l, _p, save) => {
+        await save(hosted);
+        return hosted;
+      });
+      return input;
+    }
+
+    it('hosts the report on Proofline and files with the personal Linear key and that link', async () => {
+      const input = connectedFixture();
+      const result = await fileIssue(input);
+      expect(publishProoflineReport).toHaveBeenCalledOnce();
+      expect(publishReport).not.toHaveBeenCalled();
+      expect(verifyLinear).toHaveBeenCalledWith('linear-key', 'team-1', input.signal);
+      const [attempt, key, , reportUrl] = vi.mocked(createLinearIssue).mock.calls[0]!;
+      expect(key).toBe('linear-key');
+      expect(reportUrl).toBe(prooflineUrl);
+      expect(attempt.proofline).toBeUndefined();
+      expect(input.snapshots.find((s) => s.attempt)?.attempt?.id).toBe(attempt.id);
+      expect(fileProoflineIssue).not.toHaveBeenCalled();
+      expect(createGitHubIssue).not.toHaveBeenCalled();
+      expect(result.issue).toEqual(linearIssue);
+      expect(JSON.stringify(input.snapshots)).not.toMatch(/linear-key|proofline-token/);
+    });
+
+    it('resends an uncertain attempt with its original ID and the Proofline link after a lookup', async () => {
+      const input = uncertain(connectedFixture());
+      input.saved.publication = hosted;
+      vi.mocked(findLinearIssue).mockResolvedValue(undefined);
+      const result = await fileIssue(input);
+      expect(findLinearIssue).toHaveBeenCalledOnce();
+      const [attempt, , , reportUrl] = vi.mocked(createLinearIssue).mock.calls[0]!;
+      expect(attempt.id).toBe('original-attempt-id');
+      expect(reportUrl).toBe(prooflineUrl);
+      expect(fileProoflineIssue).not.toHaveBeenCalled();
+      expect(result.attempt).toBeUndefined();
+    });
   });
 });

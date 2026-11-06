@@ -158,9 +158,9 @@ export interface IssueDestination {
   value: string;
   label: string;
 }
-/** Managed filing is GitHub App only, so Linear is offered only without Proofline. */
+/** Linear always uses the personal key; only report hosting follows the Proofline connection. */
 export function linearAvailable(settings: SharingSettings): boolean {
-  return !settings.proofline?.connection && !!settings.linear.apiKey.trim() && !!settings.linear.teamId;
+  return !!settings.linear.apiKey.trim() && !!settings.linear.teamId;
 }
 export function issueDestinations(settings: SharingSettings): IssueDestination[] {
   const repositories = configuredRepositories(settings).map((entry) => ({
@@ -194,8 +194,6 @@ export async function rememberRepository(destination: string): Promise<void> {
 }
 
 export function linearKeyForTeam(settings: SharingSettings, destination: string): string {
-  if (settings.proofline?.connection)
-    throw new Error('Disconnect Proofline in Settings → Proofline to file Linear issues.');
   if (settings.linear.teamId !== linearTeamId(destination) || !settings.linear.apiKey.trim())
     throw new Error('Add a Linear API key for this team in Settings → Linear.');
   return settings.linear.apiKey.trim();

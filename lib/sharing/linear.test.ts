@@ -79,6 +79,16 @@ describe('Linear client', () => {
     expect(init.body).not.toContain(KEY);
   });
 
+  it('accepts a Proofline-hosted report link in the description', async () => {
+    const prooflineUrl =
+      'https://proofline.sh/recorder/reports/10000000-0000-4000-8000-000000000001/20000000-0000-4000-8000-000000000001';
+    const fetchMock = respond(200, { data: { issueCreate: { success: true, issue: node } } });
+    await createLinearIssue(attempt, KEY, draft, prooflineUrl);
+    const { body } = sent(fetchMock);
+    expect(body.variables.input.description).toContain(`[Open the full report](${prooflineUrl})`);
+    expect(body.variables.input.description).toContain('Proofline sign-in required');
+  });
+
   it('looks an issue up by its attempt ID, including archived issues', async () => {
     let fetchMock = respond(200, { data: { issues: { nodes: [node] } } });
     await expect(findLinearIssue(attempt, KEY)).resolves.toMatchObject({ identifier: 'ENG-12' });
