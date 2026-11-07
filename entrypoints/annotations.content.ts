@@ -11,7 +11,7 @@
  * On Done we export the annotated image (fabric canvas -> JPEG) and a plain shape
  * list, and send both to the background. On Cancel we close with no image.
  */
-import { defineContentScript } from 'wxt/sandbox';
+import { defineContentScript } from 'wxt/utils/define-content-script';
 import * as fabric from 'fabric';
 import { onContentMessage, sendMessage } from '@/lib/messaging';
 import { ANNOTATION_HOST_ID } from '@/lib/dom/overlay';

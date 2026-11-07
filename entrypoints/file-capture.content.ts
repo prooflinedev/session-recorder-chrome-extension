@@ -10,7 +10,7 @@
  * wrapped so the page's own upload flow is never disrupted.
  */
 
-import { defineContentScript } from 'wxt/sandbox';
+import { defineContentScript } from 'wxt/utils/define-content-script';
 import { nearestHeading } from '@/lib/dom/descriptor';
 import { onContentMessage, sendMessage } from '@/lib/messaging';
 import type { FilePayload } from '@/lib/session/types';

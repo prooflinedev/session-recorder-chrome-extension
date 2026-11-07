@@ -19,7 +19,7 @@ import { extractPageKeyterms } from '@/lib/transcription/vocabulary';
  * live ticker, and lets the screenshot scheduler react. Nothing bypasses it.
  */
 
-import { defineBackground } from 'wxt/sandbox';
+import { defineBackground } from 'wxt/utils/define-background';
 
 import {
   broadcast,

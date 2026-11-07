@@ -8,7 +8,7 @@
  * this script never throws into page code.
  */
 
-import { defineContentScript } from 'wxt/sandbox';
+import { defineContentScript } from 'wxt/utils/define-content-script';
 
 import { buildDescriptor, bestSelector, isSensitiveInput } from '@/lib/dom/descriptor';
 import { isAnnotationOverlay } from '@/lib/dom/overlay';

@@ -1,4 +1,4 @@
-import { defineContentScript } from 'wxt/sandbox';
+import { defineContentScript } from 'wxt/utils/define-content-script';
 import { onContentMessage, sendMessage } from '@/lib/messaging';
 import { PointAnnotationOverlay } from '@/lib/annotations/point-overlay';
 export default defineContentScript({
