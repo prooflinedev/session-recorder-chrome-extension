@@ -1,7 +1,3 @@
-# pnpm 11 reads dependency settings from here, not the package.json "pnpm" field.
-overrides:
-  '@vitejs/plugin-react': 4.3.4
-
 # Explicit build-script approvals (pnpm 11). esbuild fetches its native binary
 # and must build; canvas and spawn-sync are node-only optional deps of fabric.js
 # that the browser build never uses, so we deny them (and pnpm stops erroring).
