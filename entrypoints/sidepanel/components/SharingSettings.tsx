@@ -1,20 +1,21 @@
 import { GitHubIcon } from '@/lib/ui/GitHubIcon';
 import React from 'react';
-import { CloudUpload, Sparkles, Plus, Trash2 } from 'lucide-react';
+import { CloudUpload, Sparkles, Plus, SquareKanban, Trash2 } from 'lucide-react';
 import {
   cloudflareTokenUrl,
   githubTokenUrl,
   SUMMARY_PROVIDERS,
   type SummaryProvider,
 } from '@/lib/sharing/settings';
+import { LINEAR_KEYS_URL } from '@/lib/sharing/linear';
 import { HelpLink } from './HelpLink';
-import type { useSharingSettings } from './useSharingSettings';
+import type { SharingSection, useSharingSettings } from './useSharingSettings';
 
 export function SharingSettings({
   section,
   controller,
 }: {
-  section: 'publishing' | 'summaries' | 'github';
+  section: SharingSection;
   controller: ReturnType<typeof useSharingSettings>;
 }): React.JSX.Element {
   const { settings, loaded, busy, message, error, provider, model, actions } =
@@ -22,7 +23,8 @@ export function SharingSettings({
   const cf = settings.cloudflare;
   const { patchCloudflare: patchCf, patchModel, save } = actions;
   if (!loaded) return <p role={error ? "alert" : "status"}>{error || "Loading settings…"}</p>;
-  if (settings.proofline?.connection) {
+  // Linear keeps its personal key while connected; Proofline only hosts the report.
+  if (settings.proofline?.connection && section !== 'linear') {
     const title = section === 'summaries' ? 'AI summaries' : section === 'github' ? 'GitHub issues' : 'Publishing';
     const service = section === 'summaries' ? 'AI summaries' : section === 'github' ? 'GitHub issues' : 'private report hosting';
     return (
@@ -248,6 +250,71 @@ export function SharingSettings({
                 onClick={() => void save(section)}
               >
                 {busy ? 'Checking…' : 'Save GitHub settings'}
+              </button>
+            </div>
+          </section>
+        )}
+        {section === 'linear' && (
+          <section className="settings__section" aria-labelledby="sharing-linear-title">
+            <div className="settings__head">
+              <SquareKanban size={14} />
+              <h3 className="settings__title" id="sharing-linear-title">
+                Linear issues
+              </h3>
+            </div>
+            <p className="settings__hint">
+              File an issue in one Linear team with a summary and protected report link.
+            </p>
+            <label className="settings__field">
+              <span className="settings__label">Linear API key</span>
+              <input
+                type="password"
+                value={settings.linear.apiKey}
+                onChange={(e) => actions.patchLinear({ apiKey: e.target.value })}
+                autoComplete="new-password"
+                spellCheck={false}
+              />
+            </label>
+            <a className="sharing-link" href={LINEAR_KEYS_URL} target="_blank" rel="noreferrer">
+              Create a Linear personal API key
+            </a>
+            <div>
+              <button
+                type="button"
+                className="btn btn--sm"
+                disabled={!settings.linear.apiKey.trim()}
+                onClick={() => void actions.loadLinearTeams()}
+              >
+                Load teams
+              </button>
+            </div>
+            <label className="settings__field">
+              <span className="settings__label">Linear team</span>
+              <select
+                value={settings.linear.teamId}
+                disabled={!controller.linearTeams.length && !settings.linear.teamId}
+                onChange={(e) => actions.patchLinear({ teamId: e.target.value })}
+              >
+                {!settings.linear.teamId && <option value="">Load teams first</option>}
+                {(controller.linearTeams.length
+                  ? controller.linearTeams
+                  : settings.linear.teamId
+                    ? [{ id: settings.linear.teamId, key: settings.linear.teamKey, name: settings.linear.teamName }]
+                    : []
+                ).map((team) => (
+                  <option key={team.id} value={team.id}>
+                    {team.key} · {team.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="settings__actions">
+              <button
+                type="button"
+                className="btn btn--primary btn--sm"
+                onClick={() => void save(section)}
+              >
+                {busy ? 'Checking…' : 'Save Linear settings'}
               </button>
             </div>
           </section>

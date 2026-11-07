@@ -71,6 +71,18 @@ Edited or previously generated drafts are preserved. **Regenerate summary** expl
 
 In **Settings → GitHub**, choose **Add repository** and enter a repository and its GitHub API token. Repeat for other destinations. The token creation link preselects **Issues: Read and write** and the resource owner; select only the repository you want to use. Saving checks access to each configured repository. Tokens stay in trusted extension storage and are never exported. Existing single-repository settings migrate automatically. See [GitHub issue creation permissions](https://docs.github.com/en/rest/issues/issues#create-an-issue).
 
+## Linear setup
+
+Linear filing always uses your own Linear API key, whether or not Proofline is connected. The connection decides only where the report is hosted. While Proofline is connected, the report is published as a private Proofline report, as it is for GitHub filing, and the Linear issue links to it. While Proofline is disconnected, the report is published to your Cloudflare Pages project. Proofline never receives your Linear key.
+
+1. In **Settings → Linear**, use **Create a Linear personal API key** and create a key in Linear.
+2. Paste the key into **Linear API key** and choose **Load teams**.
+3. Choose the team and select **Save Linear settings**. Saving checks that the key can see that team.
+
+The key is stored locally with your other personal credentials and is never exported. The team appears in the **File issue** menu as **Linear · KEY**, next to your repositories (or, while connected, next to the Proofline workspace's repositories), and the button files a Linear issue with the same Markdown summary and protected report link as a GitHub issue. Titles are limited to 120 characters.
+
+Each Linear request carries an issue ID that is saved before sending. If the response is lost, **Check Linear issue** first looks that ID up. Only when Linear has no such issue does it resend, with the same ID, and Linear refuses a second issue with an ID it already has. A rejected key, missing access or rate limit clears the request so you can retry. Error messages never include Linear's response text. See [Linear's GraphQL API](https://linear.app/developers/graphql).
+
 ## File an issue
 
 Choose **File GitHub issue**. The extension generates the summary if configured, publishes the protected report, creates the actual issue, and opens it. No review checkbox or second submission is required. The local report, file list, editable draft, and **Publish report only** remain available.
@@ -120,6 +132,6 @@ References: [Pages Direct Upload](https://developers.cloudflare.com/pages/get-st
 
 While recording, toggle **Annotate**. Click a highlighted element or drag a freeform rectangle to select an area. Type in the anchored comment bar and press Enter or the check button to save. Shift+Enter adds a line. When the recording microphone is on, speech fills the active comment using your configured transcription provider. The comment mic button starts or stops that microphone. With a model configured, visible page labels supply unusual terms to Deepgram or ElevenLabs; form values and hidden content are excluded. The report keeps the comment, element description and screenshot. Click **Turn off annotations** or toggle **Annotate** again to resume normal page interaction. Escape backs out of a comment, then turns annotation off. Pausing or stopping clears annotation mode. **Markup** still opens the separate screenshot drawing editor.
 
-Settings have dedicated Capture, Privacy, Transcription, Publishing, AI summaries, GitHub and Storage pages, with hash links and browser Back navigation.
+Settings have dedicated Capture, Privacy, Transcription, Publishing, AI summaries, GitHub, Linear and Storage pages, with hash links and browser Back navigation.
 
 Stopping opens the report-first workspace. **File issue** stays in the header; evidence appears below the draft, and technical events and report options stay collapsed. **Full timeline** opens all captured events and download tools. The panel, settings and report follow system light/dark appearance.

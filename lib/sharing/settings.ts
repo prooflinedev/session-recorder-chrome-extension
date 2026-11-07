@@ -1,5 +1,11 @@
 import { loadProoflineSettings, type ProoflineSettings } from '@/lib/proofline/settings';
 import { repositoryPath } from './github';
+import {
+  isLinearDestination,
+  linearDestination,
+  linearTeamId,
+  type LinearConfig,
+} from './linear';
 
 export type SummaryProvider = 'openai' | 'compatible' | 'anthropic' | 'google';
 export interface ModelConfig {
@@ -26,6 +32,8 @@ export interface SharingSettings {
   /** Legacy fields are read only for migration. */
   githubToken: string;
   repositories: GitHubRepository[];
+  linear: LinearConfig;
+  /** A repository path or a `linear:<teamId>` destination. */
   lastRepository: string;
   provider: SummaryProvider;
   models: Record<SummaryProvider, ModelConfig>;
@@ -70,6 +78,7 @@ export function defaultSharingSettings(): SharingSettings {
     repository: '',
     githubToken: '',
     repositories: [],
+    linear: { apiKey: '', teamId: '', teamKey: '', teamName: '' },
     lastRepository: '',
     provider: 'openai',
     models: Object.fromEntries(
@@ -93,6 +102,7 @@ export async function loadSharingSettings(): Promise<SharingSettings> {
     repositories: configuredRepositories(saved),
     lastRepository: stored[LAST_REPOSITORY_KEY] ?? saved?.lastRepository ?? '',
     cloudflare: { ...defaults.cloudflare, ...saved?.cloudflare },
+    linear: { ...defaults.linear, ...saved?.linear },
     models: Object.fromEntries(
       SUMMARY_PROVIDERS.map((p) => [
         p.id,
@@ -144,14 +154,49 @@ export function tokenForRepository(settings: SharingSettings, repository: string
   return configured.token;
 }
 
-export function preferredRepository(settings: SharingSettings): string {
-  const entries = configuredRepositories(settings);
-  return entries.find((entry) => entry.repository.toLowerCase() === settings.lastRepository.toLowerCase())?.repository
-    ?? entries[0]?.repository ?? settings.repository;
+export interface IssueDestination {
+  value: string;
+  label: string;
+}
+/** Linear always uses the personal key; only report hosting follows the Proofline connection. */
+export function linearAvailable(settings: SharingSettings): boolean {
+  return !!settings.linear.apiKey.trim() && !!settings.linear.teamId;
+}
+export function issueDestinations(settings: SharingSettings): IssueDestination[] {
+  const repositories = configuredRepositories(settings).map((entry) => ({
+    value: entry.repository,
+    label: entry.repository,
+  }));
+  return linearAvailable(settings)
+    ? [...repositories, { value: linearDestination(settings.linear.teamId), label: destinationLabel(settings, linearDestination(settings.linear.teamId)) }]
+    : repositories;
+}
+export function destinationLabel(settings: SharingSettings, destination: string): string {
+  if (!isLinearDestination(destination)) return destination;
+  return settings.linear.teamKey && destination === `linear:${settings.linear.teamId}`
+    ? `Linear · ${settings.linear.teamKey}`
+    : 'Linear';
+}
+export function normalizeDestination(destination: string): string {
+  return isLinearDestination(destination)
+    ? linearDestination(linearTeamId(destination))
+    : repositoryPath(destination);
 }
 
-export async function rememberRepository(repository: string): Promise<void> {
-  await chrome.storage.local.set({ [LAST_REPOSITORY_KEY]: repositoryPath(repository) });
+export function preferredRepository(settings: SharingSettings): string {
+  const entries = issueDestinations(settings);
+  return entries.find((entry) => entry.value.toLowerCase() === settings.lastRepository.toLowerCase())?.value
+    ?? entries[0]?.value ?? settings.repository;
+}
+
+export async function rememberRepository(destination: string): Promise<void> {
+  await chrome.storage.local.set({ [LAST_REPOSITORY_KEY]: normalizeDestination(destination) });
+}
+
+export function linearKeyForTeam(settings: SharingSettings, destination: string): string {
+  if (settings.linear.teamId !== linearTeamId(destination) || !settings.linear.apiKey.trim())
+    throw new Error('Add a Linear API key for this team in Settings → Linear.');
+  return settings.linear.apiKey.trim();
 }
 
 export function githubTokenUrl(repository: string): string {

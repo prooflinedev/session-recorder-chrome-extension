@@ -1,6 +1,8 @@
 import { ProoflineBrand } from '@/lib/ui/ProoflineBrand';
 import { FilingProgress } from './FilingProgress';
-import { configuredRepositories } from '@/lib/sharing/settings';
+import { destinationLabel, issueDestinations } from '@/lib/sharing/settings';
+import { issueLabel } from '@/lib/sharing/github';
+import { isLinearDestination } from '@/lib/sharing/linear';
 import { GitHubIcon } from '@/lib/ui/GitHubIcon';
 import React, { useReducer } from 'react';
 import {
@@ -13,6 +15,7 @@ import {
   ArrowLeft,
   Pencil,
   Check,
+  SquareKanban,
 } from 'lucide-react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -107,6 +110,9 @@ export function App(): React.JSX.Element {
     </main>
   );
 }
+function TrackerIcon({ destination }: { destination: string }) {
+  return isLinearDestination(destination) ? <SquareKanban size={14} /> : <GitHubIcon size={14} />;
+}
 function FileIssueAction({ share }: { share: ShareModel }) {
   const { state, busy, publishLimit, actions } = share;
   if (state.issue)
@@ -117,34 +123,31 @@ function FileIssueAction({ share }: { share: ShareModel }) {
         target="_blank"
         rel="noreferrer"
       >
-        <GitHubIcon size={14} />
-        View issue #{state.issue.number}
+        <TrackerIcon destination={state.issue.repository} />
+        View issue {issueLabel(state.issue)}
       </a>
     );
-  const repositories = [
-    ...new Set(
-      [
-        state.repository,
-        ...configuredRepositories(state.settings).map((entry) => entry.repository),
-      ].filter(Boolean),
-    ),
-  ];
+  const destinations = issueDestinations(state.settings);
+  const repositories = state.repository && !destinations.some((entry) => entry.value === state.repository)
+    ? [{ value: state.repository, label: destinationLabel(state.settings, state.repository) }, ...destinations]
+    : destinations;
+  const tracker = isLinearDestination(state.repository) ? 'Linear' : 'GitHub';
   return (
     <div className="file-issue-split">
       <button
         className="btn btn--primary"
         type="button"
-        aria-label={state.attempt ? 'Check GitHub issue' : 'File GitHub issue'}
+        aria-label={state.attempt ? `Check ${tracker} issue` : `File ${tracker} issue`}
         disabled={busy || state.preparing || !state.files.length || !!publishLimit}
         onClick={() => void actions.submitIssue()}
         autoFocus={!!state.error}
       >
-        <GitHubIcon size={14} />
-        {state.attempt ? 'Check GitHub issue' : 'File issue'}
+        <TrackerIcon destination={state.repository} />
+        {state.attempt ? `Check ${tracker} issue` : 'File issue'}
       </button>
       <label
         className="issue-destination"
-        title={state.repository || 'Select a repository'}
+        title={destinationLabel(state.settings, state.repository) || 'Select a repository'}
       >
         <select
           aria-label="Issue repository"
@@ -157,9 +160,9 @@ function FileIssueAction({ share }: { share: ShareModel }) {
               Select repository
             </option>
           )}
-          {repositories.map((repository) => (
-            <option key={repository} value={repository}>
-              {repository}
+          {repositories.map((destination) => (
+            <option key={destination.value} value={destination.value}>
+              {destination.label}
             </option>
           ))}
         </select>
@@ -335,16 +338,23 @@ function ReportDetails({ share }: { share: ShareModel }) {
   return (
     <aside className="report-details" aria-label="Report details">
       <h2>Issue details</h2>
-      <label className="detail-field">
-        <span>Repository</span>
-        <input
-          aria-label="GitHub repository"
-          value={state.repository}
-          disabled={busy || !!state.issue || !!state.attempt}
-          placeholder="owner/repository"
-          onChange={(e) => actions.editRepository(e.target.value)}
-        />
-      </label>
+      {isLinearDestination(state.repository) ? (
+        <div className="detail-field">
+          <span>Destination</span>
+          <span>{destinationLabel(state.settings, state.repository)}</span>
+        </div>
+      ) : (
+        <label className="detail-field">
+          <span>Repository</span>
+          <input
+            aria-label="GitHub repository"
+            value={state.repository}
+            disabled={busy || !!state.issue || !!state.attempt}
+            placeholder="owner/repository"
+            onChange={(e) => actions.editRepository(e.target.value)}
+          />
+        </label>
+      )}
       <dl>
         <div>
           <dt>Status</dt>

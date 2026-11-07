@@ -12,7 +12,7 @@ Session Recorder is a **free, open-source Chrome extension** for QA and product 
 2. Reproduce the problem. Toggle **Annotate** to select a page element or drag a rectangle and add a comment. You can also mark up a screenshot, dictate into a comment, attach a file, or add a note.
 3. Stop recording. A full-page report opens with the issue draft and evidence. Select **File issue** to generate a summary, publish the report, and create the GitHub issue using your configured services.
 
-The arrow beside **File issue** selects a repository and remembers your last choice for new reports. Annotations and spoken notes lead the AI summary; console and network details support it. Filing shows progress and can be canceled.
+The arrow beside **File issue** selects a repository or your Linear team and remembers your last choice for new reports. Annotations and spoken notes lead the AI summary; console and network details support it. Filing shows progress and can be canceled.
 
 Recording, annotation and ZIP export work without an account or API key. Configure publishing and GitHub access once to use one-click filing. AI is optional: you can edit the issue draft yourself.
 
@@ -42,6 +42,7 @@ The extension supports your own accounts and API keys. **Settings → Services**
 | Voice transcription and annotation dictation | Deepgram, ElevenLabs or OpenAI-compatible transcription |
 | Private report publishing | Your Cloudflare Pages project, protected by Cloudflare Access |
 | GitHub issues | Repository-specific tokens; multiple repositories supported |
+| Linear issues | A personal Linear API key and one team; works with or without a Proofline connection |
 
 With a model configured, stopping a recording also generates its session-list title. Page vocabulary can help Deepgram and ElevenLabs recognize unusual terms during annotation dictation. Provider and hosting charges are separate from the free extension.
 

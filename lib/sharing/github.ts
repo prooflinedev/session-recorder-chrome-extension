@@ -51,8 +51,13 @@ export function githubIssueLink(
 
 export interface CreatedIssue {
   number: number;
+  /** Set for Linear issues, whose readable ID is `KEY-n`. */
+  identifier?: string;
   url: string;
   repository: string;
+}
+export function issueLabel(issue: CreatedIssue): string {
+  return issue.identifier ?? `#${issue.number}`;
 }
 export interface IssueAttempt {
   proofline?: { organizationId: string; reportId: string; repositoryId: string };
