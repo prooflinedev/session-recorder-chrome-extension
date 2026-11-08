@@ -12,6 +12,7 @@
  */
 import { getSession, getEvents, getAssets } from '@/lib/storage';
 import { formatClock } from '@/lib/export/markdown';
+import { describeEnvironment } from '@/lib/session/environment';
 import {
   applyLevel,
   collapseRepeatedRequests,
@@ -180,6 +181,11 @@ function render(): void {
   );
   meta.appendChild(el('span', 'dot', '·'));
   meta.appendChild(el('span', undefined, new Date(session.startedAt).toLocaleString()));
+  const environment = session.environment && describeEnvironment(session.environment);
+  if (environment) {
+    meta.appendChild(el('span', 'dot', '·'));
+    meta.appendChild(el('span', undefined, environment));
+  }
   h.appendChild(meta);
   root.appendChild(h);
 
