@@ -229,3 +229,10 @@ export function redactUrl(url: string, rules: RedactionRules): string {
 
   return changed ? `${head}?${parts.join('&')}${hash}` : url;
 }
+
+/** Apply the same URL rules to web/socket URLs embedded in browser diagnostics. */
+export function redactUrlsInText(text: string, rules: RedactionRules): string {
+  return text.replace(/\b(?:https?|wss?):\/\/[^\s"'<>`]+/gi, (url) =>
+    redactUrl(url, rules),
+  );
+}

@@ -215,7 +215,10 @@ class Orchestrator {
       sessionStart: () => this.sessionStartEpoch,
     });
 
-    this.console = new ConsoleCapturer((raw) => this.recordEvent(raw));
+    this.console = new ConsoleCapturer(
+      (raw) => this.recordEvent(raw),
+      () => this.activeSettings(),
+    );
 
     this.screenshots = new ScreenshotScheduler({
       captureScreenshot: (tabId, quality) =>

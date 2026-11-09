@@ -41,7 +41,11 @@ explicitly publish the selected report to Proofline or your Cloudflare Pages pro
 Redaction is on by default. For supported structured capture fields, the extension
 masks authorization headers, token-like JSON/form fields, sensitive URL
 parameters, and password inputs. You can add rules or disable redaction per
-session on the options page. Screenshots, audio, attached files and arbitrary text may still contain sensitive information.
+session on the options page. The same URL parameter rules apply to web and
+WebSocket URLs in console messages, browser logs, arguments, sources and exception
+stacks before they are stored. Screenshots, audio, attached files and other
+arbitrary text may still contain sensitive information. This does not scrub
+recordings or reports saved before the fix.
 
 ## Third-party transcription (optional, off by default)
 
