@@ -10,6 +10,8 @@ import {
   chromium,
   expect as pwExpect,
   type BrowserContext,
+  type Request,
+  type Route,
   type Worker,
 } from '@playwright/test';
 import path from 'node:path';
@@ -86,4 +88,34 @@ export async function tabIdForUrl(
     if (!t || t.id === undefined) throw new Error(`No tab for ${p}`);
     return t.id;
   }, prefix);
+}
+
+/**
+ * Whether a routed request was made by the extension itself (one of its pages or
+ * its service worker) rather than by a website tab the extension opened, such as
+ * the Proofline approval page or a filed GitHub issue. Chromium does not always
+ * route the navigation of a tab created with `chrome.tabs.create`, so the real
+ * site can load and call its own API through these fixtures.
+ */
+export function fromExtension(request: Request): boolean {
+  const worker = request.serviceWorker();
+  if (worker) return worker.url().startsWith('chrome-extension://');
+  try {
+    return request.frame().url().startsWith('chrome-extension://');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Answer a request made by a website tab without letting it reach the network,
+ * and assert that none of the extension's credentials leaked into it.
+ */
+export async function fulfillWebsiteRequest(route: Route, secrets: string[]): Promise<void> {
+  const request = route.request();
+  const sent = [request.url(), JSON.stringify(request.headers()), request.postData() ?? ''].join('\n');
+  for (const secret of secrets) pwExpect(sent).not.toContain(secret);
+  if (request.isNavigationRequest())
+    await route.fulfill({ contentType: 'text/html', body: '<p>Website fixture</p>' });
+  else await route.fulfill({ status: 404, json: { message: 'Not Found' } });
 }
