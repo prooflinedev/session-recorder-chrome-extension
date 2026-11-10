@@ -79,6 +79,8 @@ The arrow beside **File issue** selects a configured repository and its matching
 
 The GitHub summary has the repository’s visibility, independent of Access. Keep the share tab open while it works. Each file must be at most 25 MiB and the bundle at most 20,000 files. Compact and Minimal omit video.
 
+Proofline may queue issue creation while GitHub rate limits reset. The filing screen distinguishes a queued request from submission to GitHub. After one minute of polling, it returns to the draft with a message that processing continues in the background. Use **Check GitHub issue** later to check that same request; filing another issue manually can create a duplicate.
+
 Created issues and in-flight attempts are saved locally. Reopening a completed report shows **View issue**. A retry reuses an existing deployment and checks for an accepted GitHub request before any resubmission. An uncertain GitHub response never causes an automatic duplicate POST; **Check GitHub issue** reconciles the previous request.
 
 Drafts and deployment IDs persist locally. **Check deployment** resumes polling
