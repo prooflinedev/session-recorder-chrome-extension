@@ -64,6 +64,7 @@ export async function fileIssue(input: FileIssueInput): Promise<SavedDraft> {
             saved.draft,
             signal,
             true,
+            progress,
           )
         : await findCreatedIssue(saved.attempt, token, signal);
     } catch (error) {
@@ -201,7 +202,14 @@ export async function fileIssue(input: FileIssueInput): Promise<SavedDraft> {
   progress('Creating GitHub issue…');
   try {
     const issue = managedGitHub
-      ? await fileProoflineIssue(settings.proofline!, attempt, saved.draft, signal)
+      ? await fileProoflineIssue(
+          settings.proofline!,
+          attempt,
+          saved.draft,
+          signal,
+          false,
+          progress,
+        )
       : await createGitHubIssue(
           attempt,
           token,

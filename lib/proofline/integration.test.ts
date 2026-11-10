@@ -402,3 +402,53 @@ it('retains the original issue attempt when GitHub may have received it', async 
   ).rejects.toThrow('may have received');
   expect(save).not.toHaveBeenCalled();
 });
+
+it.each(['pending', 'submitting'] as const)(
+  'stops waiting for a delayed %s issue and resumes without another POST',
+  async (status) => {
+    vi.useFakeTimers();
+    try {
+      const settings = await loadSharingSettings();
+      settings.proofline = managed();
+      settings.proofline.connection!.expiresAt = Date.now() + 600_000;
+      let complete = false;
+      const fetcher = vi.fn(async (_url: string, init: RequestInit) => {
+        expect(init.method ?? 'GET').toBe('GET');
+        return Response.json(complete
+          ? { request_id: 'attempt-1', status: 'complete', number: 42, url: 'https://github.com/alice/app/issues/42' }
+          : { request_id: 'attempt-1', status });
+      });
+      vi.stubGlobal('fetch', fetcher);
+      const { fileIssue } = await import('@/lib/sharing/file-issue');
+      const save = vi.fn(async () => {});
+      const progress = vi.fn();
+      const input = {
+        saved: {
+          draft: { title: 'Improve recipes', body: 'Show help.' },
+          repository: 'alice/app',
+          attempt: {
+            id: 'attempt-1', repository: 'alice/app', startedAt: new Date().toISOString(),
+            proofline: { organizationId: org, reportId: 'report-1', repositoryId: 'r1' },
+          },
+        },
+        settings, files: [], evidence: '', level: 'L1' as const,
+        save, progress, signal: new AbortController().signal,
+      };
+      let failure: unknown;
+      const pending = fileIssue(input).catch((error) => { failure = error; });
+      await vi.advanceTimersByTimeAsync(60_001);
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toContain('in the background');
+      await pending;
+      expect(progress).toHaveBeenCalledWith(expect.stringContaining(
+        status === 'pending' ? 'queued in Proofline' : 'submitting the issue',
+      ));
+      expect(save).not.toHaveBeenCalled();
+      complete = true;
+      expect((await fileIssue(input)).issue?.number).toBe(42);
+      expect(save).toHaveBeenCalledWith(expect.objectContaining({ attempt: undefined }));
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);

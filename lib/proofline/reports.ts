@@ -138,6 +138,7 @@ export async function fileProoflineIssue(
   draft: IssueDraft,
   signal: AbortSignal,
   resume = false,
+  progress: (message: string) => void = () => {},
 ): Promise<CreatedIssue> {
   const connection = requireConnection(settings);
   const target = attempt.proofline;
@@ -161,8 +162,18 @@ export async function fileProoflineIssue(
           }),
           signal,
         });
+    const deadline = Date.now() + 60_000;
     while (job.status === 'pending' || job.status === 'submitting') {
-      await delay(1000, signal);
+      if (Date.now() >= deadline)
+        throw new Error(
+          'Proofline is still processing this issue request in the background. GitHub rate limits can delay it. Use Check GitHub issue later to check the same request; do not file a second issue manually.',
+        );
+      progress(
+        job.status === 'pending'
+          ? 'Issue request queued in Proofline. Waiting for submission; GitHub rate limits can delay this step…'
+          : 'Proofline is submitting the issue to GitHub. Waiting for confirmation…',
+      );
+      await delay(2000, signal);
       job = await prooflineRequest<IssueJob>(settings, `${base}/issues/${attempt.id}`, {
         signal,
       });
