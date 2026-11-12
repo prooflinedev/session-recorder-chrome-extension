@@ -3,13 +3,16 @@
  *
  * Strips sensitive request/response headers, recursively scrubs values under
  * secret-looking keys in JSON and form-urlencoded bodies, and masks matching
- * URL query-param values. Defaults ALWAYS apply; the per-session master switch
+ * URL query-param values. Card numbers, IBANs and German tax IDs are masked in
+ * the same places whatever their key (`value-redaction.ts`). Defaults ALWAYS
+ * apply; the per-session master switch
  * (`settings.redactionEnabled`) is handled by the caller — this module is a
  * side-effect-free transform that never touches chrome/DOM/network and never
  * mutates its inputs.
  */
 
 import type { NetHeader, RedactionRules } from '@/lib/session/types';
+import { isSensitiveValue } from './value-redaction';
 
 /** Marker substituted for any redacted value. */
 export const REDACTED = '«redacted»';
@@ -123,6 +126,7 @@ function redactJsonValue(
     }
     return { value: obj, redacted };
   }
+  if (isSensitiveValue(value)) return { value: REDACTED, redacted: true };
   return { value, redacted: false };
 }
 
@@ -138,6 +142,14 @@ function looksLikeJson(text: string): boolean {
   return t.startsWith('{') || t.startsWith('[');
 }
 
+function pairNeedsRedaction(
+  rawKey: string,
+  rawValue: string,
+  matcher: (key: string) => boolean,
+): boolean {
+  return matcher(safeDecode(rawKey)) || isSensitiveValue(safeDecode(rawValue));
+}
+
 /** Redact matching keys' values in a form-urlencoded body, preserving structure. */
 function redactForm(
   text: string,
@@ -148,7 +160,7 @@ function redactForm(
     const eq = part.indexOf('=');
     if (eq === -1) return part;
     const rawKey = part.slice(0, eq);
-    if (matcher(safeDecode(rawKey))) {
+    if (pairNeedsRedaction(rawKey, part.slice(eq + 1), matcher)) {
       redacted = true;
       return `${rawKey}=${REDACTED}`;
     }
@@ -220,7 +232,7 @@ export function redactUrl(url: string, rules: RedactionRules): string {
     const eq = part.indexOf('=');
     if (eq === -1) return part; // flag param, no value to redact
     const rawKey = part.slice(0, eq);
-    if (matcher(safeDecode(rawKey))) {
+    if (pairNeedsRedaction(rawKey, part.slice(eq + 1), matcher)) {
       changed = true;
       return `${rawKey}=${REDACTED}`;
     }

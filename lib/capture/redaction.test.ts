@@ -299,3 +299,55 @@ describe('redactUrl', () => {
     expect(out).toBe(`https://x.com/p?api%5Fkey=${REDACTED}&z=1`);
   });
 });
+
+describe('value-based redaction', () => {
+  it('masks personal numbers in JSON under ordinary keys', () => {
+    const input = JSON.stringify({
+      account: 'DE89 3704 0044 0532 0130 00',
+      payment: '4111-1111-1111-1111',
+      customer: { name: 'joe', id: '86 095 742 719' },
+      cards: ['5555555555554444', 'ok'],
+      cardNumber: 4111111111111111,
+    });
+    const { text, redacted } = redactBody(input, 'application/json', EMPTY_RULES);
+    expect(redacted).toBe(true);
+    expect(JSON.parse(text)).toEqual({
+      account: REDACTED,
+      payment: REDACTED,
+      customer: { name: 'joe', id: REDACTED },
+      cards: [REDACTED, 'ok'],
+      cardNumber: REDACTED,
+    });
+  });
+
+  it('masks personal numbers in form bodies and URL query values', () => {
+    const form = redactBody(
+      'account=DE89+3704+0044+0532+0130+00&payment=4111%201111%201111%201111&n=2',
+      'application/x-www-form-urlencoded',
+      EMPTY_RULES,
+    );
+    expect(form).toEqual({
+      text: `account=${REDACTED}&payment=${REDACTED}&n=2`,
+      redacted: true,
+    });
+    const url = redactUrl('https://x.com/pay?customer=86095742719&n=2#top', EMPTY_RULES);
+    expect(url).toBe(`https://x.com/pay?customer=${REDACTED}&n=2#top`);
+  });
+
+  it('leaves order IDs, timestamps and phone numbers unchanged', () => {
+    const json = JSON.stringify({
+      orderId: '202411120001234',
+      createdAt: 1731420000001,
+      phone: '+44 7700 900123',
+    });
+    expect(redactBody(json, 'application/json', EMPTY_RULES)).toEqual({
+      text: json,
+      redacted: false,
+    });
+    const query = 'order=202411120001234&ts=1731420000001&phone=%2B46701740605';
+    expect(redactBody(query, undefined, EMPTY_RULES).redacted).toBe(false);
+    expect(redactUrl(`https://x.com/p?${query}`, EMPTY_RULES)).toBe(
+      `https://x.com/p?${query}`,
+    );
+  });
+});

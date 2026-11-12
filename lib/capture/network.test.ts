@@ -354,3 +354,44 @@ describe('NetworkCapturer binary bodies', () => {
     expect(body.text).not.toContain('binary body');
   });
 });
+
+describe('NetworkCapturer value-based redaction', () => {
+  function captureRequest(redactionEnabled: boolean): NetRequestPayload {
+    const emitted: RawEvent[] = [];
+    const { cap } = makeCapturer({
+      getSettings: () => ({ ...SETTINGS, redactionEnabled }),
+      emit: (raw) => emitted.push(raw),
+    });
+    const rid = 'r-pii';
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: rid,
+      request: {
+        method: 'POST',
+        url: 'https://x/api/pay?customer=86095742719',
+        headers: { 'content-type': 'application/json' },
+        postData: '{"account":"DE89370400440532013000","payment":"4111111111111111"}',
+      },
+      type: 'XHR',
+    });
+    cap.handle(1, 'Network.loadingFailed', { requestId: rid, errorText: 'x' });
+    return payloadOf(emitted[0]!);
+  }
+
+  it('masks personal numbers in the URL and body when redaction is on', () => {
+    const p = captureRequest(true);
+    expect(p.url).toBe('https://x/api/pay?customer=«redacted»');
+    expect(JSON.parse(p.requestBody!.text!)).toEqual({
+      account: '«redacted»',
+      payment: '«redacted»',
+    });
+  });
+
+  it('keeps the values when redaction is off for the recording', () => {
+    const p = captureRequest(false);
+    expect(p.url).toBe('https://x/api/pay?customer=86095742719');
+    expect(JSON.parse(p.requestBody!.text!)).toEqual({
+      account: 'DE89370400440532013000',
+      payment: '4111111111111111',
+    });
+  });
+});
