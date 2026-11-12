@@ -1,6 +1,16 @@
-import { test, expect, extUrl, dispatch, tabIdForUrl } from './support';
+import {
+  test,
+  expect,
+  extUrl,
+  dispatch,
+  tabIdForUrl,
+  fromExtension,
+  fulfillWebsiteRequest,
+} from './support';
 const org = '10000000-0000-4000-8000-000000000001';
 const reportId = '20000000-0000-4000-8000-000000000001';
+// Like the real approval page, the fixture calls the website's own API.
+const approvalPage = '<p>Approval fixture</p><script>fetch("/api/v1/me")</script>';
 const account = {
   user: { id: 'u1', login: 'alice' },
   organization: {
@@ -187,6 +197,11 @@ test('connecting Proofline populates and files a saved draft without personal re
   await context.route('https://proofline.sh/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
+    if (!fromExtension(request) && path !== '/auth/device') {
+      // The approval page may call the website's own API; it never gets the token.
+      await fulfillWebsiteRequest(route, ['test-proofline-token', 'repo-test-code']);
+      return;
+    }
     paths.push(path);
     let json: unknown;
     if (path === '/auth/device/code') json = {
@@ -211,7 +226,7 @@ test('connecting Proofline populates and files a saved draft without personal re
       json = { request_id: request.postDataJSON().request_id, status: 'complete',
         number: 42, url: 'https://github.com/alice/product/issues/42' };
     } else if (path === '/auth/device') {
-      await route.fulfill({ contentType: 'text/html', body: '<p>Approval fixture</p>' });
+      await route.fulfill({ contentType: 'text/html', body: approvalPage });
       return;
     } else if (path.startsWith('/api/') || path.startsWith('/auth/')) {
       throw new Error(`Unexpected request ${path}`);
@@ -382,6 +397,17 @@ test('changes the paying workspace only after matching browser approval', async 
   await context.route('https://proofline.sh/**', async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
+    if (path === '/auth/device' && request.isNavigationRequest()) {
+      // The extension opens the browser approval page for the current code.
+      expect(request.method()).toBe('GET');
+      expect(new URL(request.url()).searchParams.get('user_code')).toBe(`APPROVAL-${approvals}`);
+      await route.fulfill({ contentType: 'text/html', body: approvalPage });
+      return;
+    }
+    if (!fromExtension(request)) {
+      await fulfillWebsiteRequest(route, ['test-proofline-token', 'approved-token-', 'device-']);
+      return;
+    }
     if (path === '/auth/device/code') {
       expect(request.postDataJSON().organization_id).toBe(teamId);
       approvals++;
@@ -416,7 +442,7 @@ test('changes the paying workspace only after matching browser approval', async 
         },
       });
     } else if (path.startsWith('/auth/') || path.startsWith('/api/')) {
-      throw new Error(`Unexpected Proofline request ${path}`);
+      throw new Error(`Unexpected Proofline request ${request.method()} ${path}`);
     } else {
       await route.fulfill({ contentType: 'text/html', body: '<p>Approval fixture</p>' });
     }
