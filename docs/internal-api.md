@@ -22,6 +22,7 @@ Use [`lib/util/ids.ts`](../lib/util/ids.ts) for IDs and [`lib/util/hash.ts`](../
 | [`lib/capture/screenshots.ts`](../lib/capture/screenshots.ts) | Screenshot scheduling and deduplication |
 | [`lib/capture/multitab.ts`](../lib/capture/multitab.ts) | Recorded tabs and navigation |
 | [`lib/capture/redaction.ts`](../lib/capture/redaction.ts) | Header, body and URL masking |
+| [`lib/capture/value-redaction.ts`](../lib/capture/value-redaction.ts) | Checksum-validated detection of card numbers, IBANs and German tax IDs |
 | [`lib/dom/descriptor.ts`](../lib/dom/descriptor.ts) | Element descriptions and sensitive-input detection |
 
 Content scripts capture interactions, uploaded files and annotations. They send typed messages to the background, which validates the sender and active recording. Redaction is enabled by default, but screenshots, media, files and arbitrary text are not comprehensively scrubbed. Do not promise that no sensitive information can reach storage.
