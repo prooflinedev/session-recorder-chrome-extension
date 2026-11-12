@@ -10,45 +10,35 @@ Publication copy for **Session Recorder by Proofline**. Match the submitted pack
 - Language: English.
 - Source and issue support: https://github.com/prooflinedev/session-recorder-chrome-extension.
 - Website destination: https://proofline.sh/session-recorder-chrome-extension/.
-- Privacy policy destination: https://proofline.sh/session-recorder-chrome-extension/privacy.html.
+- Privacy policy destination: https://proofline.sh/session-recorder-chrome-extension/privacy/.
 
-Keep the existing item ID and install link when transferring to the Proofline publisher. GitHub repository ownership and Chrome Web Store publisher ownership are separate. Confirm the active publisher, public support email, visibility and working website/privacy URLs in the dashboard before submission. The backend and website are deployed; managed speech still requires provider configuration.
+Keep the existing item ID. Set the listing website to the recorder overview and the support URL to https://proofline.sh/help/session-recorder/. Confirm the publisher and privacy disclosures against the submitted package.
 
 ## Short description
 
-Record browser bugs with screenshots, annotations, console, network and voice. Export a report or file a GitHub issue.
+Record browser bugs with screenshots, console errors, and network requests. Export a Markdown report or file a GitHub issue.
 
 ## Detailed description
 
-Session Recorder by Proofline is a free, open-source Chrome extension for QA and product teams. Record a browser bug, point out what went wrong, and give a developer or coding agent the evidence to investigate it.
+Record the steps that trigger a browser bug. Mark the element that went wrong, then review your clicks, screenshots, console errors and network requests on one timeline. Download the report as Markdown with its attachments. Recording and local export are free and need no account or API key.
 
-RECORD THE REPRODUCTION
+Point out what happened
 
-Capture clicks, inputs, navigation, console messages, exceptions, network requests and responses, and screenshots. Recording follows tabs opened by the recorded app. Optional microphone narration, tab video with sound, files, markers and notes stay on the same timeline.
+Click a page element or draw a rectangle and attach a comment. Add a screenshot, type a note, or turn on the microphone to narrate the steps. Your annotations stay beside the actions they describe.
 
-POINT OUT THE PROBLEM
+Hand the report to a developer
 
-Toggle annotation while recording. Select a page element or drag a freeform rectangle and add a comment. Dictate into the comment using the recording microphone, or mark up a screenshot with arrows, boxes and text.
+Choose Full, Standard, Compact or Minimal detail and download the ZIP. A teammate can open report.md or give it to a coding agent. To see an actual report before installing, visit https://proofline.sh/session-recorder-chrome-extension/example-report/.
 
-FILE AN ISSUE
+File a GitHub issue
 
-Configure a GitHub repository and protected Cloudflare publishing once. After stopping, review the full-page report and select File issue. With an AI provider configured, the extension automatically creates an editable summary, publishes the report and files the issue with a link. The repository picker supports multiple destinations and remembers your last choice for new reports.
+Connect a repository and configure protected publishing to file issues from a recording. With an AI provider configured, you can review and edit the summary before filing. A private report link still leaves text filed in a public GitHub issue visible to everyone.
 
-Annotations and narration lead the summary; background diagnostics support them. Configured AI also names stopped sessions. Personal providers include OpenAI, OpenAI-compatible endpoints, Anthropic and Google. Voice transcription supports Deepgram, ElevenLabs and OpenAI-compatible services. Provider and hosting charges are separate from the free extension.
+Choose what leaves your browser
 
-EXPORT FOR A CODING AGENT
+Recordings stay in Chrome until you export them or use an optional service. Transcription sends audio to the provider you choose. AI summaries send text evidence. Publishing uploads the report and its attachments. Review screenshots, audio and free text before sharing because they can contain private information. Provider and hosting charges may apply.
 
-Recording, annotations and local ZIP export require no account or API key. Give report.md and the included assets to Claude Code, Codex, Cursor, ChatGPT or another coding agent. Full, Standard, Compact and Minimal export levels let you choose how much evidence to include. Trimming runs locally without an LLM and preserves protected signals such as annotations, narration, notes and errors.
-
-LOCAL STORAGE AND OPTIONAL SHARING
-
-Sessions stay in Chrome locally by default. Redaction masks common credentials and structured sensitive fields during capture. Screenshots, audio, files and arbitrary text can still contain private information. Optional transcription sends audio to the service you select; AI sends bounded text evidence. Publishing uploads the report and included attachments. A protected report link does not make public GitHub issue text private.
-
-## Managed-service copy
-
-Use the following paragraph to describe managed services:
-
-> Connect to Proofline to use workspace credits for all AI, share private reports with selected readers and file issues through the workspace GitHub App. Connected services work automatically without manual provider setup or overrides. The existing 10,000-credit grant requires Proofline onboarding and GitHub App installation. Disconnect to use personal API keys and your own Cloudflare account; saved credentials remain local. Outside report readers need a free Proofline account. Paid AI pauses when credits are unavailable and never switches to personal keys automatically.
+The optional Proofline workspace connection is in preview. Source code and support are available at https://github.com/prooflinedev/session-recorder-chrome-extension.
 
 ## Single purpose
 
