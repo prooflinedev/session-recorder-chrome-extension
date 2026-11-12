@@ -16,29 +16,34 @@ Keep the existing item ID. Set the listing website to the recorder overview and 
 
 ## Short description
 
-Record browser bugs with screenshots, console errors, and network requests. Export a Markdown report or file a GitHub issue.
+Record steps to reproduce a bug with screenshots, console logs and network requests. Export to Markdown or file a GitHub issue.
 
 ## Detailed description
 
-Record the steps that trigger a browser bug. Mark the element that went wrong, then review your clicks, screenshots, console errors and network requests on one timeline. Download the report as Markdown with its attachments. Recording and local export are free and need no account or API key.
+Record a website bug in Chrome and give the developer who picks it up the steps to reproduce it. Session Recorder keeps clicks, page navigation, screenshots, console errors and network requests on one timeline. Export a Markdown bug report for free, or connect Proofline to publish a private report and file a GitHub issue.
 
-Point out what happened
+Capture the steps to reproduce a bug
 
-Click a page element or draw a rectangle and attach a comment. Add a screenshot, type a note, or turn on the microphone to narrate the steps. Your annotations stay beside the actions they describe.
+Open the side panel, press Record and repeat the steps that trigger the problem. If a Save button spins and nothing happens, capture the screen and add a note about what you expected. A developer can follow the click, see what appeared on the page and check the console logs and network requests around that moment.
 
-Hand the report to a developer
+Show exactly what went wrong
 
-Choose Full, Standard, Compact or Minimal detail and download the ZIP. A teammate can open report.md or give it to a coding agent. To see an actual report before installing, visit https://proofline.sh/session-recorder-chrome-extension/example-report/.
+For visual QA and website feedback, click a page element or draw a rectangle and pin a comment to it. Take a screenshot for a layout bug. Turn on tab video to show a dialog that closes too soon, or add a voice note to explain a sequence that’s hard to describe in writing.
 
-File a GitHub issue
+File a GitHub issue with a private report
 
-Connect a repository and configure protected publishing to file issues from a recording. With an AI provider configured, you can review and edit the summary before filing. A private report link still leaves text filed in a public GitHub issue visible to everyone.
+With the optional Proofline workspace connection, review the issue title and summary, choose a repository and file the ticket. The GitHub issue links to the full report, which requires sign-in. You can also publish the report to Proofline on its own so a teammate can review the evidence before you file. The issue title and body follow the repository’s visibility settings.
 
-Choose what leaves your browser
+Export a bug report without an account
 
-Recordings stay in Chrome until you export them or use an optional service. Transcription sends audio to the provider you choose. AI summaries send text evidence. Publishing uploads the report and its attachments. Review screenshots, audio and free text before sharing because they can contain private information. Provider and hosting charges may apply.
+Local recording and export need no account or API key. Choose how much detail to include, then download a ZIP with report.md and its attachments. Attach it to an existing support ticket, hand it to an engineer investigating a regression, or give the Markdown to a coding agent.
 
-The optional Proofline workspace connection is in preview. Source code and support are available at https://github.com/prooflinedev/session-recorder-chrome-extension.
+Choose what you share
+
+Recordings stay in Chrome until you export them or use an optional integration. Configured AI summaries send text evidence to the selected provider. Transcription sends audio. Review screenshots, video, audio and notes before sharing, especially if you recorded customer data. The Proofline connection is in preview. Optional provider and hosting charges may apply.
+
+See a worked bug report: https://proofline.sh/session-recorder-chrome-extension/example-report/
+Help and setup: https://proofline.sh/help/session-recorder/
 
 ## Single purpose
 
@@ -74,6 +79,6 @@ Use [PRIVACY.md](PRIVACY.md) and the actual package to complete the dashboard fo
 
 ## Assets and release
 
-Use screenshots of the package being submitted. [`docs/screenshots/`](screenshots/) contains the documentation captures; [`design/store/`](../design/store/) contains store-sized assets. Recheck older store images against the new branding and live-annotation UI before upload. Do not present mock account balances or fabricated bug reports as real customer data.
+Upload the four 1280 × 800 TodoMVC PNGs in [design/store](../design/store/) in filename order: record, annotate, timeline, export. Set the English promotional video to https://www.youtube.com/watch?v=LbEPAIOUPkM. The film shows the released extension in a demo workspace with simulated publication and filing responses.
 
 The release workflow attaches `session-recorder.zip` and its SHA-256 checksum to a published GitHub release. The stable asset path is `https://github.com/prooflinedev/session-recorder-chrome-extension/releases/latest/download/session-recorder.zip`; it works only after a release containing that asset exists. After validating the version and package, the workflow submits that same ZIP to Chrome Web Store for review using the configured publisher account. See [Chrome Web Store publishing](chrome-store-publishing.md) for account setup, version tags and recovery; submission does not mean Google has approved the update.
