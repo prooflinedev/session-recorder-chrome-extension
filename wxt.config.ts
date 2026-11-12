@@ -9,7 +9,7 @@ export default defineConfig({
   manifest: {
     name: 'Session Recorder by Proofline',
     description:
-      'Record rich, multi-modal web-app sessions and export an LLM-optimized report.',
+      'Record steps to reproduce a bug with screenshots, console logs and network requests. Export to Markdown or file a GitHub issue.',
     // All permissions the extension needs across every phase. Each is justified
     // in DEVELOPMENT.md. Host permissions are broad because the recorder must work on
     // any SaaS app the user points it at.

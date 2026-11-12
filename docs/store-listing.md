@@ -10,45 +10,40 @@ Publication copy for **Session Recorder by Proofline**. Match the submitted pack
 - Language: English.
 - Source and issue support: https://github.com/prooflinedev/session-recorder-chrome-extension.
 - Website destination: https://proofline.sh/session-recorder-chrome-extension/.
-- Privacy policy destination: https://proofline.sh/session-recorder-chrome-extension/privacy.html.
+- Privacy policy destination: https://proofline.sh/session-recorder-chrome-extension/privacy/.
 
-Keep the existing item ID and install link when transferring to the Proofline publisher. GitHub repository ownership and Chrome Web Store publisher ownership are separate. Confirm the active publisher, public support email, visibility and working website/privacy URLs in the dashboard before submission. The backend and website are deployed; managed speech still requires provider configuration.
+Keep the existing item ID. Set the listing website to the recorder overview and the support URL to https://proofline.sh/help/session-recorder/. Confirm the publisher and privacy disclosures against the submitted package.
 
 ## Short description
 
-Record browser bugs with screenshots, annotations, console, network and voice. Export a report or file a GitHub issue.
+Record steps to reproduce a bug with screenshots, console logs and network requests. Export to Markdown or file a GitHub issue.
 
 ## Detailed description
 
-Session Recorder by Proofline is a free, open-source Chrome extension for QA and product teams. Record a browser bug, point out what went wrong, and give a developer or coding agent the evidence to investigate it.
+Record a website bug in Chrome and give the developer who picks it up the steps to reproduce it. Session Recorder keeps clicks, page navigation, screenshots, console errors and network requests on one timeline. Export a Markdown bug report for free, or connect Proofline to publish a private report and file a GitHub issue.
 
-RECORD THE REPRODUCTION
+Capture the steps to reproduce a bug
 
-Capture clicks, inputs, navigation, console messages, exceptions, network requests and responses, and screenshots. Recording follows tabs opened by the recorded app. Optional microphone narration, tab video with sound, files, markers and notes stay on the same timeline.
+Open the side panel, press Record and repeat the steps that trigger the problem. If a Save button spins and nothing happens, capture the screen and add a note about what you expected. A developer can follow the click, see what appeared on the page and check the console logs and network requests around that moment.
 
-POINT OUT THE PROBLEM
+Show exactly what went wrong
 
-Toggle annotation while recording. Select a page element or drag a freeform rectangle and add a comment. Dictate into the comment using the recording microphone, or mark up a screenshot with arrows, boxes and text.
+For visual QA and website feedback, click a page element or draw a rectangle and pin a comment to it. Take a screenshot for a layout bug. Turn on tab video to show a dialog that closes too soon, or add a voice note to explain a sequence that’s hard to describe in writing.
 
-FILE AN ISSUE
+File a GitHub issue with a private report
 
-Configure a GitHub repository and protected Cloudflare publishing once. After stopping, review the full-page report and select File issue. With an AI provider configured, the extension automatically creates an editable summary, publishes the report and files the issue with a link. The repository picker supports multiple destinations and remembers your last choice for new reports.
+With the optional Proofline workspace connection, review the issue title and summary, choose a repository and file the ticket. The GitHub issue links to the full report, which requires sign-in. You can also publish the report to Proofline on its own so a teammate can review the evidence before you file. The issue title and body follow the repository’s visibility settings.
 
-Annotations and narration lead the summary; background diagnostics support them. Configured AI also names stopped sessions. Personal providers include OpenAI, OpenAI-compatible endpoints, Anthropic and Google. Voice transcription supports Deepgram, ElevenLabs and OpenAI-compatible services. Provider and hosting charges are separate from the free extension.
+Export a bug report without an account
 
-EXPORT FOR A CODING AGENT
+Local recording and export need no account or API key. Choose how much detail to include, then download a ZIP with report.md and its attachments. Attach it to an existing support ticket, hand it to an engineer investigating a regression, or give the Markdown to a coding agent.
 
-Recording, annotations and local ZIP export require no account or API key. Give report.md and the included assets to Claude Code, Codex, Cursor, ChatGPT or another coding agent. Full, Standard, Compact and Minimal export levels let you choose how much evidence to include. Trimming runs locally without an LLM and preserves protected signals such as annotations, narration, notes and errors.
+Choose what you share
 
-LOCAL STORAGE AND OPTIONAL SHARING
+Recordings stay in Chrome until you export them or use an optional integration. Configured AI summaries send text evidence to the selected provider. Transcription sends audio. Review screenshots, video, audio and notes before sharing, especially if you recorded customer data. The Proofline connection is in preview. Optional provider and hosting charges may apply.
 
-Sessions stay in Chrome locally by default. Redaction masks common credentials and structured sensitive fields during capture. Screenshots, audio, files and arbitrary text can still contain private information. Optional transcription sends audio to the service you select; AI sends bounded text evidence. Publishing uploads the report and included attachments. A protected report link does not make public GitHub issue text private.
-
-## Managed-service copy
-
-Use the following paragraph to describe managed services:
-
-> Connect to Proofline to use workspace credits for all AI, share private reports with selected readers and file issues through the workspace GitHub App. Connected services work automatically without manual provider setup or overrides. The existing 10,000-credit grant requires Proofline onboarding and GitHub App installation. Disconnect to use personal API keys and your own Cloudflare account; saved credentials remain local. Outside report readers need a free Proofline account. Paid AI pauses when credits are unavailable and never switches to personal keys automatically.
+See a worked bug report: https://proofline.sh/session-recorder-chrome-extension/example-report/
+Help and setup: https://proofline.sh/help/session-recorder/
 
 ## Single purpose
 
@@ -84,6 +79,6 @@ Use [PRIVACY.md](PRIVACY.md) and the actual package to complete the dashboard fo
 
 ## Assets and release
 
-Use screenshots of the package being submitted. [`docs/screenshots/`](screenshots/) contains the documentation captures; [`design/store/`](../design/store/) contains store-sized assets. Recheck older store images against the new branding and live-annotation UI before upload. Do not present mock account balances or fabricated bug reports as real customer data.
+Upload the four 1280 × 800 TodoMVC PNGs in [design/store](../design/store/) in filename order: record, annotate, timeline, export. Set the English promotional video to https://www.youtube.com/watch?v=LbEPAIOUPkM. The film shows the released extension in a demo workspace with simulated publication and filing responses.
 
 The release workflow attaches `session-recorder.zip` and its SHA-256 checksum to a published GitHub release. The stable asset path is `https://github.com/prooflinedev/session-recorder-chrome-extension/releases/latest/download/session-recorder.zip`; it works only after a release containing that asset exists. After validating the version and package, the workflow submits that same ZIP to Chrome Web Store for review using the configured publisher account. See [Chrome Web Store publishing](chrome-store-publishing.md) for account setup, version tags and recovery; submission does not mean Google has approved the update.

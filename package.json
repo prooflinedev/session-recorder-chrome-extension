@@ -4,7 +4,7 @@
   "private": true,
   "license": "AGPL-3.0-only",
   "type": "module",
-  "description": "Chrome extension that records rich, multi-modal web-app sessions (interactions, full network traffic, screenshots, voice, annotations, files) and exports an LLM-optimized report.",
+  "description": "Record browser bugs with screenshots, console errors, and network requests. Export a Markdown report or file a GitHub issue.",
   "scripts": {
     "dev": "wxt",
     "dev:firefox": "wxt -b firefox",
