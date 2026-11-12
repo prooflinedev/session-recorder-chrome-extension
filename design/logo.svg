@@ -1,17 +1,14 @@
 <svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <!-- Single source of truth for every logo asset (icons, README, website).
-       The mark fills the frame with almost no padding so it stands out at 16px.
-       A white "die-cut" outline behind the coral dot and charcoal step line
-       lets it read on any background, light or dark. Regenerate rasters from
-       this file. -->
+  <!-- The recorder step line connects to the four-color Proofline mark. -->
   <g stroke-linecap="round" stroke-linejoin="round">
-    <!-- white halo -->
-    <path d="M36 92 H70 V56 H105 V23" stroke="#ffffff" stroke-width="38" fill="none"/>
-    <circle cx="36" cy="92" r="32" fill="#ffffff"/>
-
-    <!-- charcoal step line -->
-    <path d="M36 92 H70 V56 H105 V23" stroke="#16181d" stroke-width="19" fill="none"/>
-    <!-- coral record dot -->
-    <circle cx="36" cy="92" r="21" fill="#ff5a4d"/>
+    <path d="M36 92 H70 V56 H105 V23" stroke="#fff" stroke-width="38"/>
+    <path d="M36 92 H70 V56 H105 V23" stroke="#16181d" stroke-width="19"/>
+  </g>
+  <rect x="4" y="60" width="64" height="64" rx="8" fill="#fff"/>
+  <g transform="translate(6 62) scale(.13)">
+    <rect x="31" y="23" width="181" height="181" rx="11" fill="#0c3b26"/>
+    <rect x="243" y="23" width="181" height="181" rx="11" fill="#b8d545"/>
+    <rect x="31" y="236" width="181" height="181" rx="11" fill="#2c7853"/>
+    <path d="M333.5 228 440 334.5 333.5 440 227 334.5Z" fill="#f05944"/>
   </g>
 </svg>
