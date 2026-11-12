@@ -68,6 +68,7 @@ import { NetworkCapturer } from '@/lib/capture/network';
 import { ConsoleCapturer } from '@/lib/capture/console';
 import { ScreenshotScheduler } from '@/lib/capture/screenshots';
 import { MultiTabTracker } from '@/lib/capture/multitab';
+import { redactPageUrl } from '@/lib/capture/redaction';
 import { newId } from '@/lib/util/ids';
 import { transcribe } from '@/lib/transcription';
 import type { TranscriptionConfig } from '@/lib/transcription/provider';
@@ -367,9 +368,11 @@ class Orchestrator {
     }
 
     const now = Date.now();
+    // Page URLs can carry reset/invite/OAuth tokens; store them redacted.
+    const startUrl = redactPageUrl(tab.url ?? '', settings);
     const primary: TabInfo = {
       tabId,
-      url: tab.url ?? '',
+      url: startUrl,
       title: tab.title ?? '',
       role: 'primary',
       attached: false,
@@ -379,7 +382,7 @@ class Orchestrator {
       id: newId('ses'),
       name: sessionNameFor(tab, now),
       startedAt: now,
-      initialUrl: tab.url ?? '',
+      initialUrl: startUrl,
       tabs: [primary],
       settings,
       status: 'recording',
@@ -529,7 +532,7 @@ class Orchestrator {
       const now = Date.now();
       const info: TabInfo = {
         tabId,
-        url,
+        url: redactPageUrl(url, session.settings),
         title: tab?.title ?? '',
         openerTabId,
         role: 'adopted',
@@ -883,12 +886,13 @@ class Orchestrator {
     // Keep the registry current so tab-switch/tab-closed events report where the
     // tab actually is, not where it was at adopt time (noopener tabs adopt with
     // only a hint URL, before the navigation commits).
+    const url = redactPageUrl(details.url, this.activeSettings());
     const info = this.current?.tabs.find((t) => t.tabId === details.tabId);
-    if (info) info.url = details.url;
+    if (info) info.url = url;
     this.recordEvent({
       type: 'nav',
       tabId: details.tabId,
-      payload: { url: details.url, transitionType: details.transitionType },
+      payload: { url, transitionType: details.transitionType },
     });
   };
 
@@ -900,7 +904,10 @@ class Orchestrator {
     this.recordEvent({
       type: 'spa-route',
       tabId: details.tabId,
-      payload: { url: details.url, method: 'pushState' },
+      payload: {
+        url: redactPageUrl(details.url, this.activeSettings()),
+        method: 'pushState',
+      },
     });
   };
 
@@ -912,7 +919,10 @@ class Orchestrator {
     this.recordEvent({
       type: 'spa-route',
       tabId: details.tabId,
-      payload: { url: details.url, method: 'replaceState' },
+      payload: {
+        url: redactPageUrl(details.url, this.activeSettings()),
+        method: 'replaceState',
+      },
     });
   };
 

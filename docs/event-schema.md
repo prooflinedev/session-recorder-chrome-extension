@@ -125,7 +125,7 @@ These events segment the story. The renderer turns them into `##` section breaks
 
 | Field           | Type                | Meaning |
 | --------------- | ------------------- | ------- |
-| `url`           | `string`            | Destination URL. |
+| `url`           | `string`            | Destination URL. Query and fragment parameter values may be redacted. |
 | `title`         | `string` (optional) | Page title, when available. |
 | `transitionType`| `string` (optional) | Chrome transition type, for example `link`, `typed`, or `reload`. |
 
@@ -136,9 +136,12 @@ fragment. It is captured through `onHistoryStateUpdated` and
 
 | Field   | Type                                        | Meaning |
 | ------- | ------------------------------------------- | ------- |
-| `url`   | `string`                                    | New route URL. |
+| `url`   | `string`                                    | New route URL. Query and fragment parameter values may be redacted. |
 | `title` | `string` (optional)                         | Title, when available. |
 | `method`| `'pushState' \| 'replaceState' \| 'popstate'`| How the route changed. |
+
+Page URLs on `nav`, `spa-route` and tab events, `Session.initialUrl` and
+`TabInfo.url` use the session's URL redaction rules when redaction is enabled.
 
 ### `tab-switch`
 `TabSwitchPayload` records that the active tab changed within the session.
@@ -180,7 +183,7 @@ bodies before emit.
 | ---------------- | ----------------------- | ------- |
 | `requestId`      | `string`                | CDP request id, also the join key for `ErrorPayload.linkedRequestId`. |
 | `method`         | `string`                | HTTP method. Mutating methods (POST, PUT, DELETE, PATCH) score higher. |
-| `url`            | `string`                | Request URL. Query-param values may be redacted. |
+| `url`            | `string`                | Request URL. Query and fragment parameter values may be redacted. |
 | `resourceType`   | `string` (optional)     | CDP resource type (`XHR`, `Fetch`, `Image`, `Font`, `Stylesheet`, and so on). `dropStaticAssets` uses it. |
 | `status`         | `number` (optional)     | Response status. A status of `>= 400` scores higher and is never dropped as a static asset. |
 | `statusText`     | `string` (optional)     | Response status text. |
