@@ -176,6 +176,24 @@ export interface Session {
   counts: Partial<Record<EventType, number>>;
   /** Total bytes of assets, for the storage/summary UI. */
   assetBytes: number;
+  /** Browser, OS and viewport at the start. Absent on older sessions. */
+  environment?: SessionEnvironment;
+}
+
+/**
+ * The browser, OS and viewport a session was recorded in, captured once when
+ * recording starts. Every field is optional: a restricted page refuses the
+ * viewport probe, and a browser without User-Agent Client Hints only gives
+ * its user-agent string.
+ */
+export interface SessionEnvironment {
+  /** e.g. "Google Chrome 142.0.7444.59" */
+  browser?: string;
+  /** e.g. "Windows 15.0.0 x86", as Client Hints report it */
+  os?: string;
+  locale?: string;
+  timeZone?: string;
+  viewport?: { width: number; height: number; devicePixelRatio: number };
 }
 
 // ----------------------------------------------------------------------------
