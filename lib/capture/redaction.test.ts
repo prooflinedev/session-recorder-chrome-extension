@@ -12,6 +12,7 @@ import {
   redactBody,
   redactHeaders,
   redactUrl,
+  redactUrlsInText,
 } from './redaction';
 
 const EMPTY_RULES: RedactionRules = {
@@ -65,6 +66,20 @@ describe('constants', () => {
     for (const k of ['username', 'email', 'count', 'color']) {
       expect(DEFAULT_KEY_PATTERN.test(k)).toBe(false);
     }
+  });
+});
+
+describe('redactUrlsInText', () => {
+  it('redacts each URL in diagnostic text using default and custom rules', () => {
+    const input = 'Fetch at "https://api.test/data?token=secret&page=2" failed; retry wss://api.test/socket?ticket=private&mode=live';
+    expect(redactUrlsInText(input, rules({ urlParamPatterns: ['ticket'] }))).toBe(
+      `Fetch at "https://api.test/data?token=${REDACTED}&page=2" failed; retry wss://api.test/socket?ticket=${REDACTED}&mode=live`,
+    );
+  });
+
+  it('preserves ordinary diagnostics and non-sensitive URL parameters', () => {
+    const input = 'Load failed at https://example.test/app.js?page=2#section';
+    expect(redactUrlsInText(input, EMPTY_RULES)).toBe(input);
   });
 });
 

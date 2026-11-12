@@ -1,15 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { RawEvent } from '@/lib/session/types';
+import type { CaptureSettings, RawEvent } from '@/lib/session/types';
+import { makeDefaultSettings } from '@/lib/session/settings';
 import { ConsoleCapturer } from './console';
 
 describe('ConsoleCapturer', () => {
   let emitted: RawEvent[];
   let cap: ConsoleCapturer;
+  let settings: CaptureSettings;
 
   beforeEach(() => {
     vi.useFakeTimers();
     emitted = [];
-    cap = new ConsoleCapturer((raw) => emitted.push(raw));
+    settings = makeDefaultSettings();
+    cap = new ConsoleCapturer((raw) => emitted.push(raw), () => settings);
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -147,5 +150,22 @@ describe('ConsoleCapturer', () => {
     cap.reset();
     vi.advanceTimersByTime(1000);
     expect(emitted).toHaveLength(0);
+  });
+
+  it('honors the current recording redaction switch', () => {
+    const url = 'https://api.example.test/data?token=secret';
+    settings.redactionEnabled = false;
+    consoleApi(1, 'warning', [{ value: url }], url);
+    vi.advanceTimersByTime(1000);
+    expect(JSON.stringify(emitted)).toContain('token=secret');
+
+    emitted.length = 0;
+    settings.redactionEnabled = true;
+    consoleApi(1, 'warning', [{ value: url }], url);
+    vi.advanceTimersByTime(1000);
+    expect(JSON.stringify(emitted)).not.toContain('token=secret');
+    expect(JSON.stringify(emitted)).toContain('token=«redacted»');
+    expect((emitted[0]!.payload as import('@/lib/session/types').ConsolePayload).source)
+      .toBe('https://api.example.test/data?token=«redacted»:12');
   });
 });
