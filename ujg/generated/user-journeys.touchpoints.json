@@ -1,0 +1,18 @@
+{
+  "urn:proofline:session-recorder:Touchpoint:side-panel": {
+    "shortLabel": "Panel",
+    "color": "var(--jv-color-category-blue)"
+  },
+  "urn:proofline:session-recorder:Touchpoint:page-overlay": {
+    "shortLabel": "Overlay",
+    "color": "var(--jv-color-category-orange)"
+  },
+  "urn:proofline:session-recorder:Touchpoint:extension-tab": {
+    "shortLabel": "Tabs",
+    "color": "var(--jv-color-category-violet)"
+  },
+  "urn:proofline:session-recorder:Touchpoint:mic-permission": {
+    "shortLabel": "Mic",
+    "color": "var(--jv-color-category-rose)"
+  }
+}
