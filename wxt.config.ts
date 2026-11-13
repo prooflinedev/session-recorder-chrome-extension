@@ -48,6 +48,14 @@ export default defineConfig({
         suggested_key: { default: 'Alt+Shift+M' },
         description: 'Drop a marker at the current moment',
       },
+      'capture-screenshot': {
+        suggested_key: { default: 'Alt+Shift+S' },
+        description: 'Take a screenshot of the recorded tab',
+      },
+      'toggle-pause': {
+        suggested_key: { default: 'Alt+Shift+P' },
+        description: 'Pause or resume recording',
+      },
     },
   },
 });
