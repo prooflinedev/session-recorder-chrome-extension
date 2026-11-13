@@ -269,7 +269,8 @@ export class SessionBuilder {
       ],
       responseHeaders: [{ name: 'content-type', value: mime }],
       mime,
-      timing: { startedAt: this.t + STEP_MS, durationMs: 42 },
+      // Epoch ms, like real capture.
+      timing: { startedAt: this.session.startedAt + this.t + STEP_MS, durationMs: 42 },
       initiator: 'script',
     };
     const reqBody = netBody(opts?.reqBody, 'application/json');

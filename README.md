@@ -61,6 +61,8 @@ Export a ZIP, unzip it, and give `report.md` to Claude Code, Codex, Cursor, Chat
 
 Choose Full, Standard, Compact or Minimal when exporting. The estimate helps you fit the report into a model's context; trimming is deterministic and does not call an LLM. You can export the same local session at another level later.
 
+When the recording captured network traffic, the ZIP also contains `network.har`. Import it in the Chrome DevTools Network panel, open it in Charles or Fiddler, or replay it in a test with Playwright's `routeFromHAR`.
+
 [Report format and suggested prompt](docs/report-format.md)
 
 ## Privacy
