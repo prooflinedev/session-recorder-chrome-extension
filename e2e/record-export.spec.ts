@@ -162,3 +162,136 @@ test('records interactions and exports a readable, valid zip', async ({
   expect(jsonKey).toBeTruthy();
   JSON.parse(new TextDecoder().decode(files[jsonKey!]));
 });
+
+test('keeps a value the page clears on Enter, as TodoMVC does', async ({
+  context,
+  background,
+}) => {
+  const page = await context.newPage();
+  await page.goto('/');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Demo');
+  // A field that clears itself on Enter in its own (bubble-phase) handler,
+  // before the recorder's input debounce would fire.
+  await page.evaluate(() => {
+    const field = document.createElement('input');
+    field.id = 'f-todo';
+    field.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') field.value = '';
+    });
+    document.body.appendChild(field);
+  });
+
+  const tabId = await tabIdForUrl(background, 'http://localhost:5319');
+  const started = await dispatch<StartRes>(background, {
+    kind: 'session/start',
+    tabId,
+  });
+  expect(started.ok).toBe(true);
+  const sessionId = started.session!.id;
+  await page.waitForTimeout(800);
+
+  await page.fill('#f-todo', 'buy milk');
+  await page.press('#f-todo', 'Enter');
+  await page.waitForTimeout(1000);
+
+  await dispatch(background, { kind: 'session/stop' });
+
+  const { events } = await dispatch<{
+    events: Array<{ type: string; t: number; payload: any }>;
+  }>(background, { kind: 'events/get', sessionId });
+  const inputs = events.filter((e) => e.type === 'input');
+  expect(inputs.map((e) => e.payload?.value)).toEqual(['buy milk']);
+  // Both events can share a millisecond and their storage order varies, so
+  // compare timestamps rather than positions.
+  const enter = events.find((e) => e.type === 'key' && e.payload?.key === 'Enter');
+  expect(enter).toBeTruthy();
+  expect(inputs[0]!.t).toBeLessThanOrEqual(enter!.t);
+});
+
+test('records a value once, before the Tab that leaves the field', async ({
+  context,
+  background,
+}) => {
+  const page = await context.newPage();
+  await page.goto('/');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Demo');
+
+  const tabId = await tabIdForUrl(background, 'http://localhost:5319');
+  const started = await dispatch<StartRes>(background, {
+    kind: 'session/start',
+    tabId,
+  });
+  expect(started.ok).toBe(true);
+  const sessionId = started.session!.id;
+  await page.waitForTimeout(800);
+
+  // Tab flushes the pending input, then blurs the field, which fires `change`.
+  await page.fill('#f-user', 'ada');
+  await page.press('#f-user', 'Tab');
+  await page.waitForTimeout(1000);
+
+  await dispatch(background, { kind: 'session/stop' });
+
+  const { events } = await dispatch<{
+    events: Array<{ type: string; t: number; payload: any }>;
+  }>(background, { kind: 'events/get', sessionId });
+  const inputs = events.filter((e) => e.type === 'input');
+  expect(inputs.map((e) => e.payload?.value)).toEqual(['ada']);
+  const tab = events.find((e) => e.type === 'key' && e.payload?.key === 'Tab');
+  expect(tab).toBeTruthy();
+  expect(inputs[0]!.t).toBeLessThanOrEqual(tab!.t);
+});
+
+test('never records secrets typed into key, code, PIN and phrase fields', async ({
+  context,
+  background,
+}) => {
+  const page = await context.newPage();
+  await page.goto('/');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Demo');
+  // One field per kind of secret hint; each is filled with a unique marker.
+  const fields = [
+    '<input id="s-api-camel" name="apiKey">',
+    '<input id="s-api-snake" name="api_key">',
+    '<label>API key <input id="s-api-label"></label>',
+    '<input id="s-secret-aria" aria-label="Secret key">',
+    '<input id="s-otp" autocomplete="one-time-code">',
+    '<input id="s-pin" name="pin">',
+    '<input id="s-mnemonic" name="mnemonic">',
+  ];
+  await page.evaluate((html) => {
+    const form = document.createElement('div');
+    form.innerHTML = html.join('');
+    document.body.appendChild(form);
+  }, fields);
+  const ids = fields.map((html) => /id="([^"]+)"/.exec(html)![1]!);
+
+  const tabId = await tabIdForUrl(background, 'http://localhost:5319');
+  const started = await dispatch<StartRes>(background, {
+    kind: 'session/start',
+    tabId,
+  });
+  expect(started.ok).toBe(true);
+  const sessionId = started.session!.id;
+  await page.waitForTimeout(800);
+
+  for (const id of ids) {
+    await page.fill(`#${id}`, `leak-${id}`);
+    await page.press(`#${id}`, 'Enter');
+  }
+  await page.waitForTimeout(1000);
+
+  await dispatch(background, { kind: 'session/stop' });
+
+  const { events } = await dispatch<EventsRes>(background, {
+    kind: 'events/get',
+    sessionId,
+  });
+  const inputs = events.filter((e) => e.type === 'input');
+  expect(inputs).toHaveLength(ids.length);
+  for (const ev of inputs) {
+    expect(ev.payload?.redacted).toBe(true);
+    expect(ev.payload?.value).toBe('«redacted»');
+  }
+  expect(JSON.stringify(events)).not.toContain('leak-');
+});

@@ -91,6 +91,71 @@ describe('isSensitiveInput', () => {
     frag('<input name="city">');
     expect(isSensitiveInput(document.querySelector('input')!)).toBe(false);
   });
+
+  it.each([
+    'name="apiKey"',
+    'name="api_key"',
+    'name="api-key"',
+    'name="apikey"',
+    'name="APIKey"',
+    'name="key"',
+    'name="secretKey"',
+    'name="private_key"',
+    'name="accessKey"',
+    'aria-label="Secret key"',
+    'autocomplete="one-time-code"',
+    'name="otp"',
+    'name="otpCode"',
+    'name="pin"',
+    'name="pinCode"',
+    'name="cvc"',
+    'name="mnemonic"',
+    'name="seed_phrase"',
+    'aria-label="Seed phrase"',
+    'name="auth"',
+    'name="authCode"',
+    'name="authorization"',
+    'name="credentials"',
+  ])('detects %s', (attrs) => {
+    frag(`<input ${attrs}>`);
+    expect(isSensitiveInput(document.querySelector('input')!)).toBe(true);
+  });
+
+  it('detects a field inside a sensitive wrapping label', () => {
+    frag('<label>API key <input name="field1"></label>');
+    expect(isSensitiveInput(document.querySelector('input')!)).toBe(true);
+  });
+
+  it('detects a field named by a sensitive label[for]', () => {
+    frag('<label for="f1">One-time code</label><input id="f1">');
+    expect(isSensitiveInput(document.querySelector('input')!)).toBe(true);
+  });
+
+  it.each([
+    'name="keyword"',
+    'name="search_keywords"',
+    'name="monkey"',
+    'name="keyboard_layout"',
+    'name="hotkey"',
+    'name="spinner"',
+    'name="shipping"',
+    'name="opinion"',
+    'name="author"',
+    'name="authorName"',
+    'name="hotpot"',
+    'name="random_seed"',
+    'aria-label="One time fee"',
+    'name="username"',
+    'name="email"',
+  ])('stays unredacted for %s', (attrs) => {
+    frag(`<input ${attrs}>`);
+    expect(isSensitiveInput(document.querySelector('input')!)).toBe(false);
+  });
+
+  it('stays unredacted inside a plain label', () => {
+    frag('<label>Search keywords <input name="q"></label>');
+    expect(isSensitiveInput(document.querySelector('input')!)).toBe(false);
+  });
 });
 
 describe('nearestHeading', () => {
