@@ -40,6 +40,8 @@ Voice events retain retry generation and request identity locally. Export remove
 
 [`lib/export/bundle.ts`](../lib/export/bundle.ts) selects referenced assets, deduplicates bytes, assigns relative paths and rewrites exported asset references. [`lib/export/markdown.ts`](../lib/export/markdown.ts) renders the report and manifest. [`lib/export/zip.ts`](../lib/export/zip.ts) packages the files. [`lib/export/openapi.ts`](../lib/export/openapi.ts) infers an optional API description from untrimmed network events.
 
+[`lib/export/correlation.ts`](../lib/export/correlation.ts) picks the request and trace IDs out of a failed request's headers, so the report can name the request for a search in server logs and traces.
+
 [`lib/export/report-html.ts`](../lib/export/report-html.ts) renders the shareable HTML report. Markdown and captured content are untrusted; keep sanitization and escaping at rendering boundaries. [Report format](report-format.md) describes the artifacts and trimming levels.
 
 ## Sharing and Proofline

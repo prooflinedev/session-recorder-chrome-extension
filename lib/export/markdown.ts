@@ -17,11 +17,13 @@ import type {
   AssetMeta,
   ElementDescriptor,
   NetBody,
+  NetHeader,
   Session,
   SessionEvent,
   VerbosityLevel,
 } from '@/lib/session/types';
 import { buildAnchorMap } from './anchor';
+import { correlationIds } from './correlation';
 
 export interface RenderInput {
   session: Session;
@@ -469,6 +471,12 @@ function renderNetRequest(
   lines.push('');
   lines.push(`${clock} 🌐 ${status} ${p.method} ${escapeInline(path)}${ws}`);
 
+  // A failed request names itself, so it can be found in server logs and traces.
+  if (p.failed === true || (typeof p.status === 'number' && p.status >= 400)) {
+    renderCorrelationIds('response', p.responseHeaders, lines);
+    renderCorrelationIds('request', p.requestHeaders, lines);
+  }
+
   // Collapsed repeated requests take precedence — the body was thrown away.
   if (p.collapsed) {
     const statuses = p.collapsed.statuses.join(', ');
@@ -509,6 +517,18 @@ function renderNetRequest(
   renderBody('Request', p.requestBody, input, lines);
   renderBody('Response', p.responseBody, input, lines);
   lines.push('');
+}
+
+/** One bullet with the request and trace IDs found on one side of a request. */
+function renderCorrelationIds(
+  side: 'request' | 'response',
+  headers: NetHeader[],
+  lines: string[],
+): void {
+  const ids = correlationIds(headers);
+  if (ids.length === 0) return;
+  const spans = ids.map((h) => `\`${escapeInline(`${h.name}: ${h.value}`)}\``);
+  lines.push(`- ${side} correlation IDs: ${spans.join(', ')}`);
 }
 
 function renderBody(

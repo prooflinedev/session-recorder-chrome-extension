@@ -67,6 +67,27 @@ The trimmer skips any event where `isProtected(e)` is true. That covers the foll
 
 We likewise preserve any event explicitly flagged `protected: true`. So no matter how aggressively you trim for token budget, your intent and every error survive.
 
+## Correlation IDs on failed requests
+
+A request that failed lists the request and trace IDs found in its headers, directly under its status line. Failed means a network failure or a status of 400 or above.
+
+```
+[00:12] 🌐 500 POST /api/orders
+- response correlation IDs: `x-request-id: 5f1c0a52`, `cf-ray: 8f2a1b3c4d5e6f70-FRA`
+- request correlation IDs: `traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01`
+```
+
+Use them to find the same request on the server: search your logs or your tracing tool for the value. The response side is the name the server or its edge gave the request. The request side is the trace context an instrumented page sent with it.
+
+Note the following:
+
+- A header counts when the last part of its name is `request-id`, `requestid`, `trace-id`, `traceid`, `correlation-id` or `correlationid`, as in `x-request-id`, `x-amzn-requestid` or `x-b3-traceid`. It also counts when it is one of `traceparent`, `sentry-trace`, `b3`, `cf-ray`, `x-vercel-id`, `x-cloud-trace-context`, `x-amz-cf-id`, `x-amz-id-2`, `x-amz-apigw-id` and `x-azure-ref`. The rule lives in [`lib/export/correlation.ts`](../lib/export/correlation.ts).
+- Names are printed in lower case. A value is printed on one line and cut at 200 characters.
+- The lines appear at every verbosity level, because we never drop a failed request and never trim headers.
+- We do not print a header you redact. Add its name under Settings → Privacy → Extra header names, and its value is `«redacted»` from capture on.
+- We do not annotate requests that succeeded. `session.json` holds every captured header of every request.
+- The IDs are not part of the text sent to an AI model for summaries or session titles.
+
 ## Handing `report.md` to an LLM coding agent
 
 Follow these steps in order:
@@ -83,8 +104,10 @@ Follow these steps in order:
 > screenshots, and the voice transcript. Section headings (`##`) mark navigations
 > and tab switches. Network requests show method, URL, status, and (depending on
 > verbosity) bodies or a JSON shape summary; a `×N similar` marker means repeated
-> identical calls were collapsed. Errors are prefixed with `⚠`. The user's own
-> markers and notes appear as blockquotes and are the most important signal.
+> identical calls were collapsed. A failed request lists its correlation IDs:
+> request and trace IDs from its headers that identify it in server logs and
+> traces. Errors are prefixed with `⚠`. The user's own markers and notes appear
+> as blockquotes and are the most important signal.
 >
 > Please:
 > 1. Summarize what the user was trying to do, step by step.
@@ -104,6 +127,7 @@ Follow these steps in order:
 - cite timestamps. Asking the agent to reference `[mm:ss]` keeps its answer verifiable against the report and the screenshots.
 - trust the blockquotes. Markers and notes are you narrating your own intent. We never trim them, and they are the best anchor for what you expected.
 - follow `linkedRequestId`. Errors point at the network request that caused them. At every level we preserve that request's body, so the agent can inspect the exact failing payload.
+- look the failed request up on the server. Its correlation IDs are the search key for server logs and traces; an agent with access to them can go from the report to the server-side error.
 - escalate verbosity surgically. If the agent needs one full body, re-export at L1 or L0 rather than dumping the whole session at full fidelity.
 
 ## Local and hosted reports
