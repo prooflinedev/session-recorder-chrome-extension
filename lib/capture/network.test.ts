@@ -354,3 +354,77 @@ describe('NetworkCapturer binary bodies', () => {
     expect(body.text).not.toContain('binary body');
   });
 });
+
+describe('NetworkCapturer redirects', () => {
+  // Chrome reuses one requestId for every hop of a redirect chain; each later hop's
+  // requestWillBeSent carries the previous hop's response as `redirectResponse`.
+  function header(headers: { name: string; value: string }[], name: string): string | undefined {
+    return headers.find((h) => h.name.toLowerCase() === name)?.value;
+  }
+
+  it('emits the 302 hop and the follow-up GET as separate requests', async () => {
+    const { cap, emitted } = makeCapturer({
+      send: vi.fn(async () => ({ body: '<h1>Dashboard</h1>', base64Encoded: false })),
+    });
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'nav-1',
+      request: {
+        method: 'POST',
+        url: 'https://app.example.com/login',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        postData: 'username=alice',
+      },
+      type: 'Document',
+    });
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'nav-1',
+      request: { method: 'GET', url: 'https://app.example.com/dashboard', headers: {} },
+      redirectResponse: {
+        status: 302,
+        statusText: 'Found',
+        headers: { Location: '/dashboard' },
+        mimeType: 'text/html',
+      },
+      type: 'Document',
+    });
+    cap.handle(1, 'Network.responseReceived', {
+      requestId: 'nav-1',
+      response: { status: 200, headers: { 'Content-Type': 'text/html' }, mimeType: 'text/html' },
+      type: 'Document',
+    });
+    cap.handle(1, 'Network.loadingFinished', { requestId: 'nav-1' });
+    await vi.waitFor(() => expect(emitted).toHaveLength(2));
+
+    const [hop1, hop2] = emitted.map(payloadOf);
+    expect(hop1).toMatchObject({ method: 'POST', url: 'https://app.example.com/login', status: 302 });
+    expect(hop1!.requestBody?.present).toBe(true);
+    expect(header(hop1!.responseHeaders, 'location')).toBe('/dashboard');
+
+    expect(hop2).toMatchObject({ method: 'GET', url: 'https://app.example.com/dashboard', status: 200 });
+    expect(hop2!.requestBody?.present ?? false).toBe(false);
+    expect(header(hop2!.requestHeaders, 'content-type')).toBeUndefined();
+    expect(header(hop2!.responseHeaders, 'location')).toBeUndefined();
+  });
+
+  it('emits every hop of a multi-redirect chain in order', async () => {
+    const { cap, emitted } = makeCapturer();
+    const hop = (url: string, redirectStatus?: number) =>
+      cap.handle(1, 'Network.requestWillBeSent', {
+        requestId: 'nav-2',
+        request: { method: 'GET', url, headers: {} },
+        ...(redirectStatus ? { redirectResponse: { status: redirectStatus, headers: {} } } : {}),
+      });
+    hop('https://a.example/old');
+    hop('https://a.example/new', 301);
+    hop('https://a.example/final', 302);
+    cap.handle(1, 'Network.responseReceived', { requestId: 'nav-2', response: { status: 200, headers: {} } });
+    cap.handle(1, 'Network.loadingFinished', { requestId: 'nav-2' });
+    await vi.waitFor(() => expect(emitted).toHaveLength(3));
+
+    expect(emitted.map(payloadOf).map((p) => [p.url, p.status])).toEqual([
+      ['https://a.example/old', 301],
+      ['https://a.example/new', 302],
+      ['https://a.example/final', 200],
+    ]);
+  });
+});

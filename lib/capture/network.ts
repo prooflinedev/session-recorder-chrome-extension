@@ -81,7 +81,7 @@ export class NetworkCapturer {
     try {
       switch (method) {
         case 'Network.requestWillBeSent':
-          this.onRequestWillBeSent(params);
+          this.onRequestWillBeSent(tabId, params);
           break;
         case 'Network.requestWillBeSentExtraInfo':
           this.onRequestExtraInfo(params);
@@ -144,9 +144,27 @@ export class NetworkCapturer {
   // Request lifecycle
   // --------------------------------------------------------------------------
 
-  private onRequestWillBeSent(params: Record<string, unknown>): void {
+  private onRequestWillBeSent(tabId: number, params: Record<string, unknown>): void {
     const requestId = asString(params.requestId);
     if (!requestId) return;
+
+    // Chrome reuses the requestId for each hop of a redirect and reports the previous
+    // hop's response here, so close that hop out before recording the next one.
+    // shortcut: out-of-order *ExtraInfo events can attach raw headers to the adjacent hop, pair them via a queue if that shows up in reports.
+    const redirect = asRecord(params.redirectResponse);
+    const prev = this.pending.get(requestId);
+    if (redirect && prev) {
+      if (typeof redirect.status === 'number') prev.status = redirect.status;
+      const statusText = asString(redirect.statusText);
+      if (statusText) prev.statusText = statusText;
+      mergeHeaders(prev.respHeaders, asRecord(redirect.headers));
+      if (prev.timing && prev.startMonotonic !== undefined && typeof params.timestamp === 'number') {
+        prev.timing.durationMs = Math.max(0, Math.round((params.timestamp - prev.startMonotonic) * 1000));
+      }
+      this.pending.delete(requestId);
+      this.emitRequest(tabId, prev, {});
+    }
+
     const p = this.ensure(requestId);
 
     const request = asRecord(params.request);
