@@ -53,12 +53,30 @@ export interface CreatedIssue {
   number: number;
   url: string;
   repository: string;
+  /** Applied values from GitHub's response. Absent for Proofline-filed and older saved issues. */
+  labels?: string[];
+  assignees?: string[];
 }
 export interface IssueAttempt {
   proofline?: { organizationId: string; reportId: string; repositoryId: string };
   id: string;
   repository: string;
   startedAt: string;
+}
+export interface IssueTriage {
+  labels: string[];
+  assignees: string[];
+}
+/** GitHub silently drops labels and assignees without push access; name what it dropped. */
+export function notApplied(requested: IssueTriage, issue: CreatedIssue): IssueTriage {
+  const missing = (wanted: string[], applied: string[] = []) => {
+    const present = new Set(applied.map((value) => value.toLowerCase()));
+    return wanted.filter((value) => !present.has(value.toLowerCase()));
+  };
+  return {
+    labels: missing(requested.labels, issue.labels),
+    assignees: missing(requested.assignees, issue.assignees),
+  };
 }
 export class GitHubRequestError extends Error {
   constructor(
@@ -80,8 +98,15 @@ function headers(token: string): HeadersInit {
 function marker(attempt: IssueAttempt): string {
   return `<!-- session-recorder:${attempt.id} -->`;
 }
+function names(values: unknown, key: 'name' | 'login'): string[] {
+  if (!Array.isArray(values)) return [];
+  return values.flatMap((value: unknown) => {
+    const name = (value as Record<string, unknown> | null)?.[key];
+    return typeof name === 'string' ? [name] : [];
+  });
+}
 function result(
-  value: { number?: unknown; html_url?: unknown },
+  value: { number?: unknown; html_url?: unknown; labels?: unknown; assignees?: unknown },
   repository: string,
 ): CreatedIssue {
   if (
@@ -96,7 +121,13 @@ function result(
       'GitHub returned an unexpected issue response. Check the repository before retrying.',
       false,
     );
-  return { number: value.number, url: value.html_url, repository };
+  return {
+    number: value.number,
+    url: value.html_url,
+    repository,
+    labels: names(value.labels, 'name'),
+    assignees: names(value.assignees, 'login'),
+  };
 }
 export async function verifyGitHub(
   repository: string,
@@ -116,6 +147,71 @@ export async function verifyGitHub(
   const repo = await response.json();
   if (repo.has_issues === false || repo.archived)
     throw new Error('This repository does not accept new issues.');
+}
+export interface IssueOptions {
+  /** GitHub drops labels and assignees from requests without push access. */
+  canTriage: boolean;
+  labels: { name: string; color: string }[];
+  assignees: string[];
+}
+const NEUTRAL_LABEL_COLOR = '8b949e';
+async function getJson(path: string, token: string, signal?: AbortSignal): Promise<unknown> {
+  const response = await fetch(`https://api.github.com/repos/${path}`, {
+    headers: headers(token),
+    signal,
+    redirect: 'error',
+  });
+  if (!response.ok)
+    throw new Error(
+      `Could not load labels and assignees (${response.status}). Check the token in Sharing settings.`,
+    );
+  return response.json();
+}
+/** Collect every page, up to ten, keeping only entries `pick` accepts. */
+async function listPages<T>(
+  path: string,
+  token: string,
+  signal: AbortSignal | undefined,
+  pick: (entry: Record<string, unknown>) => T | undefined,
+): Promise<T[]> {
+  const values: T[] = [];
+  for (let page = 1; page <= 10; page++) {
+    const query = new URLSearchParams({ per_page: '100', page: String(page) });
+    const entries = await getJson(`${path}?${query}`, token, signal);
+    if (!Array.isArray(entries)) break;
+    for (const entry of entries) {
+      const value = entry && typeof entry === 'object' ? pick(entry) : undefined;
+      if (value !== undefined) values.push(value);
+    }
+    if (entries.length < 100) break;
+  }
+  return values;
+}
+export async function listIssueOptions(
+  repository: string,
+  token: string,
+  signal?: AbortSignal,
+): Promise<IssueOptions> {
+  const path = repositoryPath(repository);
+  const [repo, labels, assignees] = await Promise.all([
+    getJson(path, token, signal) as Promise<{ permissions?: { push?: unknown } } | null>,
+    listPages(`${path}/labels`, token, signal, ({ name, color }) =>
+      typeof name === 'string'
+        ? {
+            name,
+            // The colour reaches CSS, so accept only GitHub's plain hex format.
+            color:
+              typeof color === 'string' && /^[0-9a-f]{6}$/i.test(color)
+                ? color
+                : NEUTRAL_LABEL_COLOR,
+          }
+        : undefined,
+    ),
+    listPages(`${path}/assignees`, token, signal, ({ login }) =>
+      typeof login === 'string' ? login : undefined,
+    ),
+  ]);
+  return { canTriage: repo?.permissions?.push === true, labels, assignees };
 }
 /** A persisted marker lets us recover an accepted request whose response was lost. */
 export async function findCreatedIssue(
@@ -163,6 +259,7 @@ export async function createGitHubIssue(
   draft: IssueDraft,
   reportUrl: string,
   signal?: AbortSignal,
+  triage?: IssueTriage,
 ): Promise<CreatedIssue> {
   const path = repositoryPath(attempt.repository);
   const response = await fetch(`https://api.github.com/repos/${path}/issues`, {
@@ -173,6 +270,9 @@ export async function createGitHubIssue(
     body: JSON.stringify({
       title: draft.title.trim().slice(0, 120),
       body: `${issueBody(draft, reportUrl)}\n${marker(attempt)}`,
+      // Without a selection the request stays exactly as before.
+      ...(triage?.labels.length ? { labels: triage.labels } : {}),
+      ...(triage?.assignees.length ? { assignees: triage.assignees } : {}),
     }),
   });
   if (!response.ok)
