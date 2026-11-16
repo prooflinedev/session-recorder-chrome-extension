@@ -6,6 +6,8 @@ import { generateSummary } from './summary';
 import { publishReport, waitForDeployment } from './cloudflare';
 import {
   createGitHubIssue,
+  createIssueComment,
+  findCreatedComment,
   findCreatedIssue,
   verifyGitHub,
   GitHubRequestError,
@@ -29,6 +31,8 @@ vi.mock('./github', async (importOriginal) => ({
   verifyGitHub: vi.fn(),
   createGitHubIssue: vi.fn(),
   findCreatedIssue: vi.fn(),
+  createIssueComment: vi.fn(),
+  findCreatedComment: vi.fn(),
 }));
 const deployment = {
   id: 'd',
@@ -240,5 +244,69 @@ describe('one-click issue filing', () => {
     });
     expect(call[2]).toEqual({ title: 'Session', body: 'Evidence' });
     expect(call.slice(3, 5)).toEqual([input.signal, false]);
+  });
+});
+
+describe('adding the report to an existing issue', () => {
+  const comment = {
+    ...issue,
+    number: 118,
+    url: 'https://github.com/owner/repo/issues/118',
+    comment: { url: 'https://github.com/owner/repo/issues/118#issuecomment-9' },
+  };
+  function target() {
+    const input = { ...fixture(), fingerprint: 'sr-7c41e9a2b3d0' };
+    input.saved.addTo = 118;
+    input.saved.labels = ['bug'];
+    return input;
+  }
+  it('passes the fingerprint to a new issue body', async () => {
+    const input = { ...fixture(), fingerprint: 'sr-7c41e9a2b3d0' };
+    await fileIssue(input);
+    expect(vi.mocked(createGitHubIssue).mock.calls[0]![6]).toBe('sr-7c41e9a2b3d0');
+  });
+  it('comments on the chosen issue instead of creating one', async () => {
+    vi.mocked(createIssueComment).mockResolvedValue(comment);
+    const input = target();
+    const result = await fileIssue(input);
+    expect(createGitHubIssue).not.toHaveBeenCalled();
+    expect(createIssueComment).toHaveBeenCalledOnce();
+    const [attempt, token, draft, reportUrl, signal, fingerprint] =
+      vi.mocked(createIssueComment).mock.calls[0]!;
+    expect(attempt).toMatchObject({ repository: 'owner/repo', issueNumber: 118 });
+    expect([token, draft, reportUrl, signal, fingerprint]).toEqual([
+      'github-key',
+      { title: 'Generated', body: 'Useful summary' },
+      deployment.url,
+      input.signal,
+      'sr-7c41e9a2b3d0',
+    ]);
+    expect(input.progress).toHaveBeenCalledWith('Adding to #118…');
+    expect(result.issue).toEqual(comment);
+    expect(result.attempt).toBeUndefined();
+    // The attempt is saved before the comment is posted.
+    expect(input.snapshots.find((saved) => saved.attempt)?.attempt?.issueNumber).toBe(118);
+  });
+  it('keeps an uncertain comment attempt and finds it on retry without posting again', async () => {
+    vi.mocked(createIssueComment).mockRejectedValue(new TypeError('Network failed'));
+    const input = target();
+    await expect(fileIssue(input)).rejects.toThrow('Network failed');
+    const saved = input.snapshots.at(-1)!;
+    expect(saved.attempt?.issueNumber).toBe(118);
+    await expect(fileIssue({ ...input, saved })).rejects.toThrow('No duplicate');
+    vi.mocked(findCreatedComment).mockResolvedValue(comment);
+    const result = await fileIssue({ ...input, saved });
+    expect(result.issue).toEqual(comment);
+    expect(result.attempt).toBeUndefined();
+    expect(vi.mocked(findCreatedComment).mock.calls[0]![0]).toEqual(saved.attempt);
+    expect(createIssueComment).toHaveBeenCalledOnce();
+    expect(findCreatedIssue).not.toHaveBeenCalled();
+    expect(createGitHubIssue).not.toHaveBeenCalled();
+  });
+  it('clears a comment attempt GitHub definitively rejected', async () => {
+    vi.mocked(createIssueComment).mockRejectedValue(new GitHubRequestError('Not found', true));
+    const input = target();
+    await expect(fileIssue(input)).rejects.toThrow('Not found');
+    expect(input.snapshots.at(-1)!.attempt).toBeUndefined();
   });
 });

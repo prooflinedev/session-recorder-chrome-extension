@@ -13,6 +13,8 @@ import {
 import { publishReport, validateFiles, waitForDeployment } from './cloudflare';
 import {
   createGitHubIssue,
+  createIssueComment,
+  findCreatedComment,
   findCreatedIssue,
   GitHubRequestError,
   repositoryPath,
@@ -31,6 +33,8 @@ interface FileIssueInput {
   progress: (message: string) => void;
   signal: AbortSignal;
   stage?: (stage: FilingStage) => void;
+  /** The recording's error fingerprint, added to the issue or comment body. */
+  fingerprint?: string;
 }
 /** One transaction, with durable checkpoints before each external side effect. */
 export async function fileIssue(input: FileIssueInput): Promise<SavedDraft> {
@@ -66,7 +70,9 @@ export async function fileIssue(input: FileIssueInput): Promise<SavedDraft> {
             true,
             progress,
           )
-        : await findCreatedIssue(saved.attempt, token, signal);
+        : saved.attempt.issueNumber
+          ? await findCreatedComment(saved.attempt, token, signal)
+          : await findCreatedIssue(saved.attempt, token, signal);
     } catch (error) {
       if (error instanceof GitHubRequestError && error.definitive)
         await checkpoint({ attempt: undefined });
@@ -191,6 +197,8 @@ export async function fileIssue(input: FileIssueInput): Promise<SavedDraft> {
           },
         }
       : {}),
+    // Labels and assignees apply only to new issues; a comment carries the report alone.
+    ...(!managedGitHub && saved.addTo ? { issueNumber: saved.addTo } : {}),
     startedAt: new Date(Date.now() - 60_000).toISOString(),
   };
   await checkpoint({ attempt });
@@ -199,7 +207,7 @@ export async function fileIssue(input: FileIssueInput): Promise<SavedDraft> {
     signal.throwIfAborted();
   }
   input.stage?.('issue');
-  progress('Creating GitHub issue…');
+  progress(attempt.issueNumber ? `Adding to #${attempt.issueNumber}…` : 'Creating GitHub issue…');
   try {
     const issue = managedGitHub
       ? await fileProoflineIssue(
@@ -209,15 +217,27 @@ export async function fileIssue(input: FileIssueInput): Promise<SavedDraft> {
           signal,
           false,
           progress,
+          // Without a fingerprint the call stays exactly as before.
+          ...((input.fingerprint ? [input.fingerprint] : []) as [] | [string]),
         )
-      : await createGitHubIssue(
-          attempt,
-          token,
-          saved.draft,
-          publicationUrl(saved.publication!),
-          signal,
-          { labels: saved.labels ?? [], assignees: saved.assignees ?? [] },
-        );
+      : attempt.issueNumber
+        ? await createIssueComment(
+            attempt,
+            token,
+            saved.draft,
+            publicationUrl(saved.publication!),
+            signal,
+            input.fingerprint,
+          )
+        : await createGitHubIssue(
+            attempt,
+            token,
+            saved.draft,
+            publicationUrl(saved.publication!),
+            signal,
+            { labels: saved.labels ?? [], assignees: saved.assignees ?? [] },
+            input.fingerprint,
+          );
     await checkpoint({ issue, attempt: undefined });
   } catch (error) {
     // A rejected request is safe to retry. An uncertain response retains its marker.
@@ -225,6 +245,10 @@ export async function fileIssue(input: FileIssueInput): Promise<SavedDraft> {
       await checkpoint({ attempt: undefined });
     throw error;
   }
-  progress(`Issue #${saved.issue!.number} created.`);
+  progress(
+    saved.issue!.comment
+      ? `Added to #${saved.issue!.number}.`
+      : `Issue #${saved.issue!.number} created.`,
+  );
   return saved;
 }

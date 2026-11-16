@@ -50,6 +50,8 @@ export interface SavedDraft {
   /** Requested for personal-token filing; Proofline-managed filing ignores them. */
   labels?: string[];
   assignees?: string[];
+  /** An existing issue chosen with "Add to #N": the report is posted there as a comment. */
+  addTo?: number;
 }
 /** Another share tab may already have filed the issue while this tab was editing. */
 export function mergeStaleEdit(edited: SavedDraft, stored: SavedDraft | undefined): SavedDraft {

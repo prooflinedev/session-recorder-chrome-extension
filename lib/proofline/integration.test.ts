@@ -6,7 +6,7 @@ import {
   type ProoflineSettings,
 } from './settings';
 import { runProoflineAi } from './ai';
-import { publishProoflineReport } from './reports';
+import { fileProoflineIssue, publishProoflineReport } from './reports';
 import { configuredRepositories, loadSharingSettings } from '@/lib/sharing/settings';
 import type { ProoflinePublication } from '@/lib/sharing/draft';
 import { beginProoflineSignIn } from './auth';
@@ -452,3 +452,31 @@ it.each(['pending', 'submitting'] as const)(
     }
   },
 );
+
+it('appends the error fingerprint line to the managed issue body only when given', async () => {
+  const bodies: { body: string; title: string }[] = [];
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(init.body as string));
+      return Response.json({
+        request_id: 'attempt-1',
+        status: 'complete',
+        number: 42,
+        url: 'https://github.com/alice/app/issues/42',
+      });
+    }),
+  );
+  const attempt = {
+    id: 'attempt-1',
+    repository: 'alice/app',
+    startedAt: new Date().toISOString(),
+    proofline: { organizationId: org, reportId: 'report-1', repositoryId: 'r1' },
+  };
+  const draft = { title: 'Checkout fails', body: 'Evidence\n' };
+  const signal = new AbortController().signal;
+  await fileProoflineIssue(managed(), attempt, draft, signal, false, () => {}, 'sr-7c41e9a2b3d0');
+  await fileProoflineIssue(managed(), attempt, draft, signal, false, () => {});
+  expect(bodies[0]!.body).toBe('Evidence\n\nError fingerprint: `sr-7c41e9a2b3d0`\n');
+  expect(bodies[1]!.body).toBe('Evidence\n');
+});

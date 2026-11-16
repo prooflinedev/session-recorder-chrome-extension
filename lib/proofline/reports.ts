@@ -8,6 +8,7 @@ import type { VerbosityLevel } from '@/lib/session/types';
 import { ProoflineError, delay, prooflineRequest } from './client';
 import { requireConnection, type ProoflineSettings } from './settings';
 import {
+  fingerprintLine,
   GitHubRequestError,
   type CreatedIssue,
   type IssueAttempt,
@@ -139,6 +140,7 @@ export async function fileProoflineIssue(
   signal: AbortSignal,
   resume = false,
   progress: (message: string) => void = () => {},
+  fingerprint?: string,
 ): Promise<CreatedIssue> {
   const connection = requireConnection(settings);
   const target = attempt.proofline;
@@ -158,7 +160,9 @@ export async function fileProoflineIssue(
             request_id: attempt.id,
             repository_id: target.repositoryId,
             title: draft.title,
-            body: draft.body,
+            body: fingerprint
+              ? `${draft.body.trim()}\n\n${fingerprintLine(fingerprint)}`
+              : draft.body,
           }),
           signal,
         });
