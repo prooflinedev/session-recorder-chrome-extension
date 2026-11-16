@@ -23,7 +23,8 @@ for (const provider of ['deepgram', 'elevenlabs'] as const) test(`${provider}: d
     await chrome.storage.local.set({
       micGranted: true,
       transcription: { provider, apiKey:'test-only', model:provider === 'deepgram' ? 'nova-3' : 'scribe_v2' },
-      sharingSettings: { provider:'compatible', models:{compatible:{apiKey:'',model:'test',baseUrl:'http://localhost:5319/v1'}} },
+      sharingSettings: { provider:'compatible', models:{compatible:{apiKey:'',model:'test',baseUrl:'http://localhost:5319/v1'}}, repositories:[{id:'a',repository:'acme/web-app',token:'test-only'}] },
+      transcriptionVocabulary: { 'acme/web-app': ['Ledger'] },
     });
     const realFetch = globalThis.fetch;
     globalThis.fetch = async (input, init) => {
@@ -46,6 +47,8 @@ for (const provider of ['deepgram', 'elevenlabs'] as const) test(`${provider}: d
   await expect(host.getByRole('button',{name:'Turn off dictation microphone'})).toHaveAttribute('aria-pressed','true');
   await expect.poll(()=>!!socket).toBe(true);
   await expect.poll(()=>dictionary).toContain('Proofline');
+  // Saved repository terms lead the page terms.
+  expect(dictionary[0]).toBe('Ledger');
   const result = (text:string,final:boolean,start:number) => socket!.send(JSON.stringify(provider === 'elevenlabs' ? {message_type:final?'committed_transcript':'partial_transcript',text} : {type:'Results',start,duration:1,is_final:final,channel:{alternatives:[{transcript:text,words:[]}]}}));
   result('Finishing recipe',false,1);
   await expect(input).toHaveValue('Finishing recipe');

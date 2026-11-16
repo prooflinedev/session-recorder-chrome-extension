@@ -5,6 +5,7 @@ import {
 } from '@/lib/transcription/retry';
 import { loadProoflineSettings, requireConnection } from '@/lib/proofline/settings';
 import { extractPageKeyterms } from '@/lib/transcription/vocabulary';
+import { loadCustomKeyterms, mergeKeyterms } from '@/lib/transcription/custom-vocabulary';
 /**
  * Background service worker — the session orchestrator.
  *
@@ -1493,10 +1494,16 @@ class Orchestrator {
       pending = extractPageKeyterms(context).catch(() => []);
       this.vocabularyCache.set(key, pending);
     }
-    const terms = await pending;
+    const [terms, custom] = await Promise.all([pending, loadCustomKeyterms()]);
     if (this.current?.id !== target.sessionId || this.dictationTarget !== target) return;
     this.pageKeyterms = terms;
-    if (this.micOn) await this.sendToOffscreen({ kind: 'audio/keyterms', keyterms: terms });
+    if (this.micOn) await this.sendToOffscreen({ kind: 'audio/keyterms', keyterms: mergeKeyterms(custom, terms) });
+  }
+
+  /** Saved repository terms first, then page terms when the session is current. */
+  private async sessionKeyterms(sessionId?: string): Promise<string[]> {
+    const page = sessionId === undefined || sessionId === this.current?.id ? this.pageKeyterms : [];
+    return mergeKeyterms(await loadCustomKeyterms(), page);
   }
 
   private routeDictation(sessionId: string, text: string, final: boolean, tStart?: number): void {
@@ -1522,7 +1529,7 @@ class Orchestrator {
         kind: 'audio/start',
         sessionId: session.id,
         startedAt: this.sessionStartEpoch,
-        transcription: config ? { ...config, keyterms: this.pageKeyterms } : null,
+        transcription: config ? { ...config, keyterms: await this.sessionKeyterms() } : null,
       });
       if (res && res.ok) {
         this.micOn = true;
@@ -1800,7 +1807,7 @@ class Orchestrator {
           organizationId: connection.organizationId,
           provider: config.provider === 'elevenlabs' ? 'elevenlabs' : 'deepgram',
           language: config.language,
-          keyterms: sessionId === this.current?.id ? [...this.pageKeyterms] : [],
+          keyterms: await this.sessionKeyterms(sessionId),
         };
         payload = { ...payload, transcriptionRequest: request };
         await appendEvents([{ ...event, payload } as SessionEvent]);
@@ -1814,9 +1821,7 @@ class Orchestrator {
       }
       const result = await transcribe(asset.blob, {
         ...config,
-        keyterms: config.managed
-          ? config.keyterms
-          : sessionId === this.current?.id ? this.pageKeyterms : [],
+        keyterms: config.managed ? config.keyterms : await this.sessionKeyterms(sessionId),
       });
       this.routeDictation(sessionId, result.text, true, payload.tStart);
       const updated = {
