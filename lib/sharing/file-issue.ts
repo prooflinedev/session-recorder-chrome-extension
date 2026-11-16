@@ -1,7 +1,7 @@
 import { ProoflineAiCancelledError, ProoflineAiFailedError } from '@/lib/proofline/ai';
 import type { ExportFile } from '@/lib/export/bundle';
 import type { VerbosityLevel } from '@/lib/session/types';
-import { isProoflinePublication, publicationUrl, type SavedDraft } from './draft';
+import { addToMismatch, isProoflinePublication, publicationUrl, type SavedDraft } from './draft';
 import { fileProoflineIssue, publishProoflineReport } from '@/lib/proofline/reports';
 import { requireConnection } from '@/lib/proofline/settings';
 import { tokenForRepository, type SharingSettings } from './settings';
@@ -46,6 +46,8 @@ export async function fileIssue(input: FileIssueInput): Promise<SavedDraft> {
   }
   if (saved.issue) return saved;
   signal.throwIfAborted();
+  const mismatch = addToMismatch(saved);
+  if (mismatch) throw new Error(mismatch);
   // An uncertain request is permanently tied to its original repository.
   const repository = repositoryPath(saved.attempt?.repository ?? saved.repository);
   saved = { ...saved, repository };
@@ -198,7 +200,7 @@ export async function fileIssue(input: FileIssueInput): Promise<SavedDraft> {
         }
       : {}),
     // Labels and assignees apply only to new issues; a comment carries the report alone.
-    ...(!managedGitHub && saved.addTo ? { issueNumber: saved.addTo } : {}),
+    ...(!managedGitHub && saved.addTo ? { issueNumber: saved.addTo.number } : {}),
     startedAt: new Date(Date.now() - 60_000).toISOString(),
   };
   await checkpoint({ attempt });

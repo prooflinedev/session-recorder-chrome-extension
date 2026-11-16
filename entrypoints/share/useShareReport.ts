@@ -26,6 +26,7 @@ import {
   errorMessage,
   mergeStaleEdit,
   REPORT_LEVELS,
+  type AddToTarget,
   type Publication,
   type SavedDraft,
 } from '@/lib/sharing/draft';
@@ -421,10 +422,10 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
     ? issueBody(state.draft, publicationUrl(state.publication), state.fingerprint?.id)
     : '';
   /** Files a new issue, or with `addTo` posts the report to that existing issue. */
-  function submitIssue(addTo?: number) {
+  function submitIssue(addTo?: AddToTarget) {
     if (operation.current) return Promise.resolve();
     // A pending attempt keeps its own target; otherwise this click chooses it.
-    if (!state.attempt) dispatch({ type: 'add-to', issueNumber: addTo });
+    if (!state.attempt) dispatch({ type: 'add-to', target: addTo });
     return run('github', async (signal) => {
       await writes.current;
       await navigator.locks.request(
@@ -508,8 +509,10 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       checkDeployment,
       unpublish,
       submitIssue: () => submitIssue(),
-      addToIssue: (issueNumber: number) => {
-        if (!state.attempt && !state.issue) void submitIssue(issueNumber);
+      addToIssue: (number: number) => {
+        if (state.attempt || state.issue || state.duplicates.status !== 'ready') return;
+        // The match belongs to the repository that was searched.
+        void submitIssue({ repository: repositoryPath(state.duplicates.repository), number });
       },
       checkDuplicates: () =>
         void searchDuplicates(state.settings, state.repository, state.fingerprint),

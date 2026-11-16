@@ -227,9 +227,9 @@ describe('adding to an existing issue', () => {
       saved,
     });
   const draft = { title: 'Edited', body: 'My summary' };
-  const choose: ShareAction = { type: 'add-to', issueNumber: 118 };
+  const choose: ShareAction = { type: 'add-to', target: { repository: 'owner/repo', number: 118 } };
   it('chooses the target only while idle and unfiled', () => {
-    expect(shareReducer(loaded(), choose).addTo).toBe(118);
+    expect(shareReducer(loaded(), choose).addTo).toEqual({ repository: 'owner/repo', number: 118 });
     expect(shareReducer(shareReducer(loaded(), choose), { type: 'add-to' }).addTo).toBeUndefined();
     const busy = shareReducer(shareReducer(loaded(), { type: 'start', operation: 'github' }), choose);
     expect(busy.addTo).toBeUndefined();
@@ -253,11 +253,11 @@ describe('adding to an existing issue', () => {
     expect(filed.addTo).toBeUndefined();
   });
   it('restores the target saved with the draft', () => {
-    expect(loaded({ draft, repository: 'owner/repo', addTo: 118 }).addTo).toBe(118);
+    expect(loaded({ draft, repository: 'owner/repo', addTo: { repository: 'owner/repo', number: 118 } }).addTo).toEqual({ repository: 'owner/repo', number: 118 });
     const saved = shareReducer(loaded(), {
       type: 'saved',
-      saved: { draft, repository: 'owner/repo', addTo: 97 },
+      saved: { draft, repository: 'owner/repo', addTo: { repository: 'owner/repo', number: 97 } },
     });
-    expect(saved.addTo).toBe(97);
+    expect(saved.addTo).toEqual({ repository: 'owner/repo', number: 97 });
   });
 });

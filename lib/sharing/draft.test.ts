@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mergeStaleEdit, type SavedDraft } from './draft';
+import { addToMismatch, mergeStaleEdit, type SavedDraft } from './draft';
 
 const publication = {
   level: 'L1' as const,
@@ -74,14 +74,34 @@ describe('saving an edit over another tab’s draft', () => {
   });
   it('keeps the issue another tab submitted a comment to', () => {
     const saved = mergeStaleEdit(
-      { ...edited, addTo: 97 },
+      { ...edited, addTo: { repository: 'team/web', number: 97 } },
       {
         draft: { title: 'Older', body: 'Older summary' },
         repository: 'owner/repo',
-        addTo: 118,
+        addTo: { repository: 'owner/repo', number: 118 },
         attempt: { id: 'a', repository: 'owner/repo', startedAt: '2026-11-17T00:00:00Z', issueNumber: 118 },
       },
     );
-    expect(saved.addTo).toBe(118);
+    expect(saved.addTo).toEqual({ repository: 'owner/repo', number: 118 });
+  });
+});
+
+describe('adding to an issue found in another repository', () => {
+  const draft = { title: 'Checkout fails', body: 'Evidence' };
+  const addTo = { repository: 'owner/repo', number: 118 };
+  it('accepts a target found in the draft’s repository, ignoring case and URL form', () => {
+    expect(addToMismatch({ draft, repository: 'https://github.com/Owner/Repo', addTo })).toBeUndefined();
+    expect(addToMismatch({ draft, repository: 'team/web' })).toBeUndefined();
+  });
+  it('refuses a target found in another repository', () => {
+    expect(addToMismatch({ draft, repository: 'team/web', addTo })).toBe(
+      'This duplicate was found in owner/repo. Check the repository and duplicates again before adding the report.',
+    );
+  });
+  it('compares against an attempt’s repository when one is pending', () => {
+    const attempt = { id: 'a', repository: 'team/web', startedAt: '2026-11-17T00:00:00Z', issueNumber: 118 };
+    expect(addToMismatch({ draft, repository: 'owner/repo', attempt, addTo })).toBe(
+      'This duplicate was found in owner/repo. Check the repository and duplicates again before adding the report.',
+    );
   });
 });

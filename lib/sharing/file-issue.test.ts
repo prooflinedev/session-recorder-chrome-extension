@@ -256,7 +256,7 @@ describe('adding the report to an existing issue', () => {
   };
   function target() {
     const input = { ...fixture(), fingerprint: 'sr-7c41e9a2b3d0' };
-    input.saved.addTo = 118;
+    input.saved.addTo = { repository: 'owner/repo', number: 118 };
     input.saved.labels = ['bug'];
     return input;
   }
@@ -308,5 +308,16 @@ describe('adding the report to an existing issue', () => {
     const input = target();
     await expect(fileIssue(input)).rejects.toThrow('Not found');
     expect(input.snapshots.at(-1)!.attempt).toBeUndefined();
+  });
+  it('refuses a target found in another repository without posting anything', async () => {
+    const input = target();
+    input.saved.repository = 'team/web';
+    await expect(fileIssue(input)).rejects.toThrow(
+      'This duplicate was found in owner/repo. Check the repository and duplicates again before adding the report.',
+    );
+    expect(createIssueComment).not.toHaveBeenCalled();
+    expect(createGitHubIssue).not.toHaveBeenCalled();
+    expect(publishReport).not.toHaveBeenCalled();
+    expect(verifyGitHub).not.toHaveBeenCalled();
   });
 });

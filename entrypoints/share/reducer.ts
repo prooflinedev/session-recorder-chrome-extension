@@ -2,7 +2,7 @@ import type { FilingStage } from '@/lib/sharing/file-issue';
 import type { Session, VerbosityLevel } from '@/lib/session/types';
 import type { ExportFile } from '@/lib/export/bundle';
 import { defaultSharingSettings, preferredRepository, type SharingSettings } from '@/lib/sharing/settings';
-import { initialDraft, type Publication, type SavedDraft } from '@/lib/sharing/draft';
+import { initialDraft, type AddToTarget, type Publication, type SavedDraft } from '@/lib/sharing/draft';
 import type { IssueDraft } from '@/lib/sharing/summary';
 import { triageFor, withTriage, type TriageDefaults } from '@/lib/sharing/triage';
 import type { ErrorFingerprint } from '@/lib/sharing/fingerprint';
@@ -49,7 +49,7 @@ export interface ShareState {
   fingerprint?: ErrorFingerprint;
   duplicates: DuplicateState;
   /** The existing issue chosen with "Add to #N". */
-  addTo?: number;
+  addTo?: AddToTarget;
 }
 export type ShareAction =
   | {
@@ -70,7 +70,7 @@ export type ShareAction =
   | { type: 'duplicates-loading'; repository: string }
   | { type: 'duplicates-ready'; repository: string; matches: DuplicateMatches }
   | { type: 'duplicates-failed'; repository: string; message: string }
-  | { type: 'add-to'; issueNumber?: number }
+  | { type: 'add-to'; target?: AddToTarget }
   | { type: 'confirm-delete'; confirming: boolean }
   | { type: 'start'; operation: ShareState['operation'] }
   | { type: 'progress'; message: string }
@@ -221,7 +221,7 @@ export function shareReducer(state: ShareState, action: ShareAction): ShareState
       };
     case 'add-to':
       if (locked(state)) return state;
-      return { ...state, addTo: action.issueNumber };
+      return { ...state, addTo: action.target };
     case 'confirm-delete':
       return { ...state, confirmingDelete: action.confirming };
     case 'start':

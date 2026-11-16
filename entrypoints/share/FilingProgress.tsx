@@ -14,7 +14,7 @@ const STAGES: { id: FilingStage; label: string }[] = [
 export function FilingProgress({ share }: { share: ReturnType<typeof useShareReport> }) {
   const { state, actions } = share;
   const current = STAGES.findIndex((stage) => stage.id === state.stage);
-  const target = state.attempt?.issueNumber ?? state.addTo;
+  const target = state.attempt?.issueNumber ?? state.addTo?.number;
   const stages = target
     ? STAGES.map((stage) => (stage.id === 'issue' ? { ...stage, label: `Add to #${target}` } : stage))
     : STAGES;

@@ -1,4 +1,4 @@
-import type { CreatedIssue, IssueAttempt } from './github';
+import { repositoryPath, type CreatedIssue, type IssueAttempt } from './github';
 import type { CloudflareConfig } from './settings';
 import type { Deployment } from './cloudflare';
 import type { IssueDraft } from './summary';
@@ -51,7 +51,7 @@ export interface SavedDraft {
   labels?: string[];
   assignees?: string[];
   /** An existing issue chosen with "Add to #N": the report is posted there as a comment. */
-  addTo?: number;
+  addTo?: AddToTarget;
 }
 /** Another share tab may already have filed the issue while this tab was editing. */
 export function mergeStaleEdit(edited: SavedDraft, stored: SavedDraft | undefined): SavedDraft {
@@ -83,4 +83,24 @@ export function initialDraft(name: string): IssueDraft {
 }
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Something went wrong. Try again.';
+}
+/** An issue number is meaningful only in the repository where the match was found. */
+export interface AddToTarget {
+  repository: string;
+  number: number;
+}
+/** Refuse when another tab changed the draft's repository after the match was found. */
+export function addToMismatch(saved: SavedDraft): string | undefined {
+  if (!saved.addTo) return undefined;
+  const key = (repository: string) => {
+    try {
+      return repositoryPath(repository).toLowerCase();
+    } catch {
+      return repository.trim().toLowerCase();
+    }
+  };
+  const repository = saved.attempt?.repository ?? saved.repository;
+  return key(repository) === key(saved.addTo.repository)
+    ? undefined
+    : `This duplicate was found in ${saved.addTo.repository}. Check the repository and duplicates again before adding the report.`;
 }
