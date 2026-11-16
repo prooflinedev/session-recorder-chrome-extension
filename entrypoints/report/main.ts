@@ -12,6 +12,7 @@
  */
 import { getSession, getEvents, getAssets } from '@/lib/storage';
 import { formatClock } from '@/lib/export/markdown';
+import { buildCurlCommand } from '@/lib/export/curl';
 import {
   applyLevel,
   collapseRepeatedRequests,
@@ -345,7 +346,13 @@ function netRow(p: NetRequestPayload, e: SessionEvent): HTMLElement {
   line.append(clockOf(e), tag('net'));
   line.appendChild(el('span', 'r-net__meth', `${p.method} ${pathOf(p.url)}`));
   const status = p.failed ? 'failed' : netMeta(p.status, p.timing?.durationMs);
-  if (status) line.appendChild(el('span', 'r-net__status', status));
+  const curl = buildCurlCommand(p);
+  if (status || curl) {
+    const actions = el('div', 'r-net__actions');
+    if (status) actions.appendChild(el('span', 'r-net__status', status));
+    if (curl) actions.appendChild(copyCurlButton(p, curl));
+    line.appendChild(actions);
+  }
   row.appendChild(line);
   if (p.collapsed) {
     row.appendChild(el('div', 'r-net__note', `(×${p.collapsed.count} similar, statuses ${p.collapsed.statuses.join(', ')})`));
@@ -357,6 +364,43 @@ function netRow(p: NetRequestPayload, e: SessionEvent): HTMLElement {
     if (p.responseBody?.text) row.appendChild(bodyPre('response', p.responseBody.text));
   }
   return row;
+}
+
+function copyCurlButton(p: NetRequestPayload, curl: string): HTMLButtonElement {
+  const btn = el('button', 'r-copy', 'Copy cURL');
+  btn.type = 'button';
+  btn.ariaLabel = `Copy cURL for ${p.method} ${pathOf(p.url)}`;
+  let timer: number | undefined;
+  btn.addEventListener('click', async (ev) => {
+    ev.stopPropagation();
+    const ok = await copyText(curl);
+    if (!ok) return;
+    btn.textContent = 'Copied';
+    btn.classList.add('r-copy--done');
+    if (timer !== undefined) window.clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      btn.textContent = 'Copy cURL';
+      btn.classList.remove('r-copy--done');
+    }, 1800);
+  });
+  return btn;
+}
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const copied = document.execCommand('copy');
+    ta.remove();
+    return copied;
+  }
 }
 
 function netGroup(run: SessionEvent[]): HTMLElement {

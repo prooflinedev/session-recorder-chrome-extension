@@ -313,12 +313,42 @@ body {
   white-space: nowrap;
 }
 
-.r-net__status {
+.r-net__actions {
   margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.r-net__status {
   font-family: var(--mono);
   font-size: 12px;
   color: var(--muted);
   white-space: nowrap;
+}
+
+.r-copy {
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.r-copy:hover {
+  color: var(--ink);
+  border-color: var(--ink-2);
+}
+
+.r-copy--done {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--line));
 }
 
 .r-net__note {
