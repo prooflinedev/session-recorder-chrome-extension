@@ -203,6 +203,7 @@ test('shows issues with the same error and possibly related issues', async ({
   );
   await expect(panel.getByRole('button', { name: 'Add to #118' })).toBeEnabled();
   await expect(panel.getByRole('button', { name: 'Add to #97' })).toBeEnabled();
+  await expect(panel.getByText('Labels and assignees apply only to new issues.')).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(panel.getByRole('button', { name: 'Add to #97' })).toBeVisible();
   expect(
@@ -246,6 +247,37 @@ test('adds the report to an existing issue as a comment', async ({
   );
   await expect(duplicatesPanel(page)).toHaveCount(0);
   expect(log.comments).toHaveLength(1);
+});
+
+test('explains that labels and assignees apply only to new issues', async ({
+  context,
+  background,
+  extensionId,
+}) => {
+  const sessionId = await record(context, background);
+  const log = await personalFiling(context, background);
+  await background.evaluate(() =>
+    chrome.storage.local.set({
+      issueTriageDefaults: { 'owner/repository': { labels: ['bug'], assignees: ['octocat'] } },
+    }),
+  );
+  const page = await context.newPage();
+  await seedException(page, extensionId, sessionId);
+  await page.goto(extUrl(extensionId, `share.html?session=${sessionId}`));
+  const details = page.getByRole('complementary', { name: 'Report details' });
+  await expect(details.getByLabel('Labels', { exact: true })).toContainText('bug');
+  const panel = duplicatesPanel(page);
+  await expect(panel.getByText('Labels and assignees apply only to new issues.')).toBeVisible();
+  await panel.getByRole('button', { name: 'Add to #118' }).click();
+  await expect(page.getByRole('link', { name: 'View comment on #118' })).toBeVisible();
+  expect(log.comments).toHaveLength(1);
+  // A comment carries no labels or assignees, so the filed view does not show them.
+  await expect(details.getByText('Labels', { exact: true })).toHaveCount(0);
+  await expect(details.getByText('Assignees', { exact: true })).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole('link', { name: 'View comment on #118' })).toBeVisible();
+  await expect(details.getByText('Labels', { exact: true })).toHaveCount(0);
+  await expect(details.getByText('@octocat', { exact: true })).toHaveCount(0);
 });
 
 test('allows Add to only when the prepared report can be published', async ({

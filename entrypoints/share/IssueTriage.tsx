@@ -19,7 +19,8 @@ const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 /** Optional labels and assignees for personal-token filing, under the Repository field. */
 export function IssueTriage({ share }: { share: ShareModel }) {
   const { state, busy, triageManaged, triageOptions, actions } = share;
-  if (triageManaged) return null;
+  // Managed filing sends none, and a comment on an existing issue cannot carry them.
+  if (triageManaged || state.issue?.comment) return null;
   const colors = new Map(
     triageOptions.labels.map((label) => [label.name.toLowerCase(), label.color]),
   );

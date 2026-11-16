@@ -66,6 +66,9 @@ export function DuplicateMatches({ share }: { share: ShareModel }) {
         </>
       ) : duplicates.exact.length || duplicates.related.length ? (
         <>
+          {(!!state.labels.length || !!state.assignees.length) && (
+            <p className="duplicate-message">Labels and assignees apply only to new issues.</p>
+          )}
           {list('exact', 'Same error', duplicates.exact)}
           {list('related', 'Possibly related', duplicates.related)}
         </>
