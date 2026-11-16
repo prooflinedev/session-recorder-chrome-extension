@@ -125,6 +125,17 @@ describe('message normalization', () => {
       "Can't parse <str> or <str>",
     );
   });
+  it('redacts quoted values that contain escaped quotes', () => {
+    expect(normalizeMessage('Invalid value "\\"internal\\" project launch plan"')).toBe(
+      'Invalid value <str>',
+    );
+    expect(normalizeMessage("Invalid value 'it\\'s the project launch plan' here")).toBe(
+      'Invalid value <str> here',
+    );
+    expect(normalizeMessage('Bad path "C:\\\\temp\\\\" and "next"')).toBe("Bad path <str> and \"next\"");
+    // An apostrophe inside a word still does not end a quoted value.
+    expect(normalizeMessage("Unexpected value 'don't know' here")).toBe('Unexpected value <str> here');
+  });
   it('collapses whitespace, trims and caps at 200 characters', () => {
     expect(normalizeMessage('  TypeError:\n\t  boom   here ')).toBe('TypeError: boom here');
     expect(normalizeMessage('x'.repeat(300))).toHaveLength(200);

@@ -180,4 +180,12 @@ describe('search terms', () => {
     });
     expect(queries(fetch).join('\n')).not.toContain('Confidential');
   });
+  it('never searches for the rest of a quoted value with escaped quotes', async () => {
+    const fetch = search({});
+    await findDuplicates('owner/repo', 'token', {
+      id: fp.id,
+      message: normalizeMessage('Invalid value "\\"internal\\" project launch plan" in checkout form'),
+    });
+    expect(queries(fetch).join('\n')).not.toContain('project launch plan');
+  });
 });
