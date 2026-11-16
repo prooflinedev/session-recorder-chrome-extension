@@ -46,8 +46,11 @@ export class DeepgramProvider implements TranscriptionProvider {
       smart_format: 'true',
       punctuate: 'true',
     });
-    if (config.language) params.set('language', config.language);
-  addDeepgramKeyterms(params, config.model || 'nova-3', config.keyterms);
+    // Deepgram defaults to English; a blank language means auto-detect, which
+    // Nova-2 and Nova-3 provide as `multi`. Older models keep Deepgram's default.
+    const language = config.language || (/^nova-[23]/.test(model) ? 'multi' : undefined);
+    if (language) params.set('language', language);
+    addDeepgramKeyterms(params, model, config.keyterms);
     const url = `${base}?${params.toString()}`;
 
     const res = await fetch(url, {
