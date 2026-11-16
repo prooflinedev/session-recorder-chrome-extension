@@ -36,8 +36,11 @@ export function withTriage(
   return choice.labels.length || choice.assignees.length ? { ...others, [path]: choice } : others;
 }
 
+/** Share tabs update the same map; the lock keeps one tab from dropping another's entry. */
 export async function rememberTriage(repository: string, choice: IssueTriage): Promise<void> {
-  await chrome.storage.local.set({
-    [TRIAGE_DEFAULTS_KEY]: withTriage(await loadTriageDefaults(), repository, choice),
+  await navigator.locks.request(TRIAGE_DEFAULTS_KEY, async () => {
+    await chrome.storage.local.set({
+      [TRIAGE_DEFAULTS_KEY]: withTriage(await loadTriageDefaults(), repository, choice),
+    });
   });
 }
