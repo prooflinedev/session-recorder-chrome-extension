@@ -18,7 +18,11 @@ export function repositoryPath(value: string): string {
   return path;
 }
 
-export function issueBody(draft: IssueDraft, reportUrl: string): string {
+export function issueBody(
+  draft: IssueDraft,
+  reportUrl: string,
+  fingerprint?: string,
+): string {
   const url = new URL(reportUrl);
   if (
     url.protocol !== 'https:' ||
@@ -29,7 +33,11 @@ export function issueBody(draft: IssueDraft, reportUrl: string): string {
     url.hash
   )
     throw new Error('A published Cloudflare Pages or Proofline report URL is required.');
-  return `${draft.body.trim()}\n\n### Recorded session\n[Open the full report](${url.href}) — ${url.hostname === 'proofline.sh' ? 'Proofline' : 'Cloudflare Access'} sign-in required.\n`;
+  return `${draft.body.trim()}\n\n### Recorded session\n[Open the full report](${url.href}) — ${url.hostname === 'proofline.sh' ? 'Proofline' : 'Cloudflare Access'} sign-in required.\n${fingerprintLine(fingerprint)}`;
+}
+/** Lets later reports of the same error find this issue. */
+export function fingerprintLine(fingerprint?: string): string {
+  return fingerprint ? `Error fingerprint: \`${fingerprint}\`\n` : '';
 }
 
 /** Keep encoded URLs small; the clipboard carries longer reviewed summaries. */
@@ -56,12 +64,16 @@ export interface CreatedIssue {
   /** Applied values from GitHub's response. Absent for Proofline-filed and older saved issues. */
   labels?: string[];
   assignees?: string[];
+  /** Set when the report was added to this existing issue as a comment. */
+  comment?: { url: string };
 }
 export interface IssueAttempt {
   proofline?: { organizationId: string; reportId: string; repositoryId: string };
   id: string;
   repository: string;
   startedAt: string;
+  /** Set when the attempt adds a comment to this existing issue instead of creating one. */
+  issueNumber?: number;
 }
 export interface IssueTriage {
   labels: string[];
@@ -260,6 +272,7 @@ export async function createGitHubIssue(
   reportUrl: string,
   signal?: AbortSignal,
   triage?: IssueTriage,
+  fingerprint?: string,
 ): Promise<CreatedIssue> {
   const path = repositoryPath(attempt.repository);
   const response = await fetch(`https://api.github.com/repos/${path}/issues`, {
@@ -269,7 +282,7 @@ export async function createGitHubIssue(
     redirect: 'error',
     body: JSON.stringify({
       title: draft.title.trim().slice(0, 120),
-      body: `${issueBody(draft, reportUrl)}\n${marker(attempt)}`,
+      body: `${issueBody(draft, reportUrl, fingerprint)}\n${marker(attempt)}`,
       // Without a selection the request stays exactly as before.
       ...(triage?.labels.length ? { labels: triage.labels } : {}),
       ...(triage?.assignees.length ? { assignees: triage.assignees } : {}),
@@ -281,4 +294,87 @@ export async function createGitHubIssue(
       response.status >= 400 && response.status < 500 && response.status !== 408,
     );
   return result(await response.json(), path);
+}
+function commentTarget(attempt: IssueAttempt): { path: string; number: number } {
+  const number = attempt.issueNumber;
+  if (!number || !Number.isSafeInteger(number) || number < 1)
+    throw new Error('Choose an issue to add this report to.');
+  return { path: repositoryPath(attempt.repository), number };
+}
+function commentResult(
+  value: { html_url?: unknown },
+  path: string,
+  number: number,
+): CreatedIssue {
+  const issueUrl = `https://github.com/${path}/issues/${number}`;
+  if (
+    typeof value.html_url !== 'string' ||
+    !value.html_url.toLowerCase().startsWith(`${issueUrl.toLowerCase()}#issuecomment-`)
+  )
+    throw new GitHubRequestError(
+      'GitHub returned an unexpected comment response. Check the issue before retrying.',
+      false,
+    );
+  return { number, url: issueUrl, repository: path, comment: { url: value.html_url } };
+}
+/** Adds the report to an existing issue; the marker makes a lost response recoverable. */
+export async function createIssueComment(
+  attempt: IssueAttempt,
+  token: string,
+  draft: IssueDraft,
+  reportUrl: string,
+  signal?: AbortSignal,
+  fingerprint?: string,
+): Promise<CreatedIssue> {
+  const { path, number } = commentTarget(attempt);
+  const response = await fetch(
+    `https://api.github.com/repos/${path}/issues/${number}/comments`,
+    {
+      method: 'POST',
+      headers: githubHeaders(token),
+      signal,
+      redirect: 'error',
+      body: JSON.stringify({
+        body: `${issueBody(draft, reportUrl, fingerprint)}\n${marker(attempt)}`,
+      }),
+    },
+  );
+  if (!response.ok)
+    throw new GitHubRequestError(
+      `GitHub could not add the comment to #${number} (${response.status}). Check Issues: Write access for this repository.`,
+      response.status >= 400 && response.status < 500 && response.status !== 408,
+    );
+  return commentResult(await response.json(), path, number);
+}
+/** Finds a comment accepted by GitHub whose response was lost, by its attempt marker. */
+export async function findCreatedComment(
+  attempt: IssueAttempt,
+  token: string,
+  signal?: AbortSignal,
+): Promise<CreatedIssue | undefined> {
+  const { path, number } = commentTarget(attempt);
+  for (let page = 1; page <= 10; page++) {
+    const query = new URLSearchParams({
+      since: attempt.startedAt,
+      per_page: '100',
+      page: String(page),
+    });
+    const response = await fetch(
+      `https://api.github.com/repos/${path}/issues/${number}/comments?${query}`,
+      { headers: githubHeaders(token), signal, redirect: 'error' },
+    );
+    if (!response.ok)
+      throw new Error(
+        `Could not check the previous GitHub request (${response.status}). Retry to check again.`,
+      );
+    const comments = (await response.json()) as Array<{ html_url?: unknown; body?: unknown }>;
+    const found = comments.find(
+      (comment) => typeof comment.body === 'string' && comment.body.includes(marker(attempt)),
+    );
+    if (found) return commentResult(found, path, number);
+    if (comments.length < 100) return undefined;
+  }
+  throw new Error(
+    'Could not finish checking the previous request. Check the issue for the comment.',
+  );
 }

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createGitHubIssue,
+  createIssueComment,
+  findCreatedComment,
   githubIssueLink,
   issueBody,
   listIssueOptions,
@@ -232,4 +234,125 @@ describe('issue options', () => {
       );
     },
   );
+});
+
+describe('error fingerprint line', () => {
+  it('adds the fingerprint under the report link only when given', () => {
+    const plain = issueBody(draft, reportUrl);
+    expect(plain).toBe(
+      'Evidence\n\n### Recorded session\n[Open the full report](https://abc.reports.pages.dev/) — Cloudflare Access sign-in required.\n',
+    );
+    expect(issueBody(draft, reportUrl, undefined)).toBe(plain);
+    expect(issueBody(draft, reportUrl, 'sr-7c41e9a2b3d0')).toBe(
+      `${plain}Error fingerprint: \`sr-7c41e9a2b3d0\`\n`,
+    );
+  });
+  it('includes the fingerprint in a new issue', async () => {
+    const fetch = stubFetch(created);
+    await createGitHubIssue(attempt, 'token', draft, reportUrl, undefined, undefined, 'sr-7c41e9a2b3d0');
+    const body = JSON.parse(String(fetch.mock.calls[0]![1]!.body));
+    expect(body.body).toContain('Error fingerprint: `sr-7c41e9a2b3d0`');
+    expect(body.body).toContain('<!-- session-recorder:attempt-1 -->');
+  });
+});
+
+describe('comments on an existing issue', () => {
+  const target: IssueAttempt = { ...attempt, issueNumber: 118 };
+  const commented = (url = 'https://github.com/owner/repo/issues/118#issuecomment-99') =>
+    respond({ id: 99, html_url: url }, 201);
+  it('posts the issue body, fingerprint and retry marker as a comment', async () => {
+    const fetch = stubFetch(() => commented());
+    const result = await createIssueComment(
+      target,
+      'token',
+      draft,
+      reportUrl,
+      undefined,
+      'sr-7c41e9a2b3d0',
+    );
+    const [url, init] = fetch.mock.calls[0]!;
+    expect(url).toBe('https://api.github.com/repos/owner/repo/issues/118/comments');
+    expect(init?.method).toBe('POST');
+    expect(init?.redirect).toBe('error');
+    expect(JSON.parse(String(init!.body))).toEqual({
+      body: `${issueBody(draft, reportUrl, 'sr-7c41e9a2b3d0')}\n<!-- session-recorder:attempt-1 -->`,
+    });
+    expect(result).toEqual({
+      number: 118,
+      url: 'https://github.com/owner/repo/issues/118',
+      repository: 'owner/repo',
+      comment: { url: 'https://github.com/owner/repo/issues/118#issuecomment-99' },
+    });
+  });
+  it.each([
+    'https://github.com/owner/repo/issues/119#issuecomment-99',
+    'https://github.com/other/repo/issues/118#issuecomment-99',
+    'https://evil.example/owner/repo/issues/118#issuecomment-99',
+    'https://github.com/owner/repo/issues/118',
+    undefined,
+  ])('rejects an unexpected comment response %s without clearing the attempt', async (url) => {
+    stubFetch(() => respond({ id: 99, html_url: url }, 201));
+    await expect(createIssueComment(target, 'token', draft, reportUrl)).rejects.toMatchObject({
+      message: 'GitHub returned an unexpected comment response. Check the issue before retrying.',
+      definitive: false,
+    });
+  });
+  it.each([
+    [404, true],
+    [422, true],
+    [408, false],
+    [502, false],
+  ])('treats a %s rejection as definitive: %s', async (status, definitive) => {
+    stubFetch(() => respond({ message: 'No' }, status));
+    await expect(createIssueComment(target, 'token', draft, reportUrl)).rejects.toMatchObject({
+      message: `GitHub could not add the comment to #118 (${status}). Check Issues: Write access for this repository.`,
+      definitive,
+    });
+  });
+  it('finds the comment with the attempt marker across pages since the attempt started', async () => {
+    const fetch = stubFetch((url) => {
+      const page = Number(new URL(url).searchParams.get('page'));
+      return respond(
+        page === 1
+          ? Array.from({ length: 100 }, (_, index) => ({
+              id: index,
+              html_url: `https://github.com/owner/repo/issues/118#issuecomment-${index}`,
+              body: 'Another comment',
+            }))
+          : [
+              {
+                id: 500,
+                html_url: 'https://github.com/owner/repo/issues/118#issuecomment-500',
+                body: 'Report\n<!-- session-recorder:attempt-1 -->',
+              },
+            ],
+      );
+    });
+    expect(await findCreatedComment(target, 'token')).toEqual({
+      number: 118,
+      url: 'https://github.com/owner/repo/issues/118',
+      repository: 'owner/repo',
+      comment: { url: 'https://github.com/owner/repo/issues/118#issuecomment-500' },
+    });
+    const urls = fetch.mock.calls.map(([url]) => new URL(String(url)));
+    expect(urls.map((url) => url.pathname)).toEqual([
+      '/repos/owner/repo/issues/118/comments',
+      '/repos/owner/repo/issues/118/comments',
+    ]);
+    expect(urls[0]!.searchParams.get('since')).toBe(attempt.startedAt);
+    expect(urls[0]!.searchParams.get('per_page')).toBe('100');
+    expect(urls.map((url) => url.searchParams.get('page'))).toEqual(['1', '2']);
+  });
+  it('returns nothing when no comment has the marker', async () => {
+    stubFetch(() =>
+      respond([
+        {
+          id: 1,
+          html_url: 'https://github.com/owner/repo/issues/118#issuecomment-1',
+          body: '<!-- session-recorder:other-attempt -->',
+        },
+      ]),
+    );
+    expect(await findCreatedComment(target, 'token')).toBeUndefined();
+  });
 });
