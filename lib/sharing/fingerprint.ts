@@ -45,8 +45,11 @@ const UUID_PATTERN = new RegExp(UUID, 'gi');
 const HEX_PATTERN = /(?<![\w$])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{8,}(?![\w$])/gi;
 /** Numbers that are not part of an identifier such as `user42`. */
 const NUMBER_PATTERN = /(?<![\w$])\d+(?:\.\d+)?/g;
-/** A quote must not start or end inside a word, so "can't" is not a quotation. */
-const QUOTED_PATTERN = /(?<![\w$])(['"`])(.*?)\1(?![\w$])/g;
+/**
+ * A quote must not start or end inside a word, so "can't" is not a quotation.
+ * Quoted values may span lines; their content is redacted all the same.
+ */
+const QUOTED_PATTERN = /(?<![\w$])(['"`])([\s\S]*?)\1(?![\w$])/g;
 const IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
 const MESSAGE_CAP = 200;
 

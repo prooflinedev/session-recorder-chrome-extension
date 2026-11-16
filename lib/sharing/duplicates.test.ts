@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { findDuplicates } from './duplicates';
+import { normalizeMessage } from './fingerprint';
 
 const fp = {
   id: 'sr-7c41e9a2b3d0',
@@ -167,5 +168,16 @@ describe('fingerprints in comments', () => {
     const matches = await findDuplicates('owner/repo', 'token', fp);
     expect(matches.exact.map((match) => match.number)).toEqual([1, 3, 6]);
     expect(commentChecks(fetch)).toHaveLength(5);
+  });
+});
+
+describe('search terms', () => {
+  it('never searches for a quoted value that spans lines', async () => {
+    const fetch = search({});
+    await findDuplicates('owner/repo', 'token', {
+      id: fp.id,
+      message: normalizeMessage('Invalid value "Confidential project\nlaunch plan" in checkout form'),
+    });
+    expect(queries(fetch).join('\n')).not.toContain('Confidential');
   });
 });

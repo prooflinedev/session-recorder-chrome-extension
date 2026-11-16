@@ -111,6 +111,14 @@ describe('message normalization', () => {
   ])('normalizes %j', (message, expected) => {
     expect(normalizeMessage(message)).toBe(expected);
   });
+  it('redacts quoted values that span lines', () => {
+    expect(normalizeMessage('Invalid value "Confidential project\nlaunch plan"')).toBe(
+      'Invalid value <str>',
+    );
+    expect(normalizeMessage("Can't parse 'line one\r\nline two' or `a\nb`")).toBe(
+      "Can't parse <str> or <str>",
+    );
+  });
   it('collapses whitespace, trims and caps at 200 characters', () => {
     expect(normalizeMessage('  TypeError:\n\t  boom   here ')).toBe('TypeError: boom here');
     expect(normalizeMessage('x'.repeat(300))).toHaveLength(200);
