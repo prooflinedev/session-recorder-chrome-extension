@@ -123,6 +123,14 @@ export function filingBlocker(
   return publishLimit;
 }
 
+/** A draft without a repository takes the preferred one when settings change. */
+export function repositoryAfterSettings(
+  state: Pick<ShareState, 'repository'>,
+  settings: SharingSettings,
+): string {
+  return state.repository || preferredRepository(settings);
+}
+
 /** Destination choices freeze while working and once a request may have reached GitHub. */
 function locked(state: ShareState): boolean {
   return state.operation !== 'idle' || !!state.attempt || !!state.issue;
@@ -172,7 +180,7 @@ export function shareReducer(state: ShareState, action: ShareAction): ShareState
       };
     }
     case 'settings':
-      return { ...state, settings: action.settings, repository: state.repository || preferredRepository(action.settings) };
+      return { ...state, settings: action.settings, repository: repositoryAfterSettings(state, action.settings) };
     case 'prepare':
       return {
         ...state,

@@ -75,12 +75,14 @@ async function personalFiling(
     holdComment?: Promise<void>;
     /** Start without a GitHub token for owner/repository. */
     noToken?: boolean;
+    /** Start without any GitHub repository or token. */
+    noRepository?: boolean;
   } = {},
 ): Promise<GitHubLog> {
   const accountId = 'a'.repeat(32);
   const appId = '12345678-1234-1234-1234-123456789abc';
   await background.evaluate(
-    ({ accountId, appId, githubToken }) =>
+    ({ accountId, appId, repository, githubToken }) =>
       chrome.storage.local.set({
         sharingSettings: {
           cloudflare: {
@@ -90,11 +92,16 @@ async function personalFiling(
             accessAppId: appId,
             teamDomain: 'team.cloudflareaccess.com',
           },
-          repository: 'owner/repository',
+          repository,
           githubToken,
         },
       }),
-    { accountId, appId, githubToken: github.noToken ? '' : 'github-private-key' },
+    {
+      accountId,
+      appId,
+      repository: github.noRepository ? '' : 'owner/repository',
+      githubToken: github.noToken || github.noRepository ? '' : 'github-private-key',
+    },
   );
   await context.route('https://api.cloudflare.com/client/v4/**', async (route) => {
     const url = route.request().url();
@@ -321,6 +328,40 @@ test('checks for duplicates once a repository token is added and hides them when
     page.getByLabel('Issue repository').locator('option', { hasText: 'owner/third' }),
   ).toHaveCount(1);
   await expect(page.getByText('Possible duplicates')).toHaveCount(0);
+  expect(log.searches).toHaveLength(2);
+});
+
+test('checks for duplicates in the first repository added after opening', async ({
+  context,
+  background,
+  extensionId,
+}) => {
+  const sessionId = await record(context, background);
+  const log = await personalFiling(context, background, { noRepository: true });
+  const page = await context.newPage();
+  await seedException(page, extensionId, sessionId);
+  await page.goto(extUrl(extensionId, `share.html?session=${sessionId}`));
+  const repository = page.getByLabel('GitHub repository');
+  await expect(repository).toHaveValue('');
+  await expect(
+    page.getByRole('button', { name: 'File GitHub issue', exact: true }),
+  ).toBeEnabled();
+  await expect(page.getByText('Possible duplicates')).toHaveCount(0);
+  expect(log.searches).toHaveLength(0);
+  await background.evaluate(async () => {
+    const { sharingSettings } = await chrome.storage.local.get('sharingSettings');
+    await chrome.storage.local.set({
+      sharingSettings: {
+        ...sharingSettings,
+        repositories: [{ id: 'main', repository: 'owner/repository', token: 'github-private-key' }],
+      },
+    });
+  });
+  // The page has applied the settings once it selects the new repository.
+  await expect(repository).toHaveValue('owner/repository');
+  await expect(
+    duplicatesPanel(page).getByRole('link', { name: '#118 Checkout 500 on Pay' }),
+  ).toBeVisible();
   expect(log.searches).toHaveLength(2);
 });
 

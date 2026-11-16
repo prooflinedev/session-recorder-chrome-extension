@@ -49,6 +49,7 @@ import {
   filingBlocker,
   initialShareState,
   loadedRepository,
+  repositoryAfterSettings,
   shareReducer,
   type ShareState,
 } from './reducer';
@@ -156,8 +157,10 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
 
   /** After a settings change: search with a newly added token, or hide a check that no longer applies. */
   function refreshDuplicates(settings: SharingSettings) {
-    const { fingerprint: current, repository, issue, attempt, duplicates } = latest.current;
+    const { fingerprint: current, issue, attempt, duplicates } = latest.current;
     if (issue || attempt) return;
+    // The settings action may have just chosen the first configured repository.
+    const repository = repositoryAfterSettings(latest.current, settings);
     const token = duplicateToken(settings, repository, current);
     const searched = searchedWith.current;
     // Unrelated settings changes keep a running or finished check with the same token.
