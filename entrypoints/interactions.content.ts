@@ -10,6 +10,7 @@
 
 import { defineContentScript } from 'wxt/utils/define-content-script';
 
+import { closestComposed, composedTarget, deepActiveElement } from '@/lib/dom/composed';
 import { buildDescriptor, bestSelector, isSensitiveInput } from '@/lib/dom/descriptor';
 import { isAnnotationOverlay } from '@/lib/dom/overlay';
 import { onContentMessage, sendMessage } from '@/lib/messaging';
@@ -140,12 +141,16 @@ export default defineContentScript({
 
     // -- capture handlers ----------------------------------------------------
 
+    // Events from inside a web component reach `document` retargeted to its
+    // shadow host; composedTarget() recovers the element the user actually hit.
+    // The overlay check stays on e.target, which is the overlay's own host.
+
     const onClick = (e: MouseEvent): void => {
-      const target = e.target;
-      if (!(target instanceof Element)) return;
       // Clicks land on the annotation overlay (retargeted to its host) while the
       // user is drawing — those are recorder chrome, not page interactions.
-      if (isAnnotationOverlay(target)) return;
+      if (isAnnotationOverlay(e.target)) return;
+      const target = composedTarget(e);
+      if (!target) return;
       post('click', {
         descriptor: buildDescriptor(target),
         modifiers: modifiersOf(e),
@@ -154,10 +159,9 @@ export default defineContentScript({
     };
 
     const onInput = (e: Event): void => {
-      const target = e.target;
-      if (!(target instanceof Element)) return;
-      if (isAnnotationOverlay(target)) return;
-      const el = target;
+      if (isAnnotationOverlay(e.target)) return;
+      const el = composedTarget(e);
+      if (!el) return;
       const existing = inputTimers.get(el);
       if (existing) clearTimeout(existing);
       const timer = setTimeout(() => {
@@ -200,7 +204,7 @@ export default defineContentScript({
       if (isAnnotationOverlay(e.target)) return; // typing an annotation label
       const chord = e.ctrlKey || e.metaKey || e.altKey;
       if (!chord && !NAMED_KEYS.has(e.key)) return;
-      const focused = document.activeElement;
+      const focused = deepActiveElement(document);
       post('key', {
         key: keyString(e),
         modifiers: modifiersOf(e),
@@ -220,15 +224,16 @@ export default defineContentScript({
       'a, button, input, select, textarea, summary, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="option"], [role="checkbox"], [role="switch"], [tabindex], [contenteditable]';
 
     /** The closest interactive element under the pointer, or null (skip). */
-    function meaningfulTarget(t: EventTarget | null): Element | null {
-      if (!(t instanceof Element) || isAnnotationOverlay(t)) return null;
-      return t.closest(INTERACTIVE);
+    function meaningfulTarget(t: Element | null): Element | null {
+      if (!t) return null;
+      return closestComposed(t, INTERACTIVE);
     }
 
     const onMouseMove = (e: MouseEvent): void => {
       if (hoverDwellMs <= 0) return;
       if (hoverTimer) clearTimeout(hoverTimer);
-      const target = e.target;
+      // Resolve now: composedPath() is empty once dispatch has finished.
+      const target = isAnnotationOverlay(e.target) ? null : composedTarget(e);
       hoverTimer = setTimeout(() => {
         hoverTimer = null;
         const el = meaningfulTarget(target);
