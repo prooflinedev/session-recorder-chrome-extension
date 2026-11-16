@@ -92,6 +92,10 @@ Deleting local recordings does not delete previously published reports; remove
 those in the share tab first or in Cloudflare. Unpublishing cannot revoke copies
 already downloaded by readers, and it does not delete GitHub issues.
 
+### Labels and assignees
+
+With a personal repository token, **Labels** and **Assignees** under the repository in Issue details are optional. Their options load from GitHub when you open them; GitHub allows up to 10 assignees. Setting them requires write access to the repository. Without it, GitHub creates the issue but silently drops labels and assignees, so the pickers say when you lack access and the filed report names anything GitHub did not apply. Choices are remembered per repository for new drafts. They are not available when filing through Proofline.
+
 ## Implementation and verification
 
 `lib/sharing/` owns provider adapters, Pages uploads, Access verification, hosted
