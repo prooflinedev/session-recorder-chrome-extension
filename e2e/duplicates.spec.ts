@@ -248,6 +248,64 @@ test('adds the report to an existing issue as a comment', async ({
   expect(log.comments).toHaveLength(1);
 });
 
+test('allows Add to only when the prepared report can be published', async ({
+  context,
+  background,
+  extensionId,
+}) => {
+  const sessionId = await record(context, background);
+  const log = await personalFiling(context, background);
+  const page = await context.newPage();
+  await seedException(page, extensionId, sessionId);
+  // A captured file over Cloudflare Pages' 25 MiB limit blocks publishing, as File issue shows.
+  await page.evaluate(
+    (sessionId) =>
+      new Promise<void>((resolve, reject) => {
+        const open = indexedDB.open('session-recorder', 1);
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const db = open.result;
+          const transaction = db.transaction(['events', 'assets'], 'readwrite');
+          const size = 26 * 1024 * 1024;
+          transaction.objectStore('assets').put({
+            id: 'oversized-file',
+            sessionId,
+            kind: 'file',
+            mime: 'application/octet-stream',
+            size,
+            blob: new Blob([new Uint8Array(size)], { type: 'application/octet-stream' }),
+          });
+          transaction.objectStore('events').put({
+            id: 'oversized-file-event',
+            sessionId,
+            t: 300,
+            type: 'file-captured',
+            importance: 1,
+            payload: {
+              assetId: 'oversized-file',
+              fileName: 'export.bin',
+              mime: 'application/octet-stream',
+              size,
+            },
+          });
+          transaction.oncomplete = () => {
+            db.close();
+            resolve();
+          };
+          transaction.onerror = () => reject(transaction.error);
+        };
+      }),
+    sessionId,
+  );
+  await page.goto(extUrl(extensionId, `share.html?session=${sessionId}`));
+  await expect(page.getByText('exceeds Cloudflare Pages’ 25 MiB file limit', { exact: false })).toBeVisible();
+  const add = duplicatesPanel(page).getByRole('button', { name: 'Add to #118' });
+  await expect(add).toBeVisible();
+  await expect(page.getByRole('button', { name: 'File GitHub issue', exact: true })).toBeDisabled();
+  await expect(add).toBeDisabled();
+  expect(log.comments).toHaveLength(0);
+});
+
 test('includes the error fingerprint in a new issue', async ({
   context,
   background,

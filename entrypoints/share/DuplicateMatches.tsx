@@ -6,13 +6,15 @@ type ShareModel = ReturnType<typeof useShareReport>;
 
 /** Issues that may already describe this recording's error, under Issue details. */
 export function DuplicateMatches({ share }: { share: ShareModel }) {
-  const { state, busy, triageManaged, actions } = share;
+  const { state, busy, blocked, triageManaged, actions } = share;
   const id = useId();
   const { duplicates } = state;
   // Hidden for managed filing, without a fingerprint or token (never searched) and once filed.
   if (!state.fingerprint || triageManaged || state.issue || duplicates.status === 'idle')
     return null;
   const locked = busy || !!state.attempt;
+  // Add to needs the same prepared, publishable report as File issue.
+  const filingLocked = locked || !!blocked;
   const list = (key: string, title: string, issues: DuplicateIssue[]) =>
     !!issues.length && (
       <>
@@ -32,7 +34,7 @@ export function DuplicateMatches({ share }: { share: ShareModel }) {
               <button
                 type="button"
                 className="btn btn--sm"
-                disabled={locked}
+                disabled={filingLocked}
                 onClick={() => actions.addToIssue(issue.number)}
               >
                 Add to #{issue.number}

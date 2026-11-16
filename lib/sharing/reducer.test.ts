@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { initialShareState, shareReducer, type ShareAction } from '@/entrypoints/share/reducer';
+import { filingBlocker, initialShareState, shareReducer, type ShareAction } from '@/entrypoints/share/reducer';
 import { SessionBuilder } from '@/lib/fixtures/session-builder';
 import { defaultSharingSettings } from './settings';
 import type { SavedDraft } from './draft';
@@ -259,5 +259,23 @@ describe('adding to an existing issue', () => {
       saved: { draft, repository: 'owner/repo', addTo: { repository: 'owner/repo', number: 97 } },
     });
     expect(saved.addTo).toEqual({ repository: 'owner/repo', number: 97 });
+  });
+});
+
+describe('filing readiness', () => {
+  const file = { path: 'report.md', text: '# Report' };
+  it('blocks filing while the report is preparing or has no files', () => {
+    const state = initialShareState('L1');
+    expect(filingBlocker({ ...state, preparing: true, files: [file] }, '')).toBe(
+      'The report is still preparing.',
+    );
+    expect(filingBlocker({ ...state, preparing: false, files: [] }, '')).toBe(
+      'The report is still preparing.',
+    );
+  });
+  it('blocks filing a report over the publishing limits', () => {
+    const state = { ...initialShareState('L1'), preparing: false, files: [file] };
+    expect(filingBlocker(state, 'export.bin exceeds the limit.')).toBe('export.bin exceeds the limit.');
+    expect(filingBlocker(state, '')).toBe('');
   });
 });

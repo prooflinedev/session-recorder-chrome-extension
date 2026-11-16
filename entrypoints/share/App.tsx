@@ -110,7 +110,7 @@ export function App(): React.JSX.Element {
   );
 }
 function FileIssueAction({ share }: { share: ShareModel }) {
-  const { state, busy, publishLimit, actions } = share;
+  const { state, busy, blocked, actions } = share;
   if (state.issue?.comment)
     return (
       <a
@@ -149,7 +149,7 @@ function FileIssueAction({ share }: { share: ShareModel }) {
         className="btn btn--primary"
         type="button"
         aria-label={state.attempt ? 'Check GitHub issue' : 'File GitHub issue'}
-        disabled={busy || state.preparing || !state.files.length || !!publishLimit}
+        disabled={busy || !!blocked}
         onClick={() => void actions.submitIssue()}
         autoFocus={!!state.error}
       >

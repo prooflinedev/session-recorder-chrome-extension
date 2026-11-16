@@ -46,6 +46,7 @@ import {
   type IssueOptions,
 } from '@/lib/sharing/github';
 import {
+  filingBlocker,
   initialShareState,
   loadedRepository,
   shareReducer,
@@ -424,6 +425,11 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
   /** Files a new issue, or with `addTo` posts the report to that existing issue. */
   function submitIssue(addTo?: AddToTarget) {
     if (operation.current) return Promise.resolve();
+    const blocked = filingBlocker(state, publishLimit);
+    if (blocked) {
+      dispatch({ type: 'error', message: blocked });
+      return Promise.resolve();
+    }
     // A pending attempt keeps its own target; otherwise this click chooses it.
     if (!state.attempt) dispatch({ type: 'add-to', target: addTo });
     return run('github', async (signal) => {
@@ -484,6 +490,8 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
     state,
     finalBody,
     publishLimit,
+    /** Shared by File issue and Add to: why filing cannot start yet. */
+    blocked: filingBlocker(state, publishLimit),
     busy: state.operation !== 'idle',
     ready: publicationReady(state.publication),
     provider: SUMMARY_PROVIDERS.find((p) => p.id === state.settings.provider)!,

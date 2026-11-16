@@ -113,6 +113,15 @@ export function loadedRepository(settings: SharingSettings, saved?: SavedDraft):
   );
 }
 
+/** Why the report cannot be filed or added to an issue yet; empty when it can. */
+export function filingBlocker(
+  state: Pick<ShareState, 'preparing' | 'files'>,
+  publishLimit: string,
+): string {
+  if (state.preparing || !state.files.length) return 'The report is still preparing.';
+  return publishLimit;
+}
+
 /** Destination choices freeze while working and once a request may have reached GitHub. */
 function locked(state: ShareState): boolean {
   return state.operation !== 'idle' || !!state.attempt || !!state.issue;
