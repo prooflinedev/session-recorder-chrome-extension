@@ -311,6 +311,9 @@ test('files through Proofline with managed AI and private attachment uploads', a
   const page = await context.newPage();
   await page.goto(extUrl(extensionId, `share.html?session=${started.session.id}`));
   await expect(page.getByLabel('Issue repository')).toHaveValue('alice/product');
+  // Proofline-managed filing sends no labels or assignees, so neither field is offered.
+  await expect(page.getByLabel('Labels', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('Assignees', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'File GitHub issue', exact: true }).click();
   await expect(page.getByText('Upload incomplete', { exact: true })).toHaveCount(2);
   await expect(

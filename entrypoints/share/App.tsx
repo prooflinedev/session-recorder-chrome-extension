@@ -1,5 +1,6 @@
 import { ProoflineBrand } from '@/lib/ui/ProoflineBrand';
 import { FilingProgress } from './FilingProgress';
+import { IssueTriage } from './IssueTriage';
 import { configuredRepositories } from '@/lib/sharing/settings';
 import { GitHubIcon } from '@/lib/ui/GitHubIcon';
 import React, { useReducer } from 'react';
@@ -345,6 +346,7 @@ function ReportDetails({ share }: { share: ShareModel }) {
           onChange={(e) => actions.editRepository(e.target.value)}
         />
       </label>
+      <IssueTriage share={share} />
       <dl>
         <div>
           <dt>Status</dt>

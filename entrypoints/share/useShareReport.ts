@@ -2,7 +2,7 @@ import { PROOFLINE_SETTINGS_KEY } from '@/lib/proofline/settings';
 import { publishProoflineReport } from '@/lib/proofline/reports';
 import { prooflineRequest } from '@/lib/proofline/client';
 import { isProoflinePublication, publicationUrl, publicationReady } from '@/lib/sharing/draft';
-import { useEffect, useReducer, useRef } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import { getAssets, getEvents, getSession } from '@/lib/storage';
 import type { BuildBundleInput } from '@/lib/export/bundle';
 import type { VerbosityLevel } from '@/lib/session/types';
@@ -16,10 +16,12 @@ import {
 import {
   loadSharingSettings,
   rememberRepository,
+  tokenForRepository,
   LAST_REPOSITORY_KEY,
   SHARING_KEY,
   SUMMARY_PROVIDERS,
 } from '@/lib/sharing/settings';
+import { loadTriageDefaults, rememberTriage, triageFor } from '@/lib/sharing/triage';
 import {
   errorMessage,
   REPORT_LEVELS,
@@ -32,10 +34,33 @@ import {
   type IssueDraft,
 } from '@/lib/sharing/summary';
 import { fileIssue } from '@/lib/sharing/file-issue';
-import { issueBody, repositoryPath } from '@/lib/sharing/github';
+import {
+  issueBody,
+  listIssueOptions,
+  repositoryPath,
+  type IssueOptions,
+} from '@/lib/sharing/github';
 import { initialShareState, shareReducer, type ShareState } from './reducer';
 
 type Recording = Omit<BuildBundleInput, 'level'>;
+export interface TriageOptions extends IssueOptions {
+  status: 'idle' | 'loading' | 'ready' | 'error';
+  error: string;
+}
+const idleOptions: TriageOptions = {
+  status: 'idle',
+  canTriage: false,
+  labels: [],
+  assignees: [],
+  error: '',
+};
+function optionsKey(repository: string): string {
+  try {
+    return repositoryPath(repository).toLowerCase();
+  } catch {
+    return '';
+  }
+}
 
 export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) {
   const [state, dispatch] = useReducer(shareReducer, initialLevel, initialShareState);
@@ -43,6 +68,9 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
   const operation = useRef<AbortController>();
   const preparation = useRef(0);
   const writes = useRef<Promise<void>>(Promise.resolve());
+  const optionLoads = useRef(new Map<string, AbortController>());
+  // Options load when a picker opens, once per repository, and stay for this page.
+  const [triageOptions, setTriageOptions] = useState<Record<string, TriageOptions>>({});
   const draftKey = `shareDraft:${sessionId}`;
   const progress = (message: string) => dispatch({ type: 'progress', message });
 
@@ -70,12 +98,13 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
     let active = true;
     void (async () => {
       if (!sessionId) throw new Error('Open Share report from a recorded session.');
-      const [session, settings, saved, events, assets] = await Promise.all([
+      const [session, settings, saved, events, assets, triageDefaults] = await Promise.all([
         getSession(sessionId),
         loadSharingSettings(),
         chrome.storage.local.get(draftKey),
         getEvents(sessionId),
         getAssets(sessionId),
+        loadTriageDefaults(),
       ]);
       if (!session)
         throw new Error('This recording is no longer stored in this browser.');
@@ -84,7 +113,7 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       if (!active) return;
       const draft = saved[draftKey] as SavedDraft | undefined;
       recording.current = { session, events, assets };
-      dispatch({ type: 'loaded', session, settings, saved: draft });
+      dispatch({ type: 'loaded', session, settings, saved: draft, triageDefaults });
       await prepare(recording.current, draft?.publication?.level ?? initialLevel);
     })().catch((error) => {
       if (active) dispatch({ type: 'error', message: errorMessage(error) });
@@ -107,10 +136,12 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
           });
     };
     chrome.storage.onChanged.addListener(changed);
+    const loads = optionLoads.current;
     return () => {
       active = false;
       ++preparation.current;
       operation.current?.abort();
+      for (const load of loads.values()) load.abort();
       chrome.storage.onChanged.removeListener(changed);
     };
   }, [sessionId, initialLevel, draftKey]);
@@ -132,6 +163,8 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       issue: state.issue,
       attempt: state.attempt,
       summaryRequestId: state.summaryRequestId,
+      labels: state.labels,
+      assignees: state.assignees,
       ...patch,
     };
   }
@@ -181,11 +214,58 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
   function editRepository(repository: string) {
     if (operation.current || state.attempt || state.issue) return;
     dispatch({ type: 'repository', repository });
-    persistEdit({ draft: state.draft, repository, publication: state.publication });
+    persistEdit({
+      draft: state.draft,
+      repository,
+      publication: state.publication,
+      ...triageFor(state.triageDefaults, repository),
+    });
     try {
       const path = repositoryPath(repository);
       void rememberRepository(path).catch(() => dispatch({ type: 'error', message: 'Could not remember the repository selection.' }));
     } catch { /* An incomplete typed repository is saved only with this draft. */ }
+  }
+  function editTriage(labels: string[], assignees: string[]) {
+    if (operation.current || state.attempt || state.issue) return;
+    dispatch({ type: 'triage', labels, assignees });
+    persistEdit({
+      draft: state.draft,
+      repository: state.repository,
+      publication: state.publication,
+      labels,
+      assignees,
+    });
+    try {
+      const path = repositoryPath(state.repository);
+      void rememberTriage(path, { labels, assignees }).catch(() =>
+        dispatch({ type: 'error', message: 'Could not remember the labels and assignees.' }),
+      );
+    } catch { /* An incomplete typed repository keeps the choice only with this draft. */ }
+  }
+  /** Explicitly requested by opening a picker; a failed load retries on the next request. */
+  async function loadTriageOptions() {
+    const repository = state.repository;
+    const key = optionsKey(repository);
+    const current = triageOptions[key]?.status;
+    if (current === 'loading' || current === 'ready') return;
+    const update = (options: Partial<TriageOptions>) =>
+      setTriageOptions((all) => ({ ...all, [key]: { ...idleOptions, ...options } }));
+    const controller = new AbortController();
+    optionLoads.current.get(key)?.abort();
+    optionLoads.current.set(key, controller);
+    update({ status: 'loading' });
+    try {
+      const options = await listIssueOptions(
+        repository,
+        tokenForRepository(state.settings, repository),
+        controller.signal,
+      );
+      update({ status: 'ready', ...options });
+    } catch (error) {
+      if (!controller.signal.aborted) update({ status: 'error', error: errorMessage(error) });
+    } finally {
+      if (optionLoads.current.get(key) === controller) optionLoads.current.delete(key);
+    }
   }
   async function remember(publication?: Publication) {
     dispatch({ type: 'publication', publication });
@@ -304,7 +384,15 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
         async () => {
           const stored = (await chrome.storage.local.get(draftKey))[draftKey] as
             SavedDraft | undefined;
-          const saved = stored ? { ...stored, repository: stored.repository || state.repository } : snapshot();
+          const saved = stored
+            ? {
+                ...stored,
+                repository: stored.repository || state.repository,
+                // Drafts saved before a choice existed file what this page shows.
+                labels: stored.labels ?? state.labels,
+                assignees: stored.assignees ?? state.assignees,
+              }
+            : snapshot();
           await rememberRepository(saved.attempt?.repository ?? saved.repository);
           const result = await fileIssue({
             saved,
@@ -352,9 +440,15 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       0,
     ),
     levels: REPORT_LEVELS,
+    /** Proofline-managed filing sends no labels or assignees. */
+    triageManaged:
+      state.settings.proofline?.github === 'proofline' || !!state.attempt?.proofline,
+    triageOptions: triageOptions[optionsKey(state.repository)] ?? idleOptions,
     actions: {
       editDraft,
       editRepository,
+      editTriage,
+      loadTriageOptions,
       generate,
       publish,
       checkDeployment,

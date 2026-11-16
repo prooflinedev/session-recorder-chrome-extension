@@ -1,4 +1,12 @@
+import type { BrowserContext, Worker } from '@playwright/test';
 import { test, expect, extUrl, dispatch, tabIdForUrl } from './support';
+
+const githubLabels = [
+  { name: 'bug', color: 'd73a4a' },
+  { name: 'checkout', color: '0e8a16' },
+  { name: 'needs-triage', color: 'fbca04' },
+];
+const githubAssignees = [{ login: 'octocat' }, { login: 'hubot' }];
 
 test('keeps provider credentials separate and restores each provider configuration', async ({
   context,
@@ -194,6 +202,7 @@ test('files an issue in one click with an automatic summary and protected report
   let rejectFirstVerification = true;
   let issues = 0;
   let summaries = 0;
+  let githubReads = 0;
   page.on('request', (request) => {
     if (request.url().includes('/chat/completions')) summaries++;
   });
@@ -205,9 +214,16 @@ test('files an issue in one click with an automatic summary and protected report
       expect(payload.title).toBe('Checkout shows an error');
       expect(payload.body).toContain(reportUrl);
       expect(payload.body).toContain('session-recorder:');
+      expect(payload.labels).toEqual(['bug']);
+      expect(payload.assignees).toEqual(['octocat']);
       await route.fulfill({
         status: 201,
-        json: { number: 42, html_url: 'https://github.com/owner/repository/issues/42' },
+        json: {
+          number: 42,
+          html_url: 'https://github.com/owner/repository/issues/42',
+          labels: [{ name: 'bug' }],
+          assignees: [{ login: 'octocat' }],
+        },
       });
     } else if (rejectFirstVerification) {
       rejectFirstVerification = false;
@@ -216,7 +232,13 @@ test('files an issue in one click with an automatic summary and protected report
         status: 403,
         json: { message: 'Resource not accessible by personal access token' },
       });
-    } else await route.fulfill({ json: { has_issues: true } });
+    } else {
+      githubReads++;
+      const path = new URL(route.request().url()).pathname;
+      if (path.endsWith('/labels')) await route.fulfill({ json: githubLabels });
+      else if (path.endsWith('/assignees')) await route.fulfill({ json: githubAssignees });
+      else await route.fulfill({ json: { has_issues: true, permissions: { push: true } } });
+    }
   });
   await page.goto(extUrl(extensionId, `share.html?session=${sessionId}&level=L2`));
   await expect(page.getByRole('checkbox')).toHaveCount(0);
@@ -244,8 +266,16 @@ test('files an issue in one click with an automatic summary and protected report
   });
   expect(deployments).toBe(0);
   expect(summaries).toBe(0);
+  await page.getByLabel('Labels', { exact: true }).click();
+  await page.getByRole('checkbox', { name: 'bug', exact: true }).check();
+  await page.getByLabel('Assignees', { exact: true }).click();
+  await page.getByRole('checkbox', { name: 'octocat', exact: true }).check();
   await page.getByRole('button', { name: 'File GitHub issue', exact: true }).click();
   await expect(page.getByRole('link', { name: 'View issue #42' })).toBeVisible();
+  const filedDetails = page.getByRole('complementary', { name: 'Report details' });
+  await expect(filedDetails.getByText('bug', { exact: true })).toBeVisible();
+  await expect(filedDetails.getByText('@octocat', { exact: true })).toBeVisible();
+  await expect(page.getByText('GitHub did not apply', { exact: false })).toHaveCount(0);
   expect(issues).toBe(1);
   expect(summaries).toBe(1);
   expect(uploaded.join('\n')).not.toMatch(
@@ -283,4 +313,164 @@ test('files an issue in one click with an automatic summary and protected report
     fullPage: true,
     animations: 'disabled',
   });
+  // A new draft for the same repository starts with the remembered choice, without a fetch.
+  const demo = await context.newPage();
+  await demo.goto('/');
+  const next = await dispatch<{ ok: boolean; session: { id: string } }>(background, {
+    kind: 'session/start',
+    tabId: await tabIdForUrl(background, 'http://localhost:5319'),
+  });
+  expect(next.ok).toBe(true);
+  await dispatch(background, {
+    kind: 'marker/add',
+    name: 'Checkout unexpectedly returns an error again',
+  });
+  await dispatch(background, { kind: 'session/stop' });
+  const readsBefore = githubReads;
+  await page.goto(extUrl(extensionId, `share.html?session=${next.session.id}`));
+  await expect(page.getByLabel('Issue repository')).toHaveValue('owner/repository');
+  await expect(page.getByLabel('Labels', { exact: true })).toContainText('bug');
+  await expect(page.getByLabel('Assignees', { exact: true })).toContainText('@octocat');
+  expect(githubReads).toBe(readsBefore);
+});
+
+/** A stopped recording, personal Cloudflare and GitHub settings, and mocked services. */
+async function preparePersonalFiling(
+  context: BrowserContext,
+  background: Worker,
+  github: {
+    push: boolean;
+    created: (payload: { labels?: string[]; assignees?: string[] }) => object;
+  },
+) {
+  const demo = await context.newPage();
+  await demo.goto('/');
+  const started = await dispatch<{ ok: boolean; session: { id: string } }>(background, {
+    kind: 'session/start',
+    tabId: await tabIdForUrl(background, 'http://localhost:5319'),
+  });
+  await dispatch(background, { kind: 'session/stop' });
+  const accountId = 'a'.repeat(32);
+  const appId = '12345678-1234-1234-1234-123456789abc';
+  await background.evaluate(
+    ({ accountId, appId }) =>
+      chrome.storage.local.set({
+        sharingSettings: {
+          cloudflare: {
+            apiToken: 'cloudflare-private-key',
+            accountId,
+            projectName: 'reports',
+            accessAppId: appId,
+            teamDomain: 'team.cloudflareaccess.com',
+          },
+          repository: 'owner/repository',
+          githubToken: 'github-private-key',
+        },
+      }),
+    { accountId, appId },
+  );
+  await context.route('https://api.cloudflare.com/client/v4/**', async (route) => {
+    const url = route.request().url();
+    let result: unknown = null;
+    if (url.endsWith('/pages/projects/reports'))
+      result = {
+        name: 'reports',
+        subdomain: 'reports.pages.dev',
+        production_branch: 'main',
+        deployment_configs: { preview: { fail_open: false } },
+      };
+    else if (url.endsWith(`/access/apps/${appId}`))
+      result = { type: 'self_hosted', domain: '*.reports.pages.dev', aud: 'b'.repeat(64) };
+    else if (url.includes('/policies?')) result = [{ decision: 'allow' }];
+    else if (url.endsWith('/upload-token')) result = { jwt: 'upload-jwt' };
+    else if (url.endsWith('/deployments'))
+      result = {
+        id: 'deployment-1',
+        url: 'https://abc.reports.pages.dev',
+        environment: 'preview',
+        latest_stage: { name: 'deploy', status: 'success' },
+      };
+    await route.fulfill({ json: { success: true, result } });
+  });
+  await context.route('https://team.cloudflareaccess.com/cdn-cgi/access/certs', (route) =>
+    route.fulfill({ json: { keys: [] } }),
+  );
+  await context.route('https://github.com/**', (route) =>
+    route.fulfill({ contentType: 'text/html', body: '<h1>GitHub issue test</h1>' }),
+  );
+  const created: { labels?: string[]; assignees?: string[] }[] = [];
+  await context.route('https://api.github.com/**', async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === 'POST') {
+      const payload = request.postDataJSON();
+      created.push(payload);
+      await route.fulfill({
+        status: 201,
+        json: {
+          number: 42,
+          html_url: 'https://github.com/owner/repository/issues/42',
+          ...github.created(payload),
+        },
+      });
+    } else if (path.endsWith('/labels')) await route.fulfill({ json: githubLabels });
+    else if (path.endsWith('/assignees')) await route.fulfill({ json: githubAssignees });
+    else
+      await route.fulfill({
+        json: { has_issues: true, permissions: { push: github.push } },
+      });
+  });
+  return { sessionId: started.session.id, created };
+}
+
+test('reports labels and assignees GitHub did not apply', async ({
+  context,
+  background,
+  extensionId,
+}) => {
+  const { sessionId, created } = await preparePersonalFiling(context, background, {
+    push: true,
+    created: (payload) => ({
+      labels: [{ name: 'checkout' }],
+      assignees: (payload.assignees ?? []).map((login) => ({ login })),
+    }),
+  });
+  const page = await context.newPage();
+  await page.goto(extUrl(extensionId, `share.html?session=${sessionId}`));
+  await page.getByLabel('Labels', { exact: true }).click();
+  await page.getByRole('checkbox', { name: 'bug', exact: true }).check();
+  await page.getByRole('checkbox', { name: 'checkout', exact: true }).check();
+  await page.getByRole('button', { name: 'File GitHub issue', exact: true }).click();
+  await expect(page.getByRole('link', { name: 'View issue #42' })).toBeVisible();
+  expect(created).toHaveLength(1);
+  expect(created[0]!.labels).toEqual(['bug', 'checkout']);
+  const warning = page.getByText(
+    'GitHub did not apply bug. Check write access to owner/repository.',
+  );
+  await expect(warning).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('link', { name: 'View issue #42' })).toBeVisible();
+  await expect(warning).toBeVisible();
+});
+
+test('explains missing write access and still files the issue', async ({
+  context,
+  background,
+  extensionId,
+}) => {
+  const { sessionId, created } = await preparePersonalFiling(context, background, {
+    push: false,
+    created: () => ({}),
+  });
+  const page = await context.newPage();
+  await page.goto(extUrl(extensionId, `share.html?session=${sessionId}`));
+  await page.getByLabel('Labels', { exact: true }).click();
+  await expect(
+    page.getByText('You need write access to owner/repository to set labels or assignees.'),
+  ).toBeVisible();
+  await expect(page.getByRole('checkbox', { disabled: false })).toHaveCount(0);
+  await page.getByRole('button', { name: 'File GitHub issue', exact: true }).click();
+  await expect(page.getByRole('link', { name: 'View issue #42' })).toBeVisible();
+  expect(created).toHaveLength(1);
+  expect(Object.keys(created[0]!)).toEqual(['title', 'body']);
 });

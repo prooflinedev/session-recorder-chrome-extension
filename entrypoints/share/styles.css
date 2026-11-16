@@ -530,3 +530,102 @@
 @media (max-width: 480px) { .filing-screen { padding: 24px 16px; } .filing-progress { padding: 24px; } }
 @media (prefers-reduced-motion: reduce) { .filing-activity * { animation: none; } }
 .filing-stages .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.triage-field {
+  margin-top: 16px;
+}
+.triage-picker > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 5px 8px;
+  list-style: none;
+  cursor: pointer;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+.triage-picker > summary::-webkit-details-marker {
+  display: none;
+}
+.triage-picker > summary:hover {
+  background: var(--surface-2);
+}
+.triage-picker > summary > svg {
+  flex: none;
+  margin-left: auto;
+  color: var(--muted);
+}
+.triage-picker[open] > summary > svg {
+  transform: rotate(180deg);
+}
+.triage-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  min-width: 0;
+}
+.triage-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.triage-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.triage-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.triage-options {
+  width: 100%;
+  max-height: 220px;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.triage-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.detail-field .triage-option input {
+  flex: none;
+  width: auto;
+  margin: 0;
+  padding: 0;
+}
+.triage-message {
+  margin: 0;
+  color: var(--muted);
+}
+.triage-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: var(--warn);
+}
+.triage-warning > svg {
+  flex: none;
+  margin-top: 2px;
+}
