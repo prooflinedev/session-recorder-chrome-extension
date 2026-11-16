@@ -96,6 +96,16 @@ already downloaded by readers, and it does not delete GitHub issues.
 
 With a personal repository token, **Labels** and **Assignees** under the repository in Issue details are optional. Their options load from GitHub when you open them; GitHub allows up to 10 assignees. Setting them requires write access to the repository. Without it, GitHub creates the issue but silently drops labels and assignees, so the pickers say when you lack access and the filed report names anything GitHub did not apply. Choices are remembered per repository for new drafts. They are not available when filing through Proofline.
 
+### Error fingerprint and possible duplicates
+
+When a recording captured an error, the share page computes an error fingerprint such as `sr-7c41e9a2b3d0`. It comes from the first uncaught exception, else the first `console.error`, else the first failed or 5xx request; 4xx responses and Chrome's "Failed to load resource" console messages are ignored. Numbers, IDs, emails, URLs and quoted values are removed from the message, and stack frames keep only file names and function names, so the same bug in another session or build usually gets the same fingerprint. Issues, comments and **Copy issue Markdown** include an `Error fingerprint` line under the report link; Proofline filing includes it too.
+
+With a personal repository token, **Possible duplicates** under Issue details lists open and closed issues in the selected repository with the same fingerprint (**Same error**) and issues mentioning the same error message (**Possibly related**). A closed match is marked as a possible regression. The check runs when the page opens or you choose another configured repository, uses at most two GitHub searches and never blocks filing; if GitHub refuses or rate-limits it, the panel says so and offers **Retry**. It is not shown with Proofline GitHub filing, without a token for the repository, without a captured error, or once the issue is filed.
+
+**Add to #N** publishes the report as usual and posts the issue text, report link and fingerprint as a comment on that issue instead of creating a new one. Labels and assignees apply only to new issues. The request is saved before it is sent, so **Check GitHub issue** finds a comment whose response was lost without posting it again. Afterwards the toolbar shows **View comment on #N**.
+
+Matching needs captured errors: recordings without console errors, exceptions or failed requests have no fingerprint. Without source maps, frames from minified code carry little meaning and function names of one or two characters are dropped, so matches rely mostly on the error message. Search results depend on GitHub's search index and may lag behind new issues.
+
 ## Implementation and verification
 
 `lib/sharing/` owns provider adapters, Pages uploads, Access verification, hosted
