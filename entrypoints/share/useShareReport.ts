@@ -69,8 +69,9 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
   const preparation = useRef(0);
   const writes = useRef<Promise<void>>(Promise.resolve());
   const optionLoads = useRef(new Map<string, AbortController>());
-  // Options load when a picker opens, once per repository, and stay for this page.
+  // Options load when a picker opens, once per repository, until sharing settings change.
   const [triageOptions, setTriageOptions] = useState<Record<string, TriageOptions>>({});
+  const [triageRevision, setTriageRevision] = useState(0);
   const draftKey = `shareDraft:${sessionId}`;
   const progress = (message: string) => dispatch({ type: 'progress', message });
 
@@ -125,7 +126,13 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       if (area === 'local' && (changes[SHARING_KEY] || changes[LAST_REPOSITORY_KEY] || changes[PROOFLINE_SETTINGS_KEY]))
         void loadSharingSettings()
           .then((settings) => {
-            if (active) dispatch({ type: 'settings', settings });
+            if (!active) return;
+            dispatch({ type: 'settings', settings });
+            // A replaced token or access level makes cached options stale.
+            for (const load of optionLoads.current.values()) load.abort();
+            optionLoads.current.clear();
+            setTriageOptions({});
+            setTriageRevision((revision) => revision + 1);
           })
           .catch(() => {
             if (active)
@@ -444,6 +451,8 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
     triageManaged:
       state.settings.proofline?.github === 'proofline' || !!state.attempt?.proofline,
     triageOptions: triageOptions[optionsKey(state.repository)] ?? idleOptions,
+    /** Changes when cached options are discarded, so open pickers close and reload. */
+    triageRevision,
     actions: {
       editDraft,
       editRepository,

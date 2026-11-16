@@ -73,7 +73,7 @@ export function IssueTriage({ share }: { share: ShareModel }) {
   }
   const repository = displayRepository(state.repository);
   return (
-    <React.Fragment key={repository.toLowerCase()}>
+    <React.Fragment key={`${repository.toLowerCase()}:${share.triageRevision}`}>
       <TriagePicker
         title="Labels"
         noun="labels"

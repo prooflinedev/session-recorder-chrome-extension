@@ -339,7 +339,8 @@ async function preparePersonalFiling(
   context: BrowserContext,
   background: Worker,
   github: {
-    push: boolean;
+    /** Write access, optionally decided by the request's Authorization header. */
+    push: boolean | ((authorization: string) => boolean);
     created: (payload: { labels?: string[]; assignees?: string[] }) => object;
   },
 ) {
@@ -417,7 +418,15 @@ async function preparePersonalFiling(
     else if (path.endsWith('/assignees')) await route.fulfill({ json: githubAssignees });
     else
       await route.fulfill({
-        json: { has_issues: true, permissions: { push: github.push } },
+        json: {
+          has_issues: true,
+          permissions: {
+            push:
+              typeof github.push === 'function'
+                ? github.push(request.headers().authorization ?? '')
+                : github.push,
+          },
+        },
       });
   });
   return { sessionId: started.session.id, created };
@@ -473,4 +482,46 @@ test('explains missing write access and still files the issue', async ({
   await expect(page.getByRole('link', { name: 'View issue #42' })).toBeVisible();
   expect(created).toHaveLength(1);
   expect(Object.keys(created[0]!)).toEqual(['title', 'body']);
+});
+
+test('reloads labels and assignees after the sharing settings change', async ({
+  context,
+  background,
+  extensionId,
+}) => {
+  const { sessionId } = await preparePersonalFiling(context, background, {
+    push: (authorization) => authorization === 'Bearer replacement-key',
+    created: () => ({}),
+  });
+  const page = await context.newPage();
+  await page.goto(extUrl(extensionId, `share.html?session=${sessionId}`));
+  const labels = page.getByLabel('Labels', { exact: true });
+  const writeAccess = page.getByText(
+    'You need write access to owner/repository to set labels or assignees.',
+  );
+  await labels.click();
+  await expect(writeAccess).toBeVisible();
+  await labels.click();
+  await expect(writeAccess).toHaveCount(0);
+  await background.evaluate(async () => {
+    const { sharingSettings } = await chrome.storage.local.get('sharingSettings');
+    await chrome.storage.local.set({
+      sharingSettings: {
+        ...sharingSettings,
+        repositories: [
+          { id: 'main', repository: 'owner/repository', token: 'replacement-key' },
+          { id: 'second', repository: 'owner/second', token: 'second-key' },
+        ],
+      },
+    });
+  });
+  // The added repository shows the page has applied the new settings.
+  await expect(
+    page.getByLabel('Issue repository').locator('option', { hasText: 'owner/second' }),
+  ).toHaveCount(1);
+  await labels.click();
+  // The reopened panel must show options loaded with the new token, not the cached result.
+  await expect(page.locator('.triage-panel').first()).toContainText('bug');
+  await expect(writeAccess).toHaveCount(0);
+  await expect(page.getByRole('checkbox', { name: 'bug', exact: true })).toBeVisible();
 });
