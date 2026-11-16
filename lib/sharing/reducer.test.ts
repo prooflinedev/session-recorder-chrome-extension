@@ -206,6 +206,18 @@ describe('duplicate matches', () => {
       shareReducer(failed, { type: 'duplicates-loading', repository: 'owner/repo' }).duplicates,
     ).toMatchObject({ status: 'loading', error: '' });
   });
+  it('resets to idle when the check no longer applies', () => {
+    let state = shareReducer(loaded(), { type: 'duplicates-loading', repository: 'owner/repo' });
+    state = shareReducer(state, { type: 'duplicates-ready', repository: 'owner/repo', matches });
+    state = shareReducer(state, { type: 'duplicates-reset' });
+    expect(state.duplicates).toEqual({
+      status: 'idle',
+      repository: '',
+      exact: [],
+      related: [],
+      error: '',
+    });
+  });
   it('drops results for another repository and resets when the repository changes', () => {
     let state = shareReducer(loaded(), { type: 'duplicates-loading', repository: 'owner/repo' });
     state = shareReducer(state, { type: 'repository', repository: 'team/web' });

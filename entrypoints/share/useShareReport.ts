@@ -73,6 +73,20 @@ function optionsKey(repository: string): string {
   }
 }
 
+/** The personal token for a duplicate check, if one can run. */
+function duplicateToken(
+  settings: SharingSettings,
+  repository: string,
+  errorFingerprint: ErrorFingerprint | undefined,
+): string | undefined {
+  if (!errorFingerprint || settings.proofline?.github === 'proofline') return undefined;
+  try {
+    return tokenForRepository(settings, repository);
+  } catch {
+    return undefined;
+  }
+}
+
 export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) {
   const [state, dispatch] = useReducer(shareReducer, initialLevel, initialShareState);
   const recording = useRef<Recording>();
@@ -81,6 +95,10 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
   const writes = useRef<Promise<void>>(Promise.resolve());
   const optionLoads = useRef(new Map<string, AbortController>());
   const duplicateSearch = useRef<AbortController>();
+  const searchedWith = useRef<{ repository: string; token: string }>();
+  // Storage listeners outlive renders; they read the latest state here.
+  const latest = useRef(state);
+  latest.current = state;
   // Options load when a picker opens, once per repository, until sharing settings change.
   const [triageOptions, setTriageOptions] = useState<Record<string, TriageOptions>>({});
   const [triageRevision, setTriageRevision] = useState(0);
@@ -116,15 +134,16 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
   ) {
     duplicateSearch.current?.abort();
     duplicateSearch.current = undefined;
-    if (!errorFingerprint || settings.proofline?.github === 'proofline') return;
-    let token: string;
-    try {
-      token = tokenForRepository(settings, repository);
-    } catch {
-      return; // No token for this repository: nothing to search with.
+    searchedWith.current = undefined;
+    const token = duplicateToken(settings, repository, errorFingerprint);
+    if (!token || !errorFingerprint) {
+      // Nothing to search with, or Proofline files the issue: hide the panel.
+      dispatch({ type: 'duplicates-reset' });
+      return;
     }
     const controller = new AbortController();
     duplicateSearch.current = controller;
+    searchedWith.current = { repository, token };
     dispatch({ type: 'duplicates-loading', repository });
     try {
       const matches = await findDuplicates(repository, token, errorFingerprint, controller.signal);
@@ -133,6 +152,23 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       if (!controller.signal.aborted)
         dispatch({ type: 'duplicates-failed', repository, message: errorMessage(error) });
     }
+  }
+
+  /** After a settings change: search with a newly added token, or hide a check that no longer applies. */
+  function refreshDuplicates(settings: SharingSettings) {
+    const { fingerprint: current, repository, issue, attempt, duplicates } = latest.current;
+    if (issue || attempt) return;
+    const token = duplicateToken(settings, repository, current);
+    const searched = searchedWith.current;
+    // Unrelated settings changes keep a running or finished check with the same token.
+    if (
+      token &&
+      searched?.repository === repository &&
+      searched.token === token &&
+      (duplicates.status === 'loading' || duplicates.status === 'ready')
+    )
+      return;
+    void searchDuplicates(settings, repository, current);
   }
 
   // The sole effect owns the browser lifecycle: initial load, external settings
@@ -175,6 +211,7 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
           .then((settings) => {
             if (!active) return;
             dispatch({ type: 'settings', settings });
+            refreshDuplicates(settings);
             // A replaced token or access level makes cached options stale.
             for (const load of optionLoads.current.values()) load.abort();
             optionLoads.current.clear();

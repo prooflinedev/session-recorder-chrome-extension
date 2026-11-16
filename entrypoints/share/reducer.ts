@@ -68,6 +68,7 @@ export type ShareAction =
   | { type: 'triage'; labels: string[]; assignees: string[] }
   | { type: 'fingerprint'; fingerprint?: ErrorFingerprint }
   | { type: 'duplicates-loading'; repository: string }
+  | { type: 'duplicates-reset' }
   | { type: 'duplicates-ready'; repository: string; matches: DuplicateMatches }
   | { type: 'duplicates-failed'; repository: string; message: string }
   | { type: 'add-to'; target?: AddToTarget }
@@ -214,6 +215,8 @@ export function shareReducer(state: ShareState, action: ShareAction): ShareState
     }
     case 'fingerprint':
       return { ...state, fingerprint: action.fingerprint };
+    case 'duplicates-reset':
+      return { ...state, duplicates: noDuplicates };
     case 'duplicates-loading':
       return { ...state, duplicates: { ...noDuplicates, status: 'loading', repository: action.repository } };
     case 'duplicates-ready':

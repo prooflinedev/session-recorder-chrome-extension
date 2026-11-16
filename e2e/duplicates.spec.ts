@@ -73,12 +73,14 @@ async function personalFiling(
   github: {
     search?: (query: string, attempt: number) => { status: number; json: unknown } | undefined;
     holdComment?: Promise<void>;
+    /** Start without a GitHub token for owner/repository. */
+    noToken?: boolean;
   } = {},
 ): Promise<GitHubLog> {
   const accountId = 'a'.repeat(32);
   const appId = '12345678-1234-1234-1234-123456789abc';
   await background.evaluate(
-    ({ accountId, appId }) =>
+    ({ accountId, appId, githubToken }) =>
       chrome.storage.local.set({
         sharingSettings: {
           cloudflare: {
@@ -89,10 +91,10 @@ async function personalFiling(
             teamDomain: 'team.cloudflareaccess.com',
           },
           repository: 'owner/repository',
-          githubToken: 'github-private-key',
+          githubToken,
         },
       }),
-    { accountId, appId },
+    { accountId, appId, githubToken: github.noToken ? '' : 'github-private-key' },
   );
   await context.route('https://api.cloudflare.com/client/v4/**', async (route) => {
     const url = route.request().url();
@@ -278,6 +280,48 @@ test('explains that labels and assignees apply only to new issues', async ({
   await expect(page.getByRole('link', { name: 'View comment on #118' })).toBeVisible();
   await expect(details.getByText('Labels', { exact: true })).toHaveCount(0);
   await expect(details.getByText('@octocat', { exact: true })).toHaveCount(0);
+});
+
+test('checks for duplicates once a repository token is added and hides them when it is removed', async ({
+  context,
+  background,
+  extensionId,
+}) => {
+  const sessionId = await record(context, background);
+  const log = await personalFiling(context, background, { noToken: true });
+  const page = await context.newPage();
+  await seedException(page, extensionId, sessionId);
+  await page.goto(extUrl(extensionId, `share.html?session=${sessionId}`));
+  await expect(
+    page.getByRole('button', { name: 'File GitHub issue', exact: true }),
+  ).toBeEnabled();
+  await expect(page.getByText('Possible duplicates')).toHaveCount(0);
+  expect(log.searches).toHaveLength(0);
+  const saveRepositories = (repositories: { id: string; repository: string; token: string }[]) =>
+    background.evaluate(async (repositories) => {
+      const { sharingSettings } = await chrome.storage.local.get('sharingSettings');
+      await chrome.storage.local.set({ sharingSettings: { ...sharingSettings, repositories } });
+    }, repositories);
+  await saveRepositories([
+    { id: 'main', repository: 'owner/repository', token: 'github-private-key' },
+    { id: 'second', repository: 'owner/second', token: 'second-key' },
+  ]);
+  // The added repository shows the page has applied the new settings.
+  await expect(
+    page.getByLabel('Issue repository').locator('option', { hasText: 'owner/second' }),
+  ).toHaveCount(1);
+  const panel = duplicatesPanel(page);
+  await expect(panel.getByRole('link', { name: '#118 Checkout 500 on Pay' })).toBeVisible();
+  expect(log.searches).toHaveLength(2);
+  await saveRepositories([
+    { id: 'main', repository: 'owner/repository', token: '' },
+    { id: 'third', repository: 'owner/third', token: 'third-key' },
+  ]);
+  await expect(
+    page.getByLabel('Issue repository').locator('option', { hasText: 'owner/third' }),
+  ).toHaveCount(1);
+  await expect(page.getByText('Possible duplicates')).toHaveCount(0);
+  expect(log.searches).toHaveLength(2);
 });
 
 test('allows Add to only when the prepared report can be published', async ({
