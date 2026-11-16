@@ -7,32 +7,28 @@ import type { NetRequestPayload, SessionEvent } from '@/lib/session/types';
 import { sha256Hex } from '@/lib/util/hash';
 
 type ErrorEvent = Extract<SessionEvent, { type: 'error' }>;
+type ConsoleEvent = Extract<SessionEvent, { type: 'console' }>;
 type RequestEvent = Extract<SessionEvent, { type: 'net-request' }>;
-export type SignalEvent = ErrorEvent | RequestEvent;
-
-/**
- * Chrome logs every failed resource load as a console error, 4xx included (a
- * missing favicon in most recordings). The request itself is the signal.
- */
-const RESOURCE_LOAD_ERROR = /^Failed to load resource:/;
+export type SignalEvent = ErrorEvent | ConsoleEvent | RequestEvent;
 
 /**
  * The event that best identifies the bug: the first uncaught exception, else the
- * first console.error, else the first failed or 5xx request. 4xx responses are
- * usually expected application behaviour and are ignored.
+ * app's first console.error call, else the first failed or 5xx request. 4xx
+ * responses are usually expected application behaviour and are ignored. Browser
+ * log entries (`error` events from `log`: CSP violations, resource-load failures,
+ * network notices) never identify the bug; a failed load is its request.
  */
 export function primarySignal(events: SessionEvent[]): SignalEvent | undefined {
   const ordered = [...events].sort((a, b) => a.t - b.t);
-  const errorWith = (origin: 'exception' | 'log') =>
+  return (
     ordered.find(
       (event): event is ErrorEvent =>
-        event.type === 'error' &&
-        event.payload.origin === origin &&
-        !RESOURCE_LOAD_ERROR.test(event.payload.message),
-    );
-  return (
-    errorWith('exception') ??
-    errorWith('log') ??
+        event.type === 'error' && event.payload.origin === 'exception',
+    ) ??
+    ordered.find(
+      (event): event is ConsoleEvent =>
+        event.type === 'console' && event.payload.level === 'error',
+    ) ??
     ordered.find(
       (event): event is RequestEvent =>
         event.type === 'net-request' &&
@@ -163,7 +159,13 @@ export async function fingerprint(
           normalizeMessage(signal.payload.message),
           stackFrames(signal.payload.stack).join(','),
         ]
-      : ['request', '', requestTemplate(signal.payload)];
+      : signal.type === 'console'
+        ? [
+            'console',
+            normalizeMessage(signal.payload.text),
+            stackFrames(signal.payload.stack).join(','),
+          ]
+        : ['request', '', requestTemplate(signal.payload)];
   const key = [FINGERPRINT_VERSION, kind, message, detail].join('|');
   const hash = await sha256Hex(new TextEncoder().encode(key));
   return { id: `sr-${hash.slice(0, 12)}`, message };

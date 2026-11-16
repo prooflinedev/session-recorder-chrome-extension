@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type {
+  ConsolePayload,
   ErrorPayload,
   NetRequestPayload,
   SessionEvent,
@@ -35,8 +36,14 @@ function request(t: number, payload: Partial<NetRequestPayload>): SessionEvent {
 }
 const exception = (t: number, message = 'TypeError: x is undefined') =>
   errorEvent(t, { origin: 'exception', message });
-const consoleError = (t: number, message = 'Checkout failed') =>
-  errorEvent(t, { origin: 'log', message });
+function consoleEvent(t: number, payload: ConsolePayload): SessionEvent {
+  return { id: `e${++sequence}`, sessionId: 's', t, type: 'console', importance: 1, payload };
+}
+/** The app's own console.error call. */
+const consoleError = (t: number, text = 'Checkout failed', stack?: string) =>
+  consoleEvent(t, { level: 'error', text, ...(stack ? { stack } : {}) });
+/** A browser Log.entryAdded entry: CSP violations, resource-load failures, network notices. */
+const browserLog = (t: number, message: string) => errorEvent(t, { origin: 'log', message });
 
 describe('primary signal', () => {
   it('prefers the first exception, then the first console error, then the first failed request', () => {
@@ -65,7 +72,7 @@ describe('primary signal', () => {
   });
   it('leaves Chrome’s resource-load console errors to the request signal', () => {
     // Chrome logs every failed load, including 4xx such as a missing favicon.
-    const missing = consoleError(
+    const missing = browserLog(
       1,
       'Failed to load resource: the server responded with a status of 404 (File not found)',
     );
@@ -74,10 +81,19 @@ describe('primary signal', () => {
     expect(
       primarySignal([
         missing,
-        consoleError(2, 'Failed to load resource: the server responded with a status of 500 ()'),
+        browserLog(2, 'Failed to load resource: the server responded with a status of 500 ()'),
         serverError,
       ]),
     ).toBe(serverError);
+  });
+  it('never uses a browser log entry as the signal', () => {
+    expect(
+      primarySignal([
+        browserLog(1, "Refused to load the script 'https://cdn.example.com/x.js' because it violates the Content Security Policy"),
+        consoleEvent(2, { level: 'warn', text: 'Deprecated API' }),
+        consoleEvent(3, { level: 'log', text: 'Checkout failed' }),
+      ]),
+    ).toBeUndefined();
   });
 });
 
@@ -260,5 +276,23 @@ describe('fingerprint', () => {
     ]);
     expect(failed).toBeDefined();
     expect(JSON.stringify(failed)).not.toContain('abc123secret');
+  });
+});
+
+describe('console errors', () => {
+  it('fingerprints the app’s console.error text and stack', async () => {
+    const stack = '    at submitOrder (https://shop.example.com/assets/index-B3k9x2Lq.js:30:40)';
+    const result = await fingerprint([
+      browserLog(0, 'Refused to frame https://ads.example.com/'),
+      consoleError(1, 'Checkout failed for order 42', stack),
+    ]);
+    expect(result?.message).toBe('Checkout failed for order <n>');
+    expect(result?.id).toMatch(/^sr-[0-9a-f]{12}$/);
+    expect(result?.id).not.toBe(
+      (await fingerprint([consoleError(1, 'Checkout failed for order 42')]))?.id,
+    );
+  });
+  it('has no fingerprint for a session with only a browser log error', async () => {
+    expect(await fingerprint([browserLog(1, 'Checkout failed for order 42')])).toBeUndefined();
   });
 });
