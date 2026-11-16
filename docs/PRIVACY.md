@@ -72,6 +72,13 @@ improve recognition. Page context stays in memory. Managed transcription saves i
 ElevenLabs charges extra for keyterm prompting. If extraction fails, ordinary
 transcription remains available.
 
+**Settings → Transcription → Vocabulary** keeps a short list of terms for each
+issue repository in local extension storage. Each repository starts with its
+owner and repository names, and you can edit or clear the list. While recording,
+the list for the repository new issues default to is sent to Deepgram or
+ElevenLabs, directly or through Proofline when connected, ahead of page
+vocabulary. The list is not added to exported or published reports.
+
 ## Optional report publishing and summaries
 
 Cloudflare publishing uploads the report, session data, transcripts and included

@@ -43,7 +43,7 @@ The extension supports your own accounts and API keys. **Settings → Services**
 | Private report publishing | Your Cloudflare Pages project, protected by Cloudflare Access |
 | GitHub issues | Repository-specific tokens; multiple repositories supported |
 
-With a model configured, stopping a recording also generates its session-list title. Page vocabulary can help Deepgram and ElevenLabs recognize unusual terms during annotation dictation. Provider and hosting charges are separate from the free extension.
+With a model configured, stopping a recording also generates its session-list title. Page vocabulary can help Deepgram and ElevenLabs recognize unusual terms during annotation dictation. **Settings → Transcription → Vocabulary** adds your own terms for each repository, starting with its owner and repository names; they are sent ahead of page terms. Provider and hosting charges are separate from the free extension.
 
 See [sharing setup](docs/sharing.md) for configuration and token permissions.
 
