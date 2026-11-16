@@ -109,6 +109,15 @@ export function stackFrames(stack: string | undefined): string[] {
   return frames;
 }
 
+/**
+ * Captured console.error calls usually carry only their source (`url:line`).
+ * Without usable stack frames, the source file is the one frame.
+ */
+function consoleFrames(stack: string | undefined, source: string | undefined): string[] {
+  const frames = stackFrames(stack);
+  return frames.length || !source ? frames : stackFrames(`    at ${source}`);
+}
+
 const ID_SEGMENTS = [
   /^\d+$/,
   new RegExp(`^${UUID}$`, 'i'),
@@ -166,7 +175,7 @@ export async function fingerprint(
         ? [
             'console',
             normalizeMessage(signal.payload.text),
-            stackFrames(signal.payload.stack).join(','),
+            consoleFrames(signal.payload.stack, signal.payload.source).join(','),
           ]
         : ['request', '', requestTemplate(signal.payload)];
   const key = [FINGERPRINT_VERSION, kind, message, detail].join('|');

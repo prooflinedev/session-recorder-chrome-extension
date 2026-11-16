@@ -39,9 +39,15 @@ const exception = (t: number, message = 'TypeError: x is undefined') =>
 function consoleEvent(t: number, payload: ConsolePayload): SessionEvent {
   return { id: `e${++sequence}`, sessionId: 's', t, type: 'console', importance: 1, payload };
 }
-/** The app's own console.error call. */
-const consoleError = (t: number, text = 'Checkout failed', stack?: string) =>
-  consoleEvent(t, { level: 'error', text, ...(stack ? { stack } : {}) });
+/**
+ * The app's own console.error call. Capture records its source (`url:line`) and
+ * usually no stack.
+ */
+const consoleError = (
+  t: number,
+  text = 'Checkout failed',
+  { source = 'https://shop.example.com/assets/checkout-Xy12ab34.js:10', stack }: { source?: string; stack?: string } = {},
+) => consoleEvent(t, { level: 'error', text, source, ...(stack ? { stack } : {}) });
 /** A browser Log.entryAdded entry: CSP violations, resource-load failures, network notices. */
 const browserLog = (t: number, message: string) => errorEvent(t, { origin: 'log', message });
 
@@ -292,12 +298,42 @@ describe('console errors', () => {
     const stack = '    at submitOrder (https://shop.example.com/assets/index-B3k9x2Lq.js:30:40)';
     const result = await fingerprint([
       browserLog(0, 'Refused to frame https://ads.example.com/'),
-      consoleError(1, 'Checkout failed for order 42', stack),
+      consoleError(1, 'Checkout failed for order 42', { stack }),
     ]);
     expect(result?.message).toBe('Checkout failed for order <n>');
     expect(result?.id).toMatch(/^sr-[0-9a-f]{12}$/);
     expect(result?.id).not.toBe(
       (await fingerprint([consoleError(1, 'Checkout failed for order 42')]))?.id,
+    );
+  });
+  it('uses the source file when the console error has no stack', async () => {
+    const id = async (source?: string) =>
+      (
+        await fingerprint([
+          source
+            ? consoleError(1, 'Checkout failed', { source })
+            : consoleEvent(1, { level: 'error', text: 'Checkout failed' }),
+        ])
+      )?.id;
+    const checkout = await id('https://shop.example.com/assets/checkout-Xy12ab34.js:10');
+    expect(await id('https://shop.example.com/assets/cart-Xy12ab34.js:10')).not.toBe(checkout);
+    expect(await id('https://shop.example.com/assets/checkout-Qw98er76.js:245')).toBe(checkout);
+    expect(await id('https://shop.example.com/assets/checkout-Xy12ab34.js?v=2:7')).toBe(checkout);
+    expect(await id('chrome-extension://abcdefghijklmnop/content.js:5')).toBe(await id());
+    expect(checkout).not.toBe(await id());
+  });
+  it('prefers stack frames over the source', async () => {
+    const stack = '    at submitOrder (https://shop.example.com/assets/index-B3k9x2Lq.js:30:40)';
+    const withStack = await fingerprint([consoleError(1, 'Checkout failed', { stack })]);
+    expect(withStack?.id).toBe(
+      (
+        await fingerprint([
+          consoleError(1, 'Checkout failed', {
+            source: 'https://shop.example.com/assets/other.js:1',
+            stack,
+          }),
+        ])
+      )?.id,
     );
   });
   it('has no fingerprint for a session with only a browser log error', async () => {
