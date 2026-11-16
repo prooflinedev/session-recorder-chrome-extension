@@ -14,6 +14,8 @@ export interface DuplicateMatches {
   related: DuplicateIssue[];
 }
 const LIST_LIMIT = 5;
+/** Issues whose comments are read when the fingerprint is not in the issue body. */
+const COMMENT_CHECKS = 5;
 const MIN_TERM = 12;
 const MAX_TERM = 100;
 const PLACEHOLDERS = /<(?:uuid|hex|email|url|n|str)>|"/;
@@ -71,6 +73,36 @@ function toIssue(path: string, item: SearchItem): DuplicateIssue | undefined {
   };
 }
 
+/** "Add to #N" leaves the fingerprint in a comment; read the first page of comments. */
+async function commentsContain(
+  path: string,
+  number: number,
+  text: string,
+  token: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  try {
+    const response = await fetch(
+      `https://api.github.com/repos/${path}/issues/${number}/comments?${new URLSearchParams({ per_page: '100' })}`,
+      { headers: githubHeaders(token), signal, redirect: 'error' },
+    );
+    if (!response.ok) return false;
+    const comments: unknown = await response.json();
+    return (
+      Array.isArray(comments) &&
+      comments.some(
+        (comment) =>
+          typeof (comment as { body?: unknown } | null)?.body === 'string' &&
+          (comment as { body: string }).body.includes(text),
+      )
+    );
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    // An unverified candidate is dropped rather than failing the whole check.
+    return false;
+  }
+}
+
 /** At most two GitHub searches: the exact fingerprint, then the error message. */
 export async function findDuplicates(
   repository: string,
@@ -86,12 +118,25 @@ export async function findDuplicates(
   ]);
   const issues = (items: SearchItem[]) =>
     items.flatMap((item) => toIssue(path, item) ?? []);
-  // Search tokenization is not trusted: the body must contain the exact fingerprint.
-  const exact = issues(
-    exactItems.filter(
-      (item) => typeof item.body === 'string' && item.body.includes(fingerprint.id),
-    ),
-  ).slice(0, LIST_LIMIT);
+  // Search tokenization is not trusted: the issue body or one of its comments
+  // must contain the exact fingerprint.
+  const inBody = (item: SearchItem) =>
+    typeof item.body === 'string' && item.body.includes(fingerprint.id);
+  const candidates = exactItems.flatMap((item) => {
+    const match = toIssue(path, item);
+    return match ? [{ match, inBody: inBody(item) }] : [];
+  });
+  const toCheck = candidates.filter((candidate) => !candidate.inBody).slice(0, COMMENT_CHECKS);
+  const verified = await Promise.all(
+    toCheck.map(({ match }) => commentsContain(path, match.number, fingerprint.id, token, signal)),
+  );
+  const inComments = new Set(
+    toCheck.filter((_, index) => verified[index]).map(({ match }) => match.number),
+  );
+  const exact = candidates
+    .filter((candidate) => candidate.inBody || inComments.has(candidate.match.number))
+    .map((candidate) => candidate.match)
+    .slice(0, LIST_LIMIT);
   const related = issues(messageItems)
     .filter((match) => !exact.some((found) => found.number === match.number))
     .slice(0, LIST_LIMIT);

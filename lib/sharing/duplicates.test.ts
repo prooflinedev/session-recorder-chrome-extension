@@ -25,10 +25,20 @@ const issue = (number: number, extra: Partial<Item> = {}): Item => ({
   body: `Report\nError fingerprint: \`${fp.id}\``,
   ...extra,
 });
-/** Answers the exact (fingerprint) and message searches separately. */
-function search(results: { exact?: Item[]; message?: Item[] }) {
+/** Answers the exact (fingerprint) and message searches, and issue comment lists. */
+function search(results: {
+  exact?: Item[];
+  message?: Item[];
+  comments?: Record<number, { body: string }[] | number>;
+}) {
   const fetch = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
-    const query = new URL(String(input)).searchParams.get('q') ?? '';
+    const url = new URL(String(input));
+    const comments = /^\/repos\/owner\/repo\/issues\/(\d+)\/comments$/.exec(url.pathname);
+    if (comments) {
+      const answer = results.comments?.[Number(comments[1])] ?? [];
+      return typeof answer === 'number' ? respond({ message: 'No' }, answer) : respond(answer);
+    }
+    const query = url.searchParams.get('q') ?? '';
     const items = query.includes(fp.id) ? results.exact : results.message;
     return respond({ total_count: items?.length ?? 0, items: items ?? [] });
   });
@@ -36,7 +46,14 @@ function search(results: { exact?: Item[]; message?: Item[] }) {
   return fetch;
 }
 const queries = (fetch: ReturnType<typeof search>) =>
-  fetch.mock.calls.map(([url]) => new URL(String(url)).searchParams.get('q'));
+  fetch.mock.calls
+    .map(([url]) => new URL(String(url)))
+    .filter((url) => url.pathname === '/search/issues')
+    .map((url) => url.searchParams.get('q'));
+const commentChecks = (fetch: ReturnType<typeof search>) =>
+  fetch.mock.calls
+    .map(([url]) => new URL(String(url)))
+    .filter((url) => url.pathname.endsWith('/comments'));
 afterEach(() => vi.unstubAllGlobals());
 
 describe('duplicate search', () => {
@@ -119,5 +136,36 @@ describe('duplicate search', () => {
     await expect(findDuplicates('owner/repo', 'token', fp)).rejects.toThrow(
       `Couldn't check for duplicates (${status}).`,
     );
+  });
+});
+
+describe('fingerprints in comments', () => {
+  it('keeps an issue whose comment carries the fingerprint', async () => {
+    const fetch = search({
+      exact: [issue(118, { body: 'Original report' }), issue(119, { body: 'Unrelated' })],
+      comments: {
+        118: [{ body: 'Thanks' }, { body: `Report\nError fingerprint: \`${fp.id}\`` }],
+        119: [{ body: 'Mentions sr-7c41e9a2 only in part' }],
+      },
+    });
+    const matches = await findDuplicates('owner/repo', 'token', fp);
+    expect(matches.exact.map((match) => match.number)).toEqual([118]);
+    const checks = commentChecks(fetch);
+    expect(checks.map((url) => url.pathname)).toEqual([
+      '/repos/owner/repo/issues/118/comments',
+      '/repos/owner/repo/issues/119/comments',
+    ]);
+    expect(checks.map((url) => url.searchParams.get('per_page'))).toEqual(['100', '100']);
+    for (const [, init] of fetch.mock.calls) expect(init?.redirect).toBe('error');
+  });
+  it('checks comments of at most five issues and drops one whose check fails', async () => {
+    const body = { body: `Error fingerprint: \`${fp.id}\`` };
+    const fetch = search({
+      exact: [issue(1), ...[2, 3, 4, 5, 6, 7, 8].map((number) => issue(number, { body: 'x' }))],
+      comments: { 2: 500, 3: [body], 4: 403, 5: [], 6: [body], 7: [body], 8: [body] },
+    });
+    const matches = await findDuplicates('owner/repo', 'token', fp);
+    expect(matches.exact.map((match) => match.number)).toEqual([1, 3, 6]);
+    expect(commentChecks(fetch)).toHaveLength(5);
   });
 });
