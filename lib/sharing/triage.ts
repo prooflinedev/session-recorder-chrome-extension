@@ -8,17 +8,36 @@ function key(repository: string): string {
   return repositoryPath(repository).toLowerCase();
 }
 
+/** The remembered choice for a repository; none for unknown or incomplete repositories. */
+export function triageFor(defaults: TriageDefaults, repository: string): IssueTriage {
+  let path;
+  try {
+    path = key(repository);
+  } catch {
+    return { labels: [], assignees: [] };
+  }
+  const choice = defaults[path];
+  return { labels: choice?.labels ?? [], assignees: choice?.assignees ?? [] };
+}
+
 export async function loadTriageDefaults(): Promise<TriageDefaults> {
   const stored = await chrome.storage.local.get(TRIAGE_DEFAULTS_KEY);
   return (stored[TRIAGE_DEFAULTS_KEY] as TriageDefaults | undefined) ?? {};
 }
 
-/** An empty choice forgets the repository's entry. */
-export async function rememberTriage(repository: string, choice: IssueTriage): Promise<void> {
+/** Record a repository's choice; an empty choice forgets its entry. */
+export function withTriage(
+  defaults: TriageDefaults,
+  repository: string,
+  choice: IssueTriage,
+): TriageDefaults {
   const path = key(repository);
-  const { [path]: _previous, ...others } = await loadTriageDefaults();
+  const { [path]: _previous, ...others } = defaults;
+  return choice.labels.length || choice.assignees.length ? { ...others, [path]: choice } : others;
+}
+
+export async function rememberTriage(repository: string, choice: IssueTriage): Promise<void> {
   await chrome.storage.local.set({
-    [TRIAGE_DEFAULTS_KEY]:
-      choice.labels.length || choice.assignees.length ? { ...others, [path]: choice } : others,
+    [TRIAGE_DEFAULTS_KEY]: withTriage(await loadTriageDefaults(), repository, choice),
   });
 }

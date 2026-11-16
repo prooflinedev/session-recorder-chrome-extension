@@ -4,6 +4,7 @@ import type { ExportFile } from '@/lib/export/bundle';
 import { defaultSharingSettings, preferredRepository, type SharingSettings } from '@/lib/sharing/settings';
 import { initialDraft, type Publication, type SavedDraft } from '@/lib/sharing/draft';
 import type { IssueDraft } from '@/lib/sharing/summary';
+import { triageFor, withTriage, type TriageDefaults } from '@/lib/sharing/triage';
 
 export interface ShareState {
   summaryRequestId?: string;
@@ -26,15 +27,25 @@ export interface ShareState {
   issue?: SavedDraft['issue'];
   attempt?: SavedDraft['attempt'];
   confirmingDelete: boolean;
+  labels: string[];
+  assignees: string[];
+  triageDefaults: TriageDefaults;
 }
 export type ShareAction =
-  | { type: 'loaded'; session: Session; settings: SharingSettings; saved?: SavedDraft }
+  | {
+      type: 'loaded';
+      session: Session;
+      settings: SharingSettings;
+      saved?: SavedDraft;
+      triageDefaults?: TriageDefaults;
+    }
   | { type: 'settings'; settings: SharingSettings }
   | { type: 'prepare'; level: VerbosityLevel }
   | { type: 'prepared'; files: ExportFile[]; evidence: string }
   | { type: 'draft'; draft: IssueDraft; source?: ShareState['draftSource'] }
   | { type: 'saved'; saved: SavedDraft }
   | { type: 'repository'; repository: string }
+  | { type: 'triage'; labels: string[]; assignees: string[] }
   | { type: 'confirm-delete'; confirming: boolean }
   | { type: 'start'; operation: ShareState['operation'] }
   | { type: 'progress'; message: string }
@@ -61,12 +72,24 @@ export function initialShareState(level: VerbosityLevel): ShareState {
     error: '',
     draftSource: 'initial',
     confirmingDelete: false,
+    labels: [],
+    assignees: [],
+    triageDefaults: {},
   };
+}
+
+/** Destination choices freeze while working and once a request may have reached GitHub. */
+function locked(state: ShareState): boolean {
+  return state.operation !== 'idle' || !!state.attempt || !!state.issue;
 }
 
 export function shareReducer(state: ShareState, action: ShareAction): ShareState {
   switch (action.type) {
-    case 'loaded':
+    case 'loaded': {
+      const repository = action.saved?.issue?.repository ?? action.saved?.attempt?.repository ?? (action.saved?.repository || preferredRepository(action.settings));
+      const triageDefaults = action.triageDefaults ?? {};
+      const remembered = triageFor(triageDefaults, repository);
+      const chosen = action.saved?.labels || action.saved?.assignees ? action.saved : undefined;
       return {
         ...state,
         session: action.session,
@@ -74,7 +97,10 @@ export function shareReducer(state: ShareState, action: ShareAction): ShareState
         loading: false,
         preparing: true,
         draft: action.saved?.draft ?? initialDraft(action.session.name),
-        repository: action.saved?.issue?.repository ?? action.saved?.attempt?.repository ?? (action.saved?.repository || preferredRepository(action.settings)),
+        repository,
+        triageDefaults,
+        labels: chosen ? (chosen.labels ?? []) : remembered.labels,
+        assignees: chosen ? (chosen.assignees ?? []) : remembered.assignees,
         publication: action.saved?.publication,
         summaryRequestId: action.saved?.summaryRequestId,
         issue: action.saved?.issue,
@@ -82,6 +108,7 @@ export function shareReducer(state: ShareState, action: ShareAction): ShareState
         draftSource: action.saved?.draftSource ?? (action.saved ? 'edited' : 'initial'),
         level: action.saved?.publication?.level ?? state.level,
       };
+    }
     case 'settings':
       return { ...state, settings: action.settings, repository: state.repository || preferredRepository(action.settings) };
     case 'prepare':
@@ -108,8 +135,23 @@ export function shareReducer(state: ShareState, action: ShareAction): ShareState
         draftSource: action.saved.draftSource ?? 'edited',
       };
     case 'repository':
-      if (state.operation !== 'idle' || state.attempt || state.issue) return state;
-      return { ...state, repository: action.repository };
+      if (locked(state)) return state;
+      return {
+        ...state,
+        repository: action.repository,
+        ...triageFor(state.triageDefaults, action.repository),
+      };
+    case 'triage': {
+      if (locked(state)) return state;
+      const choice = { labels: action.labels, assignees: action.assignees };
+      let triageDefaults = state.triageDefaults;
+      try {
+        triageDefaults = withTriage(triageDefaults, state.repository, choice);
+      } catch {
+        /* An incomplete repository keeps the choice only with this draft. */
+      }
+      return { ...state, ...choice, triageDefaults };
+    }
     case 'confirm-delete':
       return { ...state, confirmingDelete: action.confirming };
     case 'start':
