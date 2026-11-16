@@ -47,6 +47,9 @@ export interface SavedDraft {
   draftSource?: 'initial' | 'title-edited' | 'edited' | 'generated';
   issue?: CreatedIssue;
   attempt?: IssueAttempt;
+  /** Requested for personal-token filing; Proofline-managed filing ignores them. */
+  labels?: string[];
+  assignees?: string[];
 }
 export const REPORT_LEVELS: { id: VerbosityLevel; label: string }[] = [
   { id: 'L0', label: 'Full' },

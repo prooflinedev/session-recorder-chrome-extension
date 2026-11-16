@@ -11,6 +11,11 @@ import {
   GitHubRequestError,
 } from './github';
 import type { SavedDraft } from './draft';
+import { fileProoflineIssue, publishProoflineReport } from '@/lib/proofline/reports';
+vi.mock('@/lib/proofline/reports', () => ({
+  fileProoflineIssue: vi.fn(),
+  publishProoflineReport: vi.fn(),
+}));
 vi.mock('./summary', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./summary')>()), generateSummary: vi.fn(),
 }));
@@ -177,5 +182,63 @@ describe('one-click issue filing', () => {
     expect(publishReport).toHaveBeenCalledOnce();
     expect(generateSummary).toHaveBeenCalledOnce();
     expect(createGitHubIssue).toHaveBeenCalledTimes(2);
+  });
+  it('sends the chosen labels and assignees with a personal-token issue', async () => {
+    const input = fixture();
+    input.saved.labels = ['bug'];
+    input.saved.assignees = ['octocat'];
+    await fileIssue(input);
+    expect(vi.mocked(createGitHubIssue).mock.calls[0]![5]).toEqual({
+      labels: ['bug'],
+      assignees: ['octocat'],
+    });
+  });
+  it('files through Proofline exactly as before, without labels or assignees', async () => {
+    const input = fixture();
+    const repository = { id: 'repo-id', full_name: 'owner/repo', github_repository_id: 1 };
+    input.settings.proofline = {
+      aiMode: 'proofline',
+      publishing: 'proofline',
+      github: 'proofline',
+      model: '',
+      connection: {
+        accessToken: 'proofline-token',
+        organizationId: 'org',
+        expiresAt: Date.now() + 3_600_000,
+        account: { repositories: [repository] } as never,
+      },
+    };
+    input.saved.draftSource = 'edited';
+    input.saved.labels = ['bug'];
+    input.saved.assignees = ['octocat'];
+    const publication = {
+      provider: 'proofline' as const,
+      id: 'report',
+      organizationId: 'org',
+      url: 'https://proofline.sh/recorder/reports/org/report',
+      level: 'L1' as const,
+      requestId: 'request',
+      attachments: [],
+    };
+    vi.mocked(publishProoflineReport).mockImplementation(
+      async (_settings, _files, _title, _level, _previous, save) => {
+        await save(publication);
+        return publication;
+      },
+    );
+    vi.mocked(fileProoflineIssue).mockResolvedValue(issue);
+    await fileIssue(input);
+    expect(createGitHubIssue).not.toHaveBeenCalled();
+    const call = vi.mocked(fileProoflineIssue).mock.calls[0]!;
+    expect(call).toHaveLength(6);
+    expect(call[0]).toBe(input.settings.proofline);
+    expect(call[1]).toEqual({
+      id: expect.any(String),
+      repository: 'owner/repo',
+      proofline: { organizationId: 'org', reportId: 'report', repositoryId: 'repo-id' },
+      startedAt: expect.any(String),
+    });
+    expect(call[2]).toEqual({ title: 'Session', body: 'Evidence' });
+    expect(call.slice(3, 5)).toEqual([input.signal, false]);
   });
 });

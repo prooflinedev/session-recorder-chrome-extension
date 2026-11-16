@@ -216,6 +216,7 @@ export async function fileIssue(input: FileIssueInput): Promise<SavedDraft> {
           saved.draft,
           publicationUrl(saved.publication!),
           signal,
+          { labels: saved.labels ?? [], assignees: saved.assignees ?? [] },
         );
     await checkpoint({ issue, attempt: undefined });
   } catch (error) {
