@@ -148,4 +148,98 @@ describe('ConsoleCapturer', () => {
     vi.advanceTimersByTime(1000);
     expect(emitted).toHaveLength(0);
   });
+
+  describe('Console secret protection', () => {
+    it('sanitizes recognizable secrets in console.log arguments and text', () => {
+      const jwt =
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvZSJ9.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
+      consoleApi(1, 'log', [
+        { type: 'string', value: 'Auth token initialized:' },
+        { type: 'string', value: jwt },
+      ]);
+      vi.advanceTimersByTime(1000);
+      expect(emitted).toHaveLength(1);
+      const p = emitted[0]!.payload as import('@/lib/session/types').ConsolePayload;
+      expect(p.text).toBe('Auth token initialized: «redacted»');
+      expect(p.args).toEqual(['Auth token initialized:', '«redacted»']);
+    });
+
+    it('sanitizes recognizable secrets in exception messages and stack traces', () => {
+      // Constructed with join to prevent false positives in git secret scanners
+      const apiKey = ['sk', 'live', '51Abcdefghijklmnopqrstuv'].join('_');
+      cap.handle(1, 'Runtime.exceptionThrown', {
+        exceptionDetails: {
+          text: 'Uncaught',
+          exception: {
+            type: 'object',
+            subtype: 'error',
+            description: `Error: Stripe call failed with key ${apiKey}\n    at init (https://x/app.js?key=${apiKey}:5:9)`,
+          },
+        },
+      });
+      expect(emitted).toHaveLength(1);
+      const p = emitted[0]!.payload as import('@/lib/session/types').ErrorPayload;
+      expect(p.message).toBe('Error: Stripe call failed with key «redacted»');
+      expect(p.stack).toContain('at init (https://x/app.js?key=«redacted»:5:9)');
+    });
+
+    it('sanitizes recognizable secrets in Log.entryAdded', () => {
+      const pat = 'ghp_123456789012345678901234567890123456';
+      cap.handle(1, 'Log.entryAdded', {
+        entry: {
+          level: 'error',
+          text: `GitHub push rejected for token ${pat}`,
+        },
+      });
+      expect(emitted).toHaveLength(1);
+      const p = emitted[0]!.payload as import('@/lib/session/types').ErrorPayload;
+      expect(p.message).toBe('GitHub push rejected for token «redacted»');
+    });
+
+    it('bypasses sanitization when redactionEnabled is false in settings', () => {
+      const rawEmitted: RawEvent[] = [];
+      const rawCap = new ConsoleCapturer({
+        emit: (raw) => rawEmitted.push(raw),
+        getSettings: () => ({ redactionEnabled: false } as any),
+      });
+      rawCap.handle(1, 'Runtime.consoleAPICalled', {
+        type: 'log',
+        args: [{ type: 'string', value: 'Key is AKIAIOSFODNN7EXAMPLE' }],
+      });
+      vi.advanceTimersByTime(1000);
+      expect(rawEmitted).toHaveLength(1);
+      const p = rawEmitted[0]!.payload as import('@/lib/session/types').ConsolePayload;
+      expect(p.text).toBe('Key is AKIAIOSFODNN7EXAMPLE');
+    });
+
+    it('sanitizes script source URLs that contain query or path tokens', () => {
+      const jwt =
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlF54m5dK_Zc';
+      consoleApi(1, 'info', [{ type: 'string', value: 'hello' }], `https://x/app.js?token=${jwt}`, 40);
+      vi.advanceTimersByTime(1000);
+      expect(emitted).toHaveLength(1);
+      const p = emitted[0]!.payload as import('@/lib/session/types').ConsolePayload;
+      expect(p.source).toBe('https://x/app.js?token=«redacted»:40');
+    });
+
+    it('remains resilient and does not throw when getSettings throws', () => {
+      const safeEmitted: RawEvent[] = [];
+      const safeCap = new ConsoleCapturer({
+        emit: (raw) => safeEmitted.push(raw),
+        getSettings: () => {
+          throw new Error('Storage disconnected');
+        },
+      });
+      expect(() => {
+        safeCap.handle(1, 'Runtime.consoleAPICalled', {
+          type: 'log',
+          args: [{ type: 'string', value: 'Token is ghp_123456789012345678901234567890123456' }],
+        });
+      }).not.toThrow();
+      vi.advanceTimersByTime(1000);
+      expect(safeEmitted).toHaveLength(1);
+      // Defaults safely to redacting when settings are unresolvable
+      expect((safeEmitted[0]!.payload as any).text).toBe('Token is «redacted»');
+    });
+  });
 });

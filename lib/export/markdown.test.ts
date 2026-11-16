@@ -471,4 +471,28 @@ describe('renderManifest', () => {
     expect(md).toContain('video/001-0006.webm');
     expect(md).toContain('Video segment (video/webm)');
   });
+
+  it('renders privacy audit in report and manifest when secrets were redacted', () => {
+    const input = buildSession();
+    // Inject a redacted header and a redacted console event
+    const events: SessionEvent[] = [
+      ...input.events,
+      {
+        id: 'e_console_redacted',
+        sessionId: SESSION_ID,
+        t: 1500,
+        type: 'console',
+        payload: {
+          level: 'warn',
+          text: 'Auth key was «redacted»',
+        },
+      } as any,
+    ];
+    const reportMd = renderReport({ ...input, events });
+    expect(reportMd).toContain('**Privacy audit:** Redaction active');
+    expect(reportMd).toContain('console log(s)');
+
+    const manifestMd = renderManifest({ ...input, events });
+    expect(manifestMd).toContain('Privacy: **1** event(s) sanitized');
+  });
 });

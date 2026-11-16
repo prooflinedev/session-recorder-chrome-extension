@@ -1,0 +1,6 @@
+# Ensure TypeScript, JavaScript, and Markdown files are always diffed as text
+*.ts text diff
+*.tsx text diff
+*.js text diff
+*.json text diff
+*.md text diff

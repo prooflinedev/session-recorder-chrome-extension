@@ -21,6 +21,7 @@ import type {
   SessionEvent,
   VerbosityLevel,
 } from '@/lib/session/types';
+import { auditSessionRedactions } from '@/lib/capture/redaction';
 import { buildAnchorMap } from './anchor';
 
 export interface RenderInput {
@@ -96,6 +97,10 @@ export function renderManifest(input: RenderInput): string {
   lines.push(
     `Session: **${escapeInline(input.session.name)}** — level ${input.level}`,
   );
+  const audit = auditSessionRedactions(input.session, input.events);
+  if (audit.enabled && audit.affectedEvents > 0) {
+    lines.push(`Privacy: **${audit.affectedEvents}** event(s) sanitized across captured evidence streams.`);
+  }
   lines.push('');
 
   const included = input.assets
@@ -147,6 +152,24 @@ function renderHeader(
   lines.push(`- **Duration:** ${formatClock(durationMs)}`);
   lines.push(`- **Verbosity level:** ${input.level}`);
   lines.push(`- **Events:** ${events.length}`);
+
+  const audit = auditSessionRedactions(session, events);
+  if (!audit.enabled) {
+    lines.push('- **Privacy audit:** Redaction disabled by user (raw capture)');
+  } else if (audit.affectedEvents === 0) {
+    lines.push('- **Privacy audit:** Redaction active (0 sensitive patterns detected across captured events)');
+  } else {
+    const parts: string[] = [];
+    if (audit.byStream.networkRequests > 0) parts.push(`${audit.byStream.networkRequests} network request(s)`);
+    if (audit.byStream.consoleLogs > 0) parts.push(`${audit.byStream.consoleLogs} console log(s)`);
+    if (audit.byStream.exceptions > 0) parts.push(`${audit.byStream.exceptions} exception(s)`);
+    if (audit.byStream.navigationUrls > 0) parts.push(`${audit.byStream.navigationUrls} navigation/route URL(s)`);
+    if (audit.byStream.formInputs > 0) parts.push(`${audit.byStream.formInputs} form input(s)`);
+    lines.push(
+      `- **Privacy audit:** Redaction active (${audit.affectedEvents} event(s) sanitized: ${parts.join(', ')})`,
+    );
+  }
+
   if (input.openapi) {
     lines.push(
       `- **API spec:** \`${input.openapi.path}\` (${input.openapi.endpointCount} endpoint(s) compiled from captured requests)`,

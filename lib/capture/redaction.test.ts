@@ -3,14 +3,17 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import type { NetHeader, RedactionRules } from '@/lib/session/types';
+import type { NetHeader, RedactionRules, Session, SessionEvent } from '@/lib/session/types';
 import {
   DEFAULT_HEADER_BLOCKLIST,
   DEFAULT_KEY_PATTERN,
   REDACTED,
+  VALUE_SECRET_PATTERNS,
+  auditSessionRedactions,
   buildKeyMatcher,
   redactBody,
   redactHeaders,
+  redactTextValues,
   redactUrl,
 } from './redaction';
 
@@ -297,5 +300,282 @@ describe('redactUrl', () => {
   it('matches param names after url-decoding', () => {
     const out = redactUrl('https://x.com/p?api%5Fkey=v&z=1', EMPTY_RULES);
     expect(out).toBe(`https://x.com/p?api%5Fkey=${REDACTED}&z=1`);
+  });
+
+  describe('URL path sanitization (route-aware)', () => {
+    it('redacts recognizable JWTs in path segments', () => {
+      const jwt =
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvZSJ9.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
+      const out = redactUrl(`https://api.example.com/auth/callback/${jwt}`, EMPTY_RULES);
+      expect(out).toBe(`https://api.example.com/auth/callback/${REDACTED}`);
+    });
+
+    it('redacts high-entropy tokens following sensitive routes including invite and callback', () => {
+      const token = '4a8f9c1b2d3e4f5a6b7c8d9e0f1a2b3c';
+      expect(redactUrl(`https://app.com/reset-password/${token}`, EMPTY_RULES)).toBe(
+        `https://app.com/reset-password/${REDACTED}`,
+      );
+      expect(redactUrl(`https://app.com/magic-link/${token}`, EMPTY_RULES)).toBe(
+        `https://app.com/magic-link/${REDACTED}`,
+      );
+      expect(redactUrl(`https://app.com/verify-email/${token}`, EMPTY_RULES)).toBe(
+        `https://app.com/verify-email/${REDACTED}`,
+      );
+      expect(redactUrl(`https://app.com/invite/${token}`, EMPTY_RULES)).toBe(
+        `https://app.com/invite/${REDACTED}`,
+      );
+      expect(redactUrl(`https://app.com/auth/callback/${token}`, EMPTY_RULES)).toBe(
+        `https://app.com/auth/callback/${REDACTED}`,
+      );
+    });
+
+    it('redacts UUID tokens on sensitive auth routes', () => {
+      const uuid = 'c9b0e352-78d1-4f91-89d2-7c3852ef72a9';
+      expect(redactUrl(`https://app.com/magic-link/${uuid}`, EMPTY_RULES)).toBe(
+        `https://app.com/magic-link/${REDACTED}`,
+      );
+      expect(redactUrl(`https://app.com/invite/${uuid}`, EMPTY_RULES)).toBe(
+        `https://app.com/invite/${REDACTED}`,
+      );
+      // Non-sensitive routes preserve standard UUID identifiers
+      expect(redactUrl(`https://app.com/users/${uuid}`, EMPTY_RULES)).toBe(
+        `https://app.com/users/${uuid}`,
+      );
+    });
+
+    it('preserves ordinary resource IDs, slugs, and OAuth providers (negative test)', () => {
+      // Ordinary numeric IDs
+      expect(redactUrl('https://app.com/invite/123', EMPTY_RULES)).toBe(
+        'https://app.com/invite/123',
+      );
+      expect(redactUrl('https://app.com/users/42/profile', EMPTY_RULES)).toBe(
+        'https://app.com/users/42/profile',
+      );
+      expect(redactUrl('https://app.com/reset-password/42', EMPTY_RULES)).toBe(
+        'https://app.com/reset-password/42',
+      );
+
+      // Ordinary action verbs
+      expect(redactUrl('https://app.com/reset-password/confirm', EMPTY_RULES)).toBe(
+        'https://app.com/reset-password/confirm',
+      );
+      expect(redactUrl('https://app.com/magic-link/request', EMPTY_RULES)).toBe(
+        'https://app.com/magic-link/request',
+      );
+      expect(redactUrl('https://app.com/invite/accept', EMPTY_RULES)).toBe(
+        'https://app.com/invite/accept',
+      );
+
+      // Known OAuth identity providers in callbacks
+      expect(redactUrl('https://app.com/auth/callback/google', EMPTY_RULES)).toBe(
+        'https://app.com/auth/callback/google',
+      );
+      expect(redactUrl('https://app.com/auth/callback/github', EMPTY_RULES)).toBe(
+        'https://app.com/auth/callback/github',
+      );
+
+      // Human-readable hyphenated slug identifiers
+      expect(redactUrl('https://app.com/invite/team-lead-invitation', EMPTY_RULES)).toBe(
+        'https://app.com/invite/team-lead-invitation',
+      );
+      expect(redactUrl('https://app.com/projects/my-cool-app', EMPTY_RULES)).toBe(
+        'https://app.com/projects/my-cool-app',
+      );
+    });
+
+    it('redacts recognized secrets in query param values even under generic names', () => {
+      const out = redactUrl(
+        'https://api.com/v1/webhook?redirect=https://foo.bar&data=AKIAIOSFODNN7EXAMPLE',
+        EMPTY_RULES,
+      );
+      expect(out).toBe(`https://api.com/v1/webhook?redirect=https://foo.bar&data=${REDACTED}`);
+    });
+  });
+});
+
+describe('redactTextValues', () => {
+  it('redacts JSON Web Tokens (JWT)', () => {
+    const jwt =
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
+    const res = redactTextValues(`Bearer ${jwt}`);
+    expect(res.count).toBe(1);
+    expect(res.text).toBe(`Bearer ${REDACTED}`);
+  });
+
+  it('redacts GitHub Personal Access Tokens (classic and fine-grained)', () => {
+    const classic = ['ghp', '123456789012345678901234567890123456'].join('_');
+    const fineGrained = ['github', 'pat', '11AAAAAAA0123456789_abcdefghijklmnopqrstuvwxyz0123456789'].join('_');
+    const res = redactTextValues(`Tokens: ${classic} and ${fineGrained}`);
+    expect(res.count).toBe(2);
+    expect(res.text).toBe(`Tokens: ${REDACTED} and ${REDACTED}`);
+  });
+
+  it('redacts Stripe secret and restricted API keys', () => {
+    // Constructed with join to prevent false positives in git secret scanners
+    const stripeLive = ['sk', 'live', '51Abcdefghijklmnopqrstuv'].join('_');
+    const stripeRestricted = ['rk', 'live', '51Abcdefghijklmnopqrstuv'].join('_');
+    const res = redactTextValues(`Keys: ${stripeLive} and ${stripeRestricted}`);
+    expect(res.count).toBe(2);
+    expect(res.text).toBe(`Keys: ${REDACTED} and ${REDACTED}`);
+  });
+
+  it('redacts PEM private key blocks', () => {
+    const pem =
+      '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Y...\n-----END RSA PRIVATE KEY-----';
+    const res = redactTextValues(`Certificate payload:\n${pem}`);
+    expect(res.count).toBe(1);
+    expect(res.text).toBe(`Certificate payload:\n${REDACTED}`);
+  });
+
+  it('redacts AWS Access Key IDs as credential identifiers', () => {
+    const awsKey = 'AKIAIOSFODNN7EXAMPLE';
+    const res = redactTextValues(`Access key: ${awsKey}`);
+    expect(res.count).toBe(1);
+    expect(res.text).toBe(`Access key: ${REDACTED}`);
+  });
+
+  it('redacts multiple mixed secrets in a single text string', () => {
+    const stripe = ['sk', 'live', '51Abcdefghijklmnopqrstuv'].join('_');
+    const text =
+      `AWS: AKIAIOSFODNN7EXAMPLE, GitHub: ghp_123456789012345678901234567890123456, Stripe: ${stripe}`;
+    const res = redactTextValues(text);
+    expect(res.count).toBe(3);
+    expect(res.text).toBe(`AWS: ${REDACTED}, GitHub: ${REDACTED}, Stripe: ${REDACTED}`);
+  });
+
+  it('is idempotent when run on already-sanitized text', () => {
+    const first = redactTextValues('Token: ghp_123456789012345678901234567890123456');
+    const second = redactTextValues(first.text);
+    expect(second.text).toBe(first.text);
+    expect(second.count).toBe(0);
+  });
+
+  it('does not redact benign text or numbers', () => {
+    const input = 'Order #12345 shipped to user_987 on 2026-11-16';
+    const res = redactTextValues(input);
+    expect(res.count).toBe(0);
+    expect(res.text).toBe(input);
+  });
+});
+
+describe('redactBody — value-based detection', () => {
+  it('redacts root-level JSON strings containing secret values (regression)', () => {
+    const jwt =
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlF54m5dK_Zc';
+    const input = JSON.stringify(jwt);
+    const { text, redacted } = redactBody(input, 'application/json', EMPTY_RULES);
+    expect(redacted).toBe(true);
+    expect(JSON.parse(text)).toBe(REDACTED);
+  });
+
+  it('redacts JWTs inside generic JSON property names', () => {
+    const jwt =
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlF54m5dK_Zc';
+    const input = JSON.stringify({ data: jwt, timestamp: 123456 });
+    const { text, redacted } = redactBody(input, 'application/json', EMPTY_RULES);
+    expect(redacted).toBe(true);
+    expect(JSON.parse(text)).toEqual({ data: REDACTED, timestamp: 123456 });
+  });
+
+  it('redacts secrets inside JSON arrays', () => {
+    const key = ['sk', 'live', '51Abcdefghijklmnopqrstuv'].join('_');
+    const input = JSON.stringify({ items: ['normal', key, 'another'] });
+    const { text, redacted } = redactBody(input, 'application/json', EMPTY_RULES);
+    expect(redacted).toBe(true);
+    expect(JSON.parse(text)).toEqual({ items: ['normal', REDACTED, 'another'] });
+  });
+
+  it('redacts secrets in form-urlencoded bodies under generic keys', () => {
+    const key = ['sk', 'live', '51Abcdefghijklmnopqrstuv'].join('_');
+    const input = `redirect_uri=https://app.com&state=${key}`;
+    const { text, redacted } = redactBody(input, 'application/x-www-form-urlencoded', EMPTY_RULES);
+    expect(redacted).toBe(true);
+    expect(text).toBe(`redirect_uri=https://app.com&state=${REDACTED}`);
+  });
+});
+
+describe('auditSessionRedactions', () => {
+  const session = {
+    id: 'sess_audit',
+    name: 'Audit test',
+    startedAt: 1000,
+    initialUrl: 'https://app.com',
+    tabs: [],
+    settings: {
+      redactionEnabled: true,
+      customRedaction: EMPTY_RULES,
+    } as any,
+    status: 'stopped' as any,
+    counts: {},
+    assetBytes: 0,
+  } as Session;
+
+  it('reports affected events accurately by stream without false precision', () => {
+    const events: SessionEvent[] = [
+      {
+        id: 'e1',
+        sessionId: 'sess_audit',
+        t: 10,
+        type: 'net-request',
+        payload: {
+          requestId: 'r1',
+          method: 'GET',
+          url: `https://app.com/reset-password/${REDACTED}`,
+          requestHeaders: [{ name: 'Authorization', value: REDACTED }],
+          responseHeaders: [],
+          responseBody: { present: true, text: `{"data":"${REDACTED}"}` },
+        },
+      } as any,
+      {
+        id: 'e2',
+        sessionId: 'sess_audit',
+        t: 20,
+        type: 'console',
+        payload: {
+          level: 'error',
+          text: `Stripe key failed: ${REDACTED}`,
+        },
+      } as any,
+      {
+        id: 'e3',
+        sessionId: 'sess_audit',
+        t: 30,
+        type: 'error',
+        payload: {
+          origin: 'exception',
+          message: `Uncaught Error with token ${REDACTED}`,
+          stack: `at login (https://app.com/login.js:12:3)`,
+        },
+      } as any,
+      {
+        id: 'e4',
+        sessionId: 'sess_audit',
+        t: 40,
+        type: 'input',
+        payload: {
+          descriptor: { tag: 'input' },
+          value: REDACTED,
+          redacted: true,
+        },
+      } as any,
+    ];
+
+    const audit = auditSessionRedactions(session, events);
+    expect(audit.enabled).toBe(true);
+    // e1 has multiple redacted fields, but counts as exactly 1 affected network request
+    expect(audit.affectedEvents).toBe(4);
+    expect(audit.byStream.networkRequests).toBe(1);
+    expect(audit.byStream.consoleLogs).toBe(1);
+    expect(audit.byStream.exceptions).toBe(1);
+    expect(audit.byStream.formInputs).toBe(1);
+  });
+
+  it('reports disabled state when redaction was turned off', () => {
+    const disabledSession = {
+      ...session,
+      settings: { ...session.settings, redactionEnabled: false },
+    };
+    const audit = auditSessionRedactions(disabledSession, []);
+    expect(audit.enabled).toBe(false);
   });
 });
