@@ -19,9 +19,13 @@ import type {
   NetBody,
   Session,
   SessionEvent,
+  StorageArea,
+  StorageEntry,
   VerbosityLevel,
 } from '@/lib/session/types';
 import { buildAnchorMap } from './anchor';
+import { storageByOrigin } from './storage-diff';
+import type { OriginStorage, StorageChange } from './storage-diff';
 
 export interface RenderInput {
   session: Session;
@@ -428,6 +432,12 @@ function renderEvent(
       break;
     }
 
+    // --- page state --------------------------------------------------------
+    case 'storage-snapshot': {
+      lines.push(`${clock} 🗄️ STORAGE ${describeStorageSnapshot(e, input.events)}${tab}`);
+      break;
+    }
+
     // --- user signals ------------------------------------------------------
     case 'marker': {
       lines.push('');
@@ -629,6 +639,170 @@ function renderAppendices(
     }
     lines.push('```');
   }
+
+  renderStorageAppendix(events, lines);
+}
+
+// ----------------------------------------------------------------------------
+// Storage state
+// ----------------------------------------------------------------------------
+
+const AREA_LABEL: Record<StorageArea, string> = {
+  localStorage: 'localStorage',
+  sessionStorage: 'sessionStorage',
+  cookie: 'cookie',
+};
+
+/** Timeline one-liner: counts at start, change counts at stop. */
+function describeStorageSnapshot(
+  e: Extract<SessionEvent, { type: 'storage-snapshot' }>,
+  all: SessionEvent[],
+): string {
+  const p = e.payload;
+  const where = escapeInline(p.origin);
+  if (p.phase === 'start') {
+    return `at start (${where}): ${storageCounts(p.entries)}`;
+  }
+  const row = storageByOrigin(all).find((r) => r.origin === p.origin);
+  if (!row?.start || !row.changes || row.stop?.id !== e.id) {
+    return `at stop (${where}): ${storageCounts(p.entries)}`;
+  }
+  const n = (kind: StorageChange['kind']) =>
+    row.changes!.filter((c) => c.kind === kind).length;
+  return row.changes.length === 0
+    ? `at stop (${where}): unchanged since start`
+    : `at stop (${where}): ${n('added')} added, ${n('changed')} changed, ${n('removed')} removed since start`;
+}
+
+function storageCounts(entries: readonly StorageEntry[]): string {
+  if (entries.length === 0) return 'empty';
+  const parts: string[] = [];
+  for (const area of Object.keys(AREA_LABEL) as StorageArea[]) {
+    const count = entries.filter((x) => x.area === area).length;
+    if (count > 0) parts.push(`${count} ${AREA_LABEL[area]}`);
+  }
+  return `${parts.join(', ')} key(s)`;
+}
+
+/** `## Appendix: Storage State` — per origin, what changed, then the start state. */
+function renderStorageAppendix(events: SessionEvent[], lines: string[]): void {
+  const origins = storageByOrigin(events);
+  if (origins.length === 0) return;
+
+  lines.push('');
+  lines.push('## Appendix: Storage State');
+  lines.push('');
+  lines.push(
+    '_localStorage, sessionStorage and script-readable cookies of the recorded page. HttpOnly cookies are never read; secret-looking values are redacted._',
+  );
+
+  for (const row of origins) {
+    lines.push('');
+    lines.push(`### ${escapeInline(row.origin)}`);
+    lines.push('');
+    const limits = storageComparisonLimits(row);
+    if (limits.length > 0) {
+      for (const limit of limits) lines.push(`- _${limit}_`);
+      lines.push('');
+    }
+
+    if (row.start && row.stop && row.changes) {
+      lines.push(
+        `**Changes between [${formatClock(row.start.t)}] and [${formatClock(row.stop.t)}]:**`,
+      );
+      lines.push('');
+      if (row.changes.length === 0) {
+        lines.push('- No changes.');
+      } else {
+        for (const c of row.changes) lines.push(`- ${describeStorageChange(c)}`);
+      }
+      lines.push('');
+    }
+
+    const base = row.start ?? row.stop;
+    if (!base) continue;
+    const label = row.start ? 'At start' : 'At stop (no start snapshot for this origin)';
+    lines.push(`**${label} [${formatClock(base.t)}]:**`);
+    lines.push('');
+    if (base.payload.entries.length === 0) {
+      lines.push('_Empty._');
+      continue;
+    }
+    // Keys and values are page-controlled: code spans keep them from rendering
+    // as Markdown or HTML (headings, remote images) in report.html.
+    lines.push('| Area | Key | Value |');
+    lines.push('| --- | --- | --- |');
+    for (const entry of base.payload.entries) {
+      lines.push(
+        `| ${AREA_LABEL[entry.area]} | ${cellCode(entry.key)} | ${storageValueSpan(entry, cellCode)} |`,
+      );
+    }
+  }
+}
+
+/** Why some keys of an origin were not compared, one sentence each. */
+function storageComparisonLimits(row: OriginStorage): string[] {
+  const out: string[] = [];
+  if (row.partial) {
+    out.push('Some keys were left out at capture (per-area cap); keys past the cap were not compared.');
+  }
+  if (row.sessionStorageSkipped) {
+    out.push(
+      'Start and stop were read in different tabs. sessionStorage belongs to one tab, so it was not compared.',
+    );
+  }
+  if (row.cookiePaths) {
+    out.push(
+      `Cookies were read at different paths (${inlineCode(row.cookiePaths.start)} at start, ${inlineCode(row.cookiePaths.stop)} at stop). A page sees only cookies whose path matches, so cookies seen at only one path are not listed as added or removed.`,
+    );
+  }
+  return out;
+}
+
+function describeStorageChange(c: StorageChange): string {
+  const what = `${AREA_LABEL[c.area]} ${inlineCode(c.key)}`;
+  const shared = c.sameName
+    ? ` (one of ${c.sameName} ${c.area === 'cookie' ? 'cookies' : 'entries'} with this name)`
+    : '';
+  switch (c.kind) {
+    case 'added':
+      return `added ${what}${shared}: ${storageValueSpan(c.after, inlineCode)}`;
+    case 'removed':
+      return `removed ${what}${shared} (was ${storageValueSpan(c.before, inlineCode)})`;
+    case 'changed': {
+      if (c.before?.value === undefined && c.after?.value === undefined) {
+        return `changed ${what}${shared}: _(value omitted at this level)_`;
+      }
+      const before = storageValueSpan(c.before, inlineCode);
+      const after = storageValueSpan(c.after, inlineCode);
+      // A rotated token or a change past the cut shows the same text twice.
+      return before === after
+        ? `changed ${what}${shared}: ${after} (the difference is in a redacted or cut part)`
+        : `changed ${what}${shared}: ${before} → ${after}`;
+    }
+  }
+}
+
+/** A storage value as code, plus what the code span cannot say (omitted, empty, full size). */
+function storageValueSpan(
+  entry: StorageEntry | undefined,
+  code: (s: string) => string,
+): string {
+  if (!entry || entry.value === undefined) return '_(value omitted at this level)_';
+  const shown = code(entry.truncated ? `${entry.value}…` : entry.value);
+  return entry.size > entry.value.length ? `${shown} (${entry.size} chars)` : shown;
+}
+
+/** Page-controlled text as inline code outside a table. */
+function inlineCode(s: string): string {
+  const text = escapeInline(oneLine(s));
+  return text === '' ? '_(empty)_' : `\`${text}\``;
+}
+
+/** Page-controlled text as inline code inside a table cell. */
+function cellCode(s: string): string {
+  const text = escapeCell(s);
+  return text === '' ? '_(empty)_' : `\`${text}\``;
 }
 
 // ----------------------------------------------------------------------------
@@ -737,7 +911,11 @@ function escapeInline(s: string): string {
 }
 
 function escapeCell(s: string): string {
-  return oneLine(s).replace(/\|/g, '\\|').replace(/`/g, 'ˋ');
+  // Double any backslashes before a pipe and escape the pipe: an even run
+  // (`\\|`) would end the cell and let the rest escape a code span.
+  return oneLine(s)
+    .replace(/(\\*)\|/g, (_m, slashes: string) => `${slashes}${slashes}\\|`)
+    .replace(/`/g, 'ˋ');
 }
 
 /**

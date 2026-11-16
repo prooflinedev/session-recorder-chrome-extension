@@ -56,7 +56,7 @@ Record a web-app session and turn its evidence into a debugging report. Capture,
 | `debugger` | Capture network request/response details, console messages, exceptions and screenshots through CDP. Chrome shows its debugger banner while attached. |
 | `<all_urls>` | Record the web application the user selects; the application domain is not known in advance. |
 | `tabs`, `webNavigation` | Track recorded tabs and page/SPA navigation. |
-| `scripting` | Activate interaction, annotation and file capture content scripts. |
+| `scripting` | Activate interaction, annotation and file capture content scripts, and read the recorded page's localStorage, sessionStorage and script-readable cookies when recording starts and stops (on by default; HttpOnly cookies are never read). |
 | `storage`, `unlimitedStorage` | Persist settings, sessions, events and assets locally. |
 | `sidePanel` | Present recording controls and session list. |
 | `offscreen` | Record microphone and tab media in an offscreen document. |
@@ -69,6 +69,7 @@ Record a web-app session and turn its evidence into a debugging report. Capture,
 Use [PRIVACY.md](PRIVACY.md) and the actual package to complete the dashboard form. Do not reuse the old “no server you control” answer for a release with managed Proofline services enabled.
 
 - Captured website content can include personal or sensitive information. Redaction reduces exposure; it does not justify declaring those data categories impossible.
+- Storage snapshots (localStorage, sessionStorage and script-readable cookies of recorded pages) are captured by default at start and stop, including for existing installs. Values pass through redaction and are kept out of AI summary input.
 - Audio and tab video are captured only when enabled.
 - Personal transcription sends audio to the selected provider. Personal AI sends text to the configured provider; vocabulary extraction can include bounded visible page labels.
 - Managed AI sends relevant text or audio through Proofline to configured providers. Usage is recorded against the selected workspace.

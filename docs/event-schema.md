@@ -335,6 +335,53 @@ A file the user attached directly through the extension UI.
 
 ---
 
+## Page-state events
+
+### `storage-snapshot`
+`StorageSnapshotPayload` records one origin's browser storage at a session
+boundary: once when recording starts (primary tab) and once when it stops
+(every recorded tab that is still open, one event per origin, primary tab
+first). It is read from the top frame with `chrome.scripting`, so it works
+without the debugger, and it is recorded at stop even when the session is
+paused. It is not protected: L2 shortens values to 120 characters and L3 keeps
+keys and hashes only. Controlled by `CaptureSettings.captureStorage` (default
+`true`).
+
+| Field     | Type                                     | Meaning |
+| --------- | ---------------------------------------- | ------- |
+| `phase`   | `'start' \| 'stop'`                      | Which session boundary the snapshot was taken at. |
+| `origin`  | `string`                                 | `location.origin` of the page that was read. |
+| `path`    | `string`                                 | `location.pathname` of the page that was read. `document.cookie` lists only cookies whose path matches it. |
+| `entries` | `StorageEntry[]`                         | Sorted by area, then key. Each area keeps its first 100 keys in that order; the page sorts every key before the cap. |
+| `omitted` | `Partial<Record<StorageArea, number>>` (optional) | Per area, keys left out after the cap. |
+
+`StorageEntry`:
+
+| Field       | Type                                              | Meaning |
+| ----------- | ------------------------------------------------- | ------- |
+| `area`      | `'localStorage' \| 'sessionStorage' \| 'cookie'` | Where the entry was read. Cookies come from `document.cookie`, so HttpOnly cookies are never included. |
+| `key`       | `string`                                          | Storage key or cookie name. |
+| `value`     | `string` (optional)                               | Redacted value, cut at 500 characters. `«too large to redact»` when the value was over 64 KB and redaction is on. Absent at L3. |
+| `truncated` | `boolean` (optional)                              | True when `value` was cut. |
+| `size`      | `number`                                          | Length of the full value before display truncation: the redacted value, or the original when it was too large to redact. |
+| `redacted`  | `boolean` (optional)                              | True when redaction masked all or part of the value, or withheld it. |
+| `hash`      | `string`                                          | 16 hex characters of HMAC-SHA-256 over the session id, area, key and a digest of the full original value. The key is a per-install secret that never leaves the browser. The report compares start and stop by it, so a rotated secret or a change past the 64 KB read limit still counts as a change. |
+
+With redaction on, a value is masked whole when its key matches the body-key
+rules, scrubbed by inner key when it is JSON or form data, scrubbed by
+parameter when it is a URL, and JWT-shaped tokens are masked anywhere. JSON
+stored as a string inside JSON and percent-encoded values are unwrapped (up to
+four levels) and scrubbed the same way. A value over 64 KB is withheld, because
+the page read is cut there and cut JSON cannot be scrubbed.
+
+The start/stop comparison reports a key as added or removed only when the
+other snapshot would have listed it: a capped area covers keys up to its last
+kept key, cookies read at different paths are compared only where both lists
+have the name, and sessionStorage is compared only when start and stop were
+read in the same tab. Cookies sharing a name are compared as a multiset.
+
+---
+
 ## User-signal events
 
 ### `marker`

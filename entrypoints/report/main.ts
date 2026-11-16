@@ -325,6 +325,16 @@ function eventNode(e: SessionEvent, mediaUrls: Map<string, string>): HTMLElement
       b.append(clockOf(e), tag('note'), el('span', 'r-signal__text', e.payload.text));
       return b;
     }
+    case 'storage-snapshot': {
+      const p = e.payload;
+      row.className = 'r-row r-muted';
+      row.append(
+        clockOf(e),
+        tag('storage'),
+        el('span', 'r-txt', `Storage at ${p.phase} · ${p.origin} · ${p.entries.length} keys`),
+      );
+      return row;
+    }
     case 'file-captured':
     case 'file-attached': {
       const b = el('div', 'r-signal r-file');

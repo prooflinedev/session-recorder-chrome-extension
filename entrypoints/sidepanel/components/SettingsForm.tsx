@@ -339,6 +339,20 @@ export function SettingsForm(): React.JSX.Element {
                 openapi.json to exports. Increases storage use.
               </p>
 
+              <label className="settings__toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.captureStorage}
+                  onChange={(e) => patchSettings({ captureStorage: e.target.checked })}
+                />
+                <span>Snapshot page storage at start and stop</span>
+              </label>
+              <p className="settings__hint">
+                Records localStorage, sessionStorage and cookies the page can read,
+                and shows what the session changed. Secret-looking values are
+                redacted. HttpOnly cookies are never read.
+              </p>
+
               <div className="settings__row">
                 <ByteInput
                   label="Inline body cap"

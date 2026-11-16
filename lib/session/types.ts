@@ -65,6 +65,8 @@ export type EventType =
   // files
   | 'file-captured'
   | 'file-attached'
+  // page state
+  | 'storage-snapshot'
   // user signals
   | 'marker'
   | 'note'
@@ -145,6 +147,14 @@ export interface CaptureSettings {
    * raised (see `API_SPEC_BODY_CAP_BYTES`).
    */
   captureApiSpec: boolean;
+  /**
+   * When true (default), the recorder snapshots the recorded page's
+   * localStorage, sessionStorage and script-readable cookies when recording
+   * starts and stops, so the report can show the app state the bug ran in and
+   * what the session changed. Values pass through redaction; HttpOnly cookies
+   * are never read. Only affects new recordings.
+   */
+  captureStorage: boolean;
 }
 
 export interface TabInfo {
@@ -444,6 +454,58 @@ export interface FilePayload {
   note?: string;
 }
 
+/** The browser storage surface a `StorageEntry` was read from. */
+export type StorageArea = 'localStorage' | 'sessionStorage' | 'cookie';
+
+export interface StorageEntry {
+  area: StorageArea;
+  key: string;
+  /**
+   * Redacted and possibly truncated value. Absent when an export level keeps
+   * keys only.
+   */
+  value?: string;
+  /** True when `value` was cut at the display cap. */
+  truncated?: boolean;
+  /**
+   * Length in characters of the full value before display truncation: the
+   * redacted value, or the original when it was too large to redact.
+   */
+  size: number;
+  /** True when redaction masked all or part of the value, or withheld it. */
+  redacted?: boolean;
+  /**
+   * Keyed hash (HMAC-SHA-256 with a per-install secret that never leaves the
+   * browser) of the full original value, so start/stop comparisons see every
+   * change, including past truncation and inside redacted values. Without the
+   * secret it cannot be checked against guessed values.
+   */
+  hash: string;
+}
+
+/**
+ * One origin's browser storage at a session boundary. Captured from the top
+ * frame of a recorded tab; one event per origin per phase.
+ */
+export interface StorageSnapshotPayload {
+  phase: 'start' | 'stop';
+  /** `location.origin` of the page that was read. */
+  origin: string;
+  /**
+   * `location.pathname` of the page that was read. `document.cookie` only lists
+   * cookies whose path matches it, so cookie lists read at different paths are
+   * not comparable key by key.
+   */
+  path: string;
+  /**
+   * Sorted by area, then key. Each area keeps its first keys in that order, so a
+   * capped area covers every key up to its last kept key.
+   */
+  entries: StorageEntry[];
+  /** Per area, keys left out after the per-area cap. */
+  omitted?: Partial<Record<StorageArea, number>>;
+}
+
 export interface MarkerPayload {
   name: string;
 }
@@ -483,6 +545,7 @@ export interface EventPayloadMap {
   'video-segment': VideoSegmentPayload;
   'file-captured': FilePayload;
   'file-attached': FilePayload;
+  'storage-snapshot': StorageSnapshotPayload;
   marker: MarkerPayload;
   note: NotePayload;
   'session-note': SessionNotePayload;

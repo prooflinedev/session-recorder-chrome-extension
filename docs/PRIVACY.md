@@ -1,6 +1,6 @@
 # Privacy Policy — Session Recorder by Proofline
 
-_Last updated: 2026-10-30_
+_Last updated: 2026-11-16_
 
 Session Recorder is a Chrome extension that records a session of you using a web
 app — interactions, network traffic, console logs, screenshots, voice narration,
@@ -32,6 +32,10 @@ recording:
 - Screenshots of the recorded tab
 - Microphone audio, when you start voice narration
 - Files you upload to the app or attach yourself
+- The recorded page's localStorage, sessionStorage and cookies readable by
+  page scripts, once when recording starts and once when it stops (on by
+  default, including for existing installs; turn off under capture settings).
+  HttpOnly cookies are never read. This snapshot is left out of AI summary input.
 
 All of this is written to local browser storage. You can export a local ZIP or
 explicitly publish the selected report to Proofline or your Cloudflare Pages project.
@@ -40,7 +44,13 @@ explicitly publish the selected report to Proofline or your Cloudflare Pages pro
 
 Redaction is on by default. For supported structured capture fields, the extension
 masks authorization headers, token-like JSON/form fields, sensitive URL
-parameters, and password inputs. You can add rules or disable redaction per
+parameters, and password inputs. Storage snapshots get the same key, JSON, form
+and URL rules, also inside JSON stored as a string and inside percent-encoded
+values; JWT-shaped values are masked wherever they appear, and values too large
+to scan reliably are left out. Each storage value also gets a keyed hash
+(HMAC-SHA-256) so reports can show that a value changed without storing it; the
+hash key is created per install and never leaves the browser, so a hash in an
+export cannot be checked against guessed values. You can add rules or disable redaction per
 session on the options page. Screenshots, audio, attached files and arbitrary text may still contain sensitive information.
 
 ## Third-party transcription (optional, off by default)

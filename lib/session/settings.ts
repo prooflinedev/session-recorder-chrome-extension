@@ -18,6 +18,7 @@ export const DEFAULT_SETTINGS: CaptureSettings = {
   screenshotDedupThreshold: 5,
   hoverDwellMs: 700,
   captureApiSpec: false,
+  captureStorage: true,
 };
 
 /**
@@ -99,4 +100,9 @@ export const STORAGE_KEYS = {
   videoFromStart: 'videoFromStart',
   /** Turn the microphone on automatically when a recording starts. */
   micFromStart: 'micFromStart',
+  /**
+   * Per-install secret for storage-snapshot value hashes. Never exported; only
+   * trusted extension contexts can read it.
+   */
+  storageHashSecret: 'storageHashSecret',
 } as const;

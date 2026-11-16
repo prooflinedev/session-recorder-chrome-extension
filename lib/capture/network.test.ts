@@ -18,6 +18,7 @@ const SETTINGS: CaptureSettings = {
   screenshotQuality: 70,
   screenshotDedupThreshold: 4,
   captureApiSpec: false,
+  captureStorage: true,
 };
 
 function makeCapturer(overrides: Partial<NetworkDeps> = {}): {

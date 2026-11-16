@@ -28,6 +28,7 @@ Recording, annotation and ZIP export work without an account or API key. Configu
 - Screenshots, live page annotations and screenshot markup.
 - Optional microphone narration, transcripts and tab video with sound.
 - Uploaded or attached files, markers and notes.
+- The page's localStorage, sessionStorage and readable cookies at start and stop, with what the session changed (redacted, HttpOnly cookies excluded).
 - An optional OpenAPI description inferred from captured requests.
 
 Capture settings control screenshot frequency, body-size limits and redaction. Chrome displays a debugger banner while deep capture is active. If it cannot attach, the report records that gap rather than claiming to have captured the missing network or console evidence.

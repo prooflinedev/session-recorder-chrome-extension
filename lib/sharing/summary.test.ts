@@ -178,3 +178,18 @@ describe('summary providers', () => {
     expect(body.messages[1].content).toBe('Annotation: Add help');
   });
 });
+
+describe('summary evidence and storage snapshots', () => {
+  it('keeps captured page storage out of the AI input', () => {
+    const { session, events, assets } = new SessionBuilder()
+      .storage('start', 'https://app.example.com', [
+        { area: 'localStorage', key: 'customerEmail', value: 'ada@example.com', size: 15, hash: '00000001' },
+      ])
+      .click('Place order')
+      .build();
+    const evidence = summaryEvidence(session, events, assets);
+    expect(evidence).toContain('Place order');
+    expect(evidence).not.toContain('customerEmail');
+    expect(evidence).not.toContain('ada@example.com');
+  });
+});

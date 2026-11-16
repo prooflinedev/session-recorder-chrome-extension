@@ -65,6 +65,16 @@ import {
 } from '@/lib/storage';
 import { DebuggerManager } from '@/lib/capture/debugger';
 import { NetworkCapturer } from '@/lib/capture/network';
+import {
+  STORAGE_MAX_ENTRIES_PER_AREA,
+  buildStorageSnapshot,
+  createStorageHasher,
+  isRawPageStorage,
+  newStorageHashSecret,
+  parseStorageHashSecret,
+  readPageStorage,
+} from '@/lib/capture/storage';
+import type { RawPageStorage, StorageHasher } from '@/lib/capture/storage';
 import { ConsoleCapturer } from '@/lib/capture/console';
 import { ScreenshotScheduler } from '@/lib/capture/screenshots';
 import { MultiTabTracker } from '@/lib/capture/multitab';
@@ -104,7 +114,50 @@ const ALLOWED_WHILE_PAUSED: ReadonlySet<EventType> = new Set<EventType>([
   'annotation-start',
   'file-captured',
   'file-attached',
+  // Stopping a paused session still records the state it ended in; without
+  // this the stop snapshot (and the change list) would be dropped.
+  'storage-snapshot',
 ]);
+
+/** Longest wait for a tab's storage snapshot before it is skipped. */
+const STORAGE_READ_TIMEOUT_MS = 2000;
+
+/**
+ * Read one tab's storage. Undefined when the tab cannot be scripted (closed,
+ * chrome://, the Web Store) or does not answer in time: a page stuck in a long
+ * task must not hold up Start or Stop.
+ */
+async function readTabStorage(tabId: number): Promise<RawPageStorage | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const read = chrome.scripting.executeScript({
+      target: { tabId },
+      func: readPageStorage,
+      args: [STORAGE_MAX_ENTRIES_PER_AREA],
+    });
+    const timeout = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), STORAGE_READ_TIMEOUT_MS);
+    });
+    const frames = await Promise.race([read, timeout]);
+    const result: unknown = frames?.[0]?.result;
+    return isRawPageStorage(result) ? result : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** The per-install secret for storage-snapshot hashes, created on first use. */
+async function loadStorageHashSecret(): Promise<Uint8Array> {
+  const key = STORAGE_KEYS.storageHashSecret;
+  const got = await chrome.storage.local.get(key);
+  const existing = parseStorageHashSecret(got[key]);
+  if (existing) return existing;
+  const fresh = newStorageHashSecret();
+  await chrome.storage.local.set({ [key]: fresh });
+  return parseStorageHashSecret(fresh)!;
+}
 
 /** Console methods routed to the console capturer (everything else is Network.*). */
 const CONSOLE_METHODS = new Set<string>([
@@ -167,6 +220,10 @@ class Orchestrator {
   private pointing = false;
 
   private writer: EventWriter | null = null;
+  /** The stop in progress, so a second stop request waits for it instead of running twice. */
+  private stopping: Promise<{ ok: boolean }> | null = null;
+  /** Per-install storage-hash secret, loaded once per service-worker lifetime. */
+  private storageSecret: Promise<Uint8Array> | null = null;
   /** Last ~30 materialized events for the live ticker. */
   private recent: SessionEvent[] = [];
 
@@ -440,6 +497,10 @@ class Orchestrator {
       await this.screenshots.capture(tabId, 'nav', 'Session start');
     }
 
+    // The app state the bug starts from (localStorage, sessionStorage, readable
+    // cookies). Uses scripting, not CDP, so it works in degraded sessions too.
+    await this.captureStorageSnapshots('start', [tabId]);
+
     if (degradedReason) {
       this.recordEvent({
         type: 'session-note',
@@ -580,7 +641,16 @@ class Orchestrator {
     }
   }
 
-  private async stop(): Promise<{ ok: boolean }> {
+  private stop(): Promise<{ ok: boolean }> {
+    // A double click or a delete during Stop must not flush, detach and
+    // finalize twice; the storage reads below make the stop window seconds long.
+    this.stopping ??= this.finishSession().finally(() => {
+      this.stopping = null;
+    });
+    return this.stopping;
+  }
+
+  private async finishSession(): Promise<{ ok: boolean }> {
     const session = this.current;
     if (!session) return { ok: false };
 
@@ -604,6 +674,16 @@ class Orchestrator {
     // Emit any still-open websockets (e.g. a chat socket) WITH their accumulated
     // frames before we detach — otherwise the conversation is lost.
     this.network.flushOpen();
+
+    // The app state the session ended in, for every recorded tab still open
+    // (closed tabs fail the script injection and are skipped). Primary first:
+    // it took the start snapshot, and sessionStorage is only comparable within
+    // one tab. Before the final flush so the events are persisted with the session.
+    const primaryFirst = [
+      ...session.tabs.filter((t) => t.role === 'primary'),
+      ...session.tabs.filter((t) => t.role !== 'primary'),
+    ];
+    await this.captureStorageSnapshots('stop', primaryFirst.map((t) => t.tabId));
 
     await this.writer?.flush().catch(() => {});
     this.writer?.dispose();
@@ -1392,6 +1472,44 @@ class Orchestrator {
       await this.toggleAnnotation();
     } else if (command === 'add-marker') {
       this.addMarker();
+    }
+  }
+
+  /**
+   * Record one `storage-snapshot` per origin across `tabIds`. Best-effort:
+   * restricted pages (chrome://, the Web Store) and closed tabs are skipped.
+   * Tabs are read in parallel, so the slowest page costs one timeout in total.
+   * When several tabs show one origin, the first in `tabIds` wins.
+   */
+  private async captureStorageSnapshots(
+    phase: 'start' | 'stop',
+    tabIds: number[],
+  ): Promise<void> {
+    const session = this.current;
+    if (!session?.settings.captureStorage) return;
+    const reads = await Promise.all(tabIds.map((tabId) => readTabStorage(tabId)));
+    if (!reads.some(Boolean)) return;
+
+    let hash: StorageHasher;
+    try {
+      this.storageSecret ??= loadStorageHashSecret();
+      hash = await createStorageHasher(await this.storageSecret, session.id);
+    } catch {
+      // Without the keyed hash there is no safe way to compare values; skip.
+      this.storageSecret = null;
+      return;
+    }
+
+    const seen = new Set<string>();
+    for (const [i, raw] of reads.entries()) {
+      // Opaque origins (file:, data:, sandboxed) have no shared storage to report.
+      if (!raw || raw.origin === 'null' || seen.has(raw.origin)) continue;
+      seen.add(raw.origin);
+      this.recordEvent({
+        type: 'storage-snapshot',
+        tabId: tabIds[i],
+        payload: await buildStorageSnapshot(raw, phase, session.settings, hash),
+      });
     }
   }
 

@@ -30,6 +30,7 @@ import {
   StickyNote,
   Paperclip,
   FileUp,
+  Database,
   Info,
   ChevronRight,
   type LucideIcon,
@@ -380,6 +381,14 @@ function visualFor(e: SessionEvent): Visual {
         Icon: Paperclip,
         label: truncate(e.payload.fileName),
         tone: 'signal',
+      };
+    case 'storage-snapshot':
+      return {
+        Icon: Database,
+        label: e.payload.phase === 'start' ? 'Storage at start' : 'Storage at stop',
+        sub: truncate(e.payload.origin, 40),
+        meta: `${e.payload.entries.length} keys`,
+        tone: 'muted',
       };
     case 'marker':
       return { Icon: Flag, label: truncate(e.payload.name), tone: 'signal' };

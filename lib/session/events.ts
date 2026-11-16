@@ -16,6 +16,7 @@ export const IMPORTANCE_BASE: Record<EventType, number> = {
   error: 85,
   'file-captured': 80,
   'file-attached': 80,
+  'storage-snapshot': 50,
   'session-note': 70,
   'video-segment': 60,
   nav: 60,

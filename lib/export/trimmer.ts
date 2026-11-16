@@ -531,6 +531,44 @@ export function thinVideo(): Transform {
     });
 }
 
+/**
+ * Shorten storage-snapshot values to `maxChars`. Entry hashes are untouched, so
+ * the start/stop comparison stays exact; only the displayed value shrinks.
+ */
+export function shortenStorageValues(maxChars: number): Transform {
+  return (events) =>
+    events.map((e) => {
+      const clone = cloneEvent(e);
+      if (isProtected(clone) || clone.type !== 'storage-snapshot') return clone;
+      for (const entry of clone.payload.entries) {
+        if (entry.value !== undefined && entry.value.length > maxChars) {
+          entry.value = entry.value.slice(0, maxChars);
+          entry.truncated = true;
+        }
+      }
+      return clone;
+    });
+}
+
+/**
+ * Keep storage-snapshot keys and hashes but drop every value. Minimal (L3) still
+ * says which keys existed and which ones the session changed. Keeping the hash
+ * is safe: it is keyed with a per-install secret that is never exported, so it
+ * cannot be checked against guessed values (see lib/capture/storage.ts).
+ */
+export function storageKeysOnly(): Transform {
+  return (events) =>
+    events.map((e) => {
+      const clone = cloneEvent(e);
+      if (isProtected(clone) || clone.type !== 'storage-snapshot') return clone;
+      for (const entry of clone.payload.entries) {
+        delete entry.value;
+        delete entry.truncated;
+      }
+      return clone;
+    });
+}
+
 /** Reduce interaction descriptors to tag/text/selector only. */
 export function interactionsToTextOnly(): Transform {
   return (events) =>
@@ -579,6 +617,7 @@ const L2_TRANSFORMS: Transform[] = [
   collapseRepeatedRequests(),
   thinScreenshots('annotation-error'),
   thinVideo(),
+  shortenStorageValues(120),
 ];
 
 const L3_TRANSFORMS: Transform[] = [
@@ -587,6 +626,7 @@ const L3_TRANSFORMS: Transform[] = [
   dropTextSelections(),
   interactionsToTextOnly(),
   thinScreenshots('manifest-only'),
+  storageKeysOnly(),
 ];
 
 /** The ordered, cumulative transform plan for a verbosity level. */

@@ -89,7 +89,7 @@ The manifest is generated from `wxt.config.ts`.
 | `debugger` | CDP network, console, exception and screenshot capture |
 | `sidePanel` | Recorder UI |
 | `tabs`, `webNavigation` | Recorded tabs and navigation |
-| `scripting` | Activate content scripts |
+| `scripting` | Activate content scripts; read page storage (localStorage, sessionStorage, readable cookies) at start and stop |
 | `storage`, `unlimitedStorage` | Settings and local recording persistence |
 | `offscreen` | Microphone and tab-video recording |
 | `tabCapture` | Capture tab video and sound |

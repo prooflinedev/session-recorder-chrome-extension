@@ -62,7 +62,7 @@
 <main id="content" class="doc">
 <!-- gen:crumbs --><nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="./">Home</a></li><li aria-current="page">Privacy Policy</li></ol></nav><!-- /gen:crumbs -->
 <h1>Privacy Policy</h1>
-      <p class="updated">Last updated: October 25, 2026</p>
+      <p class="updated">Last updated: November 16, 2026</p>
 
       <p>
         Session Recorder is a Chrome extension that records a session of you
@@ -109,6 +109,13 @@
         <li>Screenshots of the recorded tab</li>
         <li>Microphone audio, when you start voice narration</li>
         <li>Files you upload to the app or attach yourself</li>
+        <li>
+          The recorded page's localStorage, sessionStorage and cookies readable
+          by page scripts, once when recording starts and once when it stops.
+          This is on by default, including for existing installs; turn it off
+          under capture settings. HttpOnly cookies are never read, and this
+          snapshot is left out of AI summary input.
+        </li>
       </ul>
       <p>
         All of this is written to local browser storage. You can export a local ZIP
@@ -119,8 +126,13 @@
       <p>
         Redaction is on by default. Before anything is written to storage, the
         extension masks authorization headers, token-like JSON and form fields,
-        sensitive URL parameters, and password inputs. You can add rules or
-        disable redaction per session on the options page.
+        sensitive URL parameters, and password inputs. Storage snapshots get the
+        same rules, including JSON nested inside values and percent-encoded
+        values; JWT-shaped tokens are masked anywhere, and values too large to
+        scan reliably are left out. To show what changed without storing a
+        secret, the extension keeps a keyed hash of each value whose key never
+        leaves your browser. You can add rules or disable redaction per session
+        on the options page.
       </p>
 
       <h2>Annotation dictation (optional)</h2>

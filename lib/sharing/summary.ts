@@ -1,6 +1,6 @@
 import { applyLevel } from '@/lib/export/trimmer';
 import { formatClock, renderReport } from '@/lib/export/markdown';
-import type { AssetMeta, Session, SessionEvent } from '@/lib/session/types';
+import type { AssetMeta, EventType, Session, SessionEvent } from '@/lib/session/types';
 import { runProoflineAi, recordedEvidence } from '@/lib/proofline/ai';
 import type { SharingSettings } from './settings';
 import type { ModelConfig, SummaryProvider } from './settings';
@@ -21,6 +21,31 @@ Start with a one-sentence summary of the reporter's concern. For improvement req
 Only state facts supported by evidence. An uncaught JavaScript exception alone does not prove the page, browser, or process crashed. Do not invent expected behavior or claim a failed task unless the evidence establishes it. Timestamps are elapsed time from the recording start (mm:ss), not UTC; 00:10 means ten seconds.
 Do not invent browser/OS versions, reproduction steps, root causes or fixes. Do not include secrets, personal data, raw request bodies, images, URLs with query strings, or local asset links.
 The evidence may be an excerpt; never claim it represents every event. A protected report link will be appended separately.`;
+
+/**
+ * Event types that show how the reporter moved through the app. An allowlist,
+ * so a new event type stays out of AI input until someone decides it belongs:
+ * page state (storage snapshots) and diagnostics must not reach the provider by
+ * default.
+ */
+const SUMMARY_TIMELINE_TYPES: ReadonlySet<EventType> = new Set<EventType>([
+  'click',
+  'input',
+  'scroll',
+  'key',
+  'hover',
+  'text-select',
+  'nav',
+  'spa-route',
+  'tab-switch',
+  'tab-opened',
+  'tab-closed',
+  'screenshot',
+  'annotation-start',
+  'video-segment',
+  'file-captured',
+  'file-attached',
+]);
 
 /** Separate reporter intent from background diagnostics so noisy pages cannot bury it. */
 export function summaryEvidence(
@@ -46,7 +71,7 @@ export function summaryEvidence(
       : `${s.slice(0, limit / 2)}\n[...excerpt omitted...]\n${s.slice(-limit / 2)}`;
   const annotations = trimmed.filter((e) => e.type === 'annotation');
   const notes = trimmed.filter((e) => ['note', 'marker', 'voice-segment'].includes(e.type));
-  const timeline = trimmed.filter((e) => !['annotation', 'note', 'marker', 'voice-segment', 'console', 'error', 'net-request', 'session-note'].includes(e.type));
+  const timeline = trimmed.filter((e) => SUMMARY_TIMELINE_TYPES.has(e.type));
   return [
     'ANNOTATIONS — primary reported concerns', excerpt(render(annotations), 24_000),
     'NOTES AND NARRATION — reporter context', excerpt(render(notes), 12_000),

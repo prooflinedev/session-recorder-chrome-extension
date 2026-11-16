@@ -32,6 +32,8 @@ import type {
   ScrollPayload,
   Session,
   SessionEvent,
+  StorageEntry,
+  StorageSnapshotPayload,
   TabInfo,
   TextSelectPayload,
   VideoSegmentPayload,
@@ -315,6 +317,27 @@ export class SessionBuilder {
       contextText: 'Example App dashboard',
     };
     this.push('screenshot', payload);
+    return this;
+  }
+
+  storage(
+    phase: 'start' | 'stop',
+    origin: string,
+    entries: StorageEntry[],
+    opts: {
+      omitted?: StorageSnapshotPayload['omitted'];
+      path?: string;
+      tabId?: number;
+    } = {},
+  ): this {
+    const payload: StorageSnapshotPayload = {
+      phase,
+      origin,
+      path: opts.path ?? '/',
+      entries,
+      ...(opts.omitted !== undefined ? { omitted: opts.omitted } : {}),
+    };
+    this.push('storage-snapshot', payload, opts.tabId);
     return this;
   }
 
