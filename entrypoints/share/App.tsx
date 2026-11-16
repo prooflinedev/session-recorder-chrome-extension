@@ -1,6 +1,7 @@
 import { ProoflineBrand } from '@/lib/ui/ProoflineBrand';
 import { FilingProgress } from './FilingProgress';
 import { IssueTriage } from './IssueTriage';
+import { DuplicateMatches } from './DuplicateMatches';
 import { configuredRepositories } from '@/lib/sharing/settings';
 import { GitHubIcon } from '@/lib/ui/GitHubIcon';
 import React, { useReducer } from 'react';
@@ -110,6 +111,18 @@ export function App(): React.JSX.Element {
 }
 function FileIssueAction({ share }: { share: ShareModel }) {
   const { state, busy, publishLimit, actions } = share;
+  if (state.issue?.comment)
+    return (
+      <a
+        className="btn btn--primary"
+        href={state.issue.comment.url}
+        target="_blank"
+        rel="noreferrer"
+      >
+        <GitHubIcon size={14} />
+        View comment on #{state.issue.number}
+      </a>
+    );
   if (state.issue)
     return (
       <a
@@ -347,6 +360,7 @@ function ReportDetails({ share }: { share: ShareModel }) {
         />
       </label>
       <IssueTriage share={share} />
+      <DuplicateMatches share={share} />
       <dl>
         <div>
           <dt>Status</dt>

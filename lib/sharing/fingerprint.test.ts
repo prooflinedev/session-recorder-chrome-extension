@@ -63,6 +63,22 @@ describe('primary signal', () => {
     ).toBeUndefined();
     expect(primarySignal([])).toBeUndefined();
   });
+  it('leaves Chrome’s resource-load console errors to the request signal', () => {
+    // Chrome logs every failed load, including 4xx such as a missing favicon.
+    const missing = consoleError(
+      1,
+      'Failed to load resource: the server responded with a status of 404 (File not found)',
+    );
+    expect(primarySignal([missing])).toBeUndefined();
+    const serverError = request(3, { status: 500 });
+    expect(
+      primarySignal([
+        missing,
+        consoleError(2, 'Failed to load resource: the server responded with a status of 500 ()'),
+        serverError,
+      ]),
+    ).toBe(serverError);
+  });
 });
 
 describe('message normalization', () => {

@@ -29,19 +29,27 @@ import {
   type Publication,
   type SavedDraft,
 } from '@/lib/sharing/draft';
+import type { SharingSettings } from '@/lib/sharing/settings';
 import {
   generateConfiguredSummary,
   summaryEvidence,
   type IssueDraft,
 } from '@/lib/sharing/summary';
 import { fileIssue } from '@/lib/sharing/file-issue';
+import { fingerprint, type ErrorFingerprint } from '@/lib/sharing/fingerprint';
+import { findDuplicates } from '@/lib/sharing/duplicates';
 import {
   issueBody,
   listIssueOptions,
   repositoryPath,
   type IssueOptions,
 } from '@/lib/sharing/github';
-import { initialShareState, shareReducer, type ShareState } from './reducer';
+import {
+  initialShareState,
+  loadedRepository,
+  shareReducer,
+  type ShareState,
+} from './reducer';
 
 type Recording = Omit<BuildBundleInput, 'level'>;
 export interface TriageOptions extends IssueOptions {
@@ -70,6 +78,7 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
   const preparation = useRef(0);
   const writes = useRef<Promise<void>>(Promise.resolve());
   const optionLoads = useRef(new Map<string, AbortController>());
+  const duplicateSearch = useRef<AbortController>();
   // Options load when a picker opens, once per repository, until sharing settings change.
   const [triageOptions, setTriageOptions] = useState<Record<string, TriageOptions>>({});
   const [triageRevision, setTriageRevision] = useState(0);
@@ -91,6 +100,36 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
     } catch (error) {
       if (revision === preparation.current)
         dispatch({ type: 'error', message: errorMessage(error) });
+    }
+  }
+
+  /**
+   * Personal-token filing only: look for issues with the same error. A failure
+   * is shown with Retry and never blocks filing.
+   */
+  async function searchDuplicates(
+    settings: SharingSettings,
+    repository: string,
+    errorFingerprint: ErrorFingerprint | undefined,
+  ) {
+    duplicateSearch.current?.abort();
+    duplicateSearch.current = undefined;
+    if (!errorFingerprint || settings.proofline?.github === 'proofline') return;
+    let token: string;
+    try {
+      token = tokenForRepository(settings, repository);
+    } catch {
+      return; // No token for this repository: nothing to search with.
+    }
+    const controller = new AbortController();
+    duplicateSearch.current = controller;
+    dispatch({ type: 'duplicates-loading', repository });
+    try {
+      const matches = await findDuplicates(repository, token, errorFingerprint, controller.signal);
+      if (!controller.signal.aborted) dispatch({ type: 'duplicates-ready', repository, matches });
+    } catch (error) {
+      if (!controller.signal.aborted)
+        dispatch({ type: 'duplicates-failed', repository, message: errorMessage(error) });
     }
   }
 
@@ -116,6 +155,11 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       const draft = saved[draftKey] as SavedDraft | undefined;
       recording.current = { session, events, assets };
       dispatch({ type: 'loaded', session, settings, saved: draft, triageDefaults });
+      const errorFingerprint = await fingerprint(events);
+      if (!active) return;
+      dispatch({ type: 'fingerprint', fingerprint: errorFingerprint });
+      if (!draft?.issue)
+        void searchDuplicates(settings, loadedRepository(settings, draft), errorFingerprint);
       await prepare(recording.current, draft?.publication?.level ?? initialLevel);
     })().catch((error) => {
       if (active) dispatch({ type: 'error', message: errorMessage(error) });
@@ -149,6 +193,7 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       active = false;
       ++preparation.current;
       operation.current?.abort();
+      duplicateSearch.current?.abort();
       for (const load of loads.values()) load.abort();
       chrome.storage.onChanged.removeListener(changed);
     };
@@ -173,6 +218,7 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       summaryRequestId: state.summaryRequestId,
       labels: state.labels,
       assignees: state.assignees,
+      addTo: state.addTo,
       ...patch,
     };
   }
@@ -218,6 +264,7 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       publication: state.publication,
       ...triageFor(state.triageDefaults, repository),
     });
+    void searchDuplicates(state.settings, repository, state.fingerprint);
     try {
       const path = repositoryPath(repository);
       void rememberRepository(path).catch(() => dispatch({ type: 'error', message: 'Could not remember the repository selection.' }));
@@ -371,9 +418,13 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
     });
   }
   const finalBody = state.publication && publicationReady(state.publication)
-    ? issueBody(state.draft, publicationUrl(state.publication))
+    ? issueBody(state.draft, publicationUrl(state.publication), state.fingerprint?.id)
     : '';
-  function submitIssue() {
+  /** Files a new issue, or with `addTo` posts the report to that existing issue. */
+  function submitIssue(addTo?: number) {
+    if (operation.current) return Promise.resolve();
+    // A pending attempt keeps its own target; otherwise this click chooses it.
+    if (!state.attempt) dispatch({ type: 'add-to', issueNumber: addTo });
     return run('github', async (signal) => {
       await writes.current;
       await navigator.locks.request(
@@ -382,7 +433,7 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
         async () => {
           const stored = (await chrome.storage.local.get(draftKey))[draftKey] as
             SavedDraft | undefined;
-          const saved = stored
+          const draft = stored
             ? {
                 ...stored,
                 repository: stored.repository || state.repository,
@@ -391,6 +442,7 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
                 assignees: stored.assignees ?? state.assignees,
               }
             : snapshot();
+          const saved = draft.attempt ? draft : { ...draft, addTo };
           await rememberRepository(saved.attempt?.repository ?? saved.repository);
           const result = await fileIssue({
             saved,
@@ -398,6 +450,7 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
             files: state.files,
             evidence: state.evidence,
             level: state.level,
+            fingerprint: state.fingerprint?.id,
             signal,
             progress,
             stage: (stage) => dispatch({ type: 'stage', stage }),
@@ -407,8 +460,9 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
             },
           });
           dispatch({ type: 'saved', saved: result });
-          progress(`Issue #${result.issue!.number} created.`);
-          await chrome.tabs.create({ url: result.issue!.url });
+          const issue = result.issue!;
+          progress(issue.comment ? `Added to #${issue.number}.` : `Issue #${issue.number} created.`);
+          await chrome.tabs.create({ url: issue.comment?.url ?? issue.url });
         },
       );
     });
@@ -453,7 +507,12 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       publish,
       checkDeployment,
       unpublish,
-      submitIssue,
+      submitIssue: () => submitIssue(),
+      addToIssue: (issueNumber: number) => {
+        if (!state.attempt && !state.issue) void submitIssue(issueNumber);
+      },
+      checkDuplicates: () =>
+        void searchDuplicates(state.settings, state.repository, state.fingerprint),
       copyIssue,
       changeLevel: (level: VerbosityLevel) => {
         if (recording.current && !state.publication && !operation.current)

@@ -11,6 +11,12 @@ type RequestEvent = Extract<SessionEvent, { type: 'net-request' }>;
 export type SignalEvent = ErrorEvent | RequestEvent;
 
 /**
+ * Chrome logs every failed resource load as a console error, 4xx included (a
+ * missing favicon in most recordings). The request itself is the signal.
+ */
+const RESOURCE_LOAD_ERROR = /^Failed to load resource:/;
+
+/**
  * The event that best identifies the bug: the first uncaught exception, else the
  * first console.error, else the first failed or 5xx request. 4xx responses are
  * usually expected application behaviour and are ignored.
@@ -20,7 +26,9 @@ export function primarySignal(events: SessionEvent[]): SignalEvent | undefined {
   const errorWith = (origin: 'exception' | 'log') =>
     ordered.find(
       (event): event is ErrorEvent =>
-        event.type === 'error' && event.payload.origin === origin,
+        event.type === 'error' &&
+        event.payload.origin === origin &&
+        !RESOURCE_LOAD_ERROR.test(event.payload.message),
     );
   return (
     errorWith('exception') ??

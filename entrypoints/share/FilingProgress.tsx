@@ -14,6 +14,10 @@ const STAGES: { id: FilingStage; label: string }[] = [
 export function FilingProgress({ share }: { share: ReturnType<typeof useShareReport> }) {
   const { state, actions } = share;
   const current = STAGES.findIndex((stage) => stage.id === state.stage);
+  const target = state.attempt?.issueNumber ?? state.addTo;
+  const stages = target
+    ? STAGES.map((stage) => (stage.id === 'issue' ? { ...stage, label: `Add to #${target}` } : stage))
+    : STAGES;
   return (
     <main className="filing-screen" aria-labelledby="filing-title">
       <div className="filing-progress">
@@ -24,7 +28,7 @@ export function FilingProgress({ share }: { share: ReturnType<typeof useShareRep
         {state.draft.title.trim() && <p className="filing-issue-title">{state.draft.title}</p>}
         <p className="filing-repository">{state.attempt?.repository ?? state.repository}</p>
         <ol className="filing-stages" aria-label="Filing progress">
-          {STAGES.map((stage, index) => (
+          {stages.map((stage, index) => (
             <li key={stage.id} data-state={index < current ? 'done' : index === current ? 'active' : 'pending'} aria-current={index === current ? 'step' : undefined}>
               <span className="filing-stage-icon">
                 {index < current ? <Check size={16} /> : index === current ? <FilingActivity stage={stage.id} /> : <Circle size={16} />}

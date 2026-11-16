@@ -104,6 +104,15 @@ export function initialShareState(level: VerbosityLevel): ShareState {
   };
 }
 
+/** A filed or attempted draft keeps its repository; otherwise the draft's or the preferred one. */
+export function loadedRepository(settings: SharingSettings, saved?: SavedDraft): string {
+  return (
+    saved?.issue?.repository ??
+    saved?.attempt?.repository ??
+    (saved?.repository || preferredRepository(settings))
+  );
+}
+
 /** Destination choices freeze while working and once a request may have reached GitHub. */
 function locked(state: ShareState): boolean {
   return state.operation !== 'idle' || !!state.attempt || !!state.issue;
@@ -125,7 +134,7 @@ function rememberChoice(
 export function shareReducer(state: ShareState, action: ShareAction): ShareState {
   switch (action.type) {
     case 'loaded': {
-      const repository = action.saved?.issue?.repository ?? action.saved?.attempt?.repository ?? (action.saved?.repository || preferredRepository(action.settings));
+      const repository = loadedRepository(action.settings, action.saved);
       const stored = action.triageDefaults ?? {};
       const chosen = action.saved?.labels || action.saved?.assignees ? action.saved : undefined;
       const choice = chosen
