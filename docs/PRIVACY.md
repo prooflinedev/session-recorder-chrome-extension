@@ -87,7 +87,7 @@ File GitHub issue with a configured model or Regenerate summary. With a configur
 contain sensitive data; review it before sending. Provider terms and retention
 policies apply. Review generated summaries before sharing them.
 
-GitHub receives the title, summary and protected page link when you choose File GitHub issue. The extension creates the issue with your configured GitHub token or the installed Proofline GitHub App. The summary follows the repository’s visibility; the report’s access policy protects the hosted report, not the issue text. Drafts, deployment references, created issues and recovery markers are saved locally. Copy issue Markdown writes the text to your clipboard only when you choose it.
+GitHub receives the title, summary and protected page link when you choose File GitHub issue. The extension creates the issue with your configured GitHub token or the installed Proofline GitHub App. With a personal token, the issue also includes any labels and assignees you choose, and opening those pickers reads the repository’s labels, assignable users and your permission level from GitHub. The summary follows the repository’s visibility; the report’s access policy protects the hosted report, not the issue text. Drafts, deployment references, created issues and recovery markers are saved locally. Copy issue Markdown writes the text to your clipboard only when you choose it.
 
 API credentials stay in extension storage and are sent only to their configured
 service. They are not included in report bundles or deployed pages. Screenshots,
