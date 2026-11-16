@@ -24,6 +24,7 @@ import {
 import { loadTriageDefaults, rememberTriage, triageFor } from '@/lib/sharing/triage';
 import {
   errorMessage,
+  mergeStaleEdit,
   REPORT_LEVELS,
   type Publication,
   type SavedDraft,
@@ -181,17 +182,7 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       navigator.locks.request(draftKey, async () => {
         const stored = (await chrome.storage.local.get(draftKey))[draftKey] as
           SavedDraft | undefined;
-        // Another share tab may already have filed the issue while this tab was editing.
-        const saved = stored
-          ? {
-              ...edited,
-              repository: stored.attempt?.repository ?? stored.issue?.repository ?? edited.repository,
-              publication: stored.publication,
-              issue: stored.issue,
-              attempt: stored.attempt,
-            }
-          : edited;
-        await chrome.storage.local.set({ [draftKey]: saved });
+        await chrome.storage.local.set({ [draftKey]: mergeStaleEdit(edited, stored) });
       }),
     );
     writes.current = write.catch(() => {});

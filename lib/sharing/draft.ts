@@ -51,6 +51,20 @@ export interface SavedDraft {
   labels?: string[];
   assignees?: string[];
 }
+/** Another share tab may already have filed the issue while this tab was editing. */
+export function mergeStaleEdit(edited: SavedDraft, stored: SavedDraft | undefined): SavedDraft {
+  if (!stored) return edited;
+  const submitted = !!(stored.attempt || stored.issue);
+  return {
+    ...edited,
+    repository: stored.attempt?.repository ?? stored.issue?.repository ?? edited.repository,
+    publication: stored.publication,
+    issue: stored.issue,
+    attempt: stored.attempt,
+    // A submitted request's labels and assignees are what GitHub was asked for.
+    ...(submitted ? { labels: stored.labels, assignees: stored.assignees } : {}),
+  };
+}
 export const REPORT_LEVELS: { id: VerbosityLevel; label: string }[] = [
   { id: 'L0', label: 'Full' },
   { id: 'L1', label: 'Standard' },
