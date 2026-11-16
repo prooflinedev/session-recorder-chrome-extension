@@ -86,7 +86,7 @@ export class GitHubRequestError extends Error {
     super(message);
   }
 }
-function headers(token: string): HeadersInit {
+export function githubHeaders(token: string): HeadersInit {
   if (!token.trim()) throw new Error('Add a GitHub API token in Settings → GitHub.');
   return {
     Authorization: `Bearer ${token.trim()}`,
@@ -136,7 +136,7 @@ export async function verifyGitHub(
 ): Promise<void> {
   const path = repositoryPath(repository);
   const response = await fetch(`https://api.github.com/repos/${path}`, {
-    headers: headers(token),
+    headers: githubHeaders(token),
     signal,
     redirect: 'error',
   });
@@ -157,7 +157,7 @@ export interface IssueOptions {
 const NEUTRAL_LABEL_COLOR = '8b949e';
 async function getJson(path: string, token: string, signal?: AbortSignal): Promise<unknown> {
   const response = await fetch(`https://api.github.com/repos/${path}`, {
-    headers: headers(token),
+    headers: githubHeaders(token),
     signal,
     redirect: 'error',
   });
@@ -231,7 +231,7 @@ export async function findCreatedIssue(
     });
     const response = await fetch(
       `https://api.github.com/repos/${path}/issues?${query}`,
-      { headers: headers(token), signal, redirect: 'error' },
+      { headers: githubHeaders(token), signal, redirect: 'error' },
     );
     if (!response.ok)
       throw new Error(
@@ -264,7 +264,7 @@ export async function createGitHubIssue(
   const path = repositoryPath(attempt.repository);
   const response = await fetch(`https://api.github.com/repos/${path}/issues`, {
     method: 'POST',
-    headers: headers(token),
+    headers: githubHeaders(token),
     signal,
     redirect: 'error',
     body: JSON.stringify({
