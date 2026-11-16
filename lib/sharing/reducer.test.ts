@@ -161,3 +161,103 @@ describe('share workflow state', () => {
     expect([state.labels, state.assignees]).toEqual([['bug'], []]);
   });
 });
+
+describe('duplicate matches', () => {
+  const matches = {
+    exact: [
+      { number: 118, title: 'Checkout 500 on Pay', url: 'https://github.com/owner/repo/issues/118', state: 'open' as const },
+    ],
+    related: [
+      { number: 97, title: 'TypeError on cart totals', url: 'https://github.com/owner/repo/issues/97', state: 'closed' as const },
+    ],
+  };
+  const loaded = (saved?: SavedDraft) =>
+    shareReducer(initialShareState('L1'), {
+      type: 'loaded',
+      session: session(),
+      settings: settingsFor('owner/repo'),
+      saved,
+    });
+  it('moves from idle to loading to ready or error for the current repository', () => {
+    let state = loaded();
+    expect(state.duplicates.status).toBe('idle');
+    state = shareReducer(state, {
+      type: 'fingerprint',
+      fingerprint: { id: 'sr-7c41e9a2b3d0', message: 'TypeError: boom' },
+    });
+    expect(state.fingerprint?.id).toBe('sr-7c41e9a2b3d0');
+    state = shareReducer(state, { type: 'duplicates-loading', repository: 'owner/repo' });
+    expect(state.duplicates).toMatchObject({ status: 'loading', repository: 'owner/repo' });
+    const ready = shareReducer(state, { type: 'duplicates-ready', repository: 'owner/repo', matches });
+    expect(ready.duplicates).toMatchObject({ status: 'ready', ...matches, error: '' });
+    const failed = shareReducer(state, {
+      type: 'duplicates-failed',
+      repository: 'owner/repo',
+      message: "Couldn't check for duplicates (403).",
+    });
+    expect(failed.duplicates).toMatchObject({
+      status: 'error',
+      error: "Couldn't check for duplicates (403).",
+      exact: [],
+      related: [],
+    });
+    // Retry starts loading again and clears the error.
+    expect(
+      shareReducer(failed, { type: 'duplicates-loading', repository: 'owner/repo' }).duplicates,
+    ).toMatchObject({ status: 'loading', error: '' });
+  });
+  it('drops results for another repository and resets when the repository changes', () => {
+    let state = shareReducer(loaded(), { type: 'duplicates-loading', repository: 'owner/repo' });
+    state = shareReducer(state, { type: 'repository', repository: 'team/web' });
+    expect(state.duplicates.status).toBe('idle');
+    state = shareReducer(state, { type: 'duplicates-ready', repository: 'owner/repo', matches });
+    expect(state.duplicates.status).toBe('idle');
+    state = shareReducer(state, { type: 'duplicates-loading', repository: 'team/web' });
+    state = shareReducer(state, { type: 'duplicates-failed', repository: 'owner/repo', message: 'x' });
+    expect(state.duplicates.status).toBe('loading');
+  });
+});
+
+describe('adding to an existing issue', () => {
+  const loaded = (saved?: SavedDraft) =>
+    shareReducer(initialShareState('L1'), {
+      type: 'loaded',
+      session: session(),
+      settings: settingsFor('owner/repo'),
+      saved,
+    });
+  const draft = { title: 'Edited', body: 'My summary' };
+  const choose: ShareAction = { type: 'add-to', issueNumber: 118 };
+  it('chooses the target only while idle and unfiled', () => {
+    expect(shareReducer(loaded(), choose).addTo).toBe(118);
+    expect(shareReducer(shareReducer(loaded(), choose), { type: 'add-to' }).addTo).toBeUndefined();
+    const busy = shareReducer(shareReducer(loaded(), { type: 'start', operation: 'github' }), choose);
+    expect(busy.addTo).toBeUndefined();
+    const attempting = shareReducer(
+      loaded({
+        draft,
+        repository: 'owner/repo',
+        attempt: { id: 'a', repository: 'owner/repo', startedAt: '2026-11-17T00:00:00Z' },
+      }),
+      choose,
+    );
+    expect(attempting.addTo).toBeUndefined();
+    const filed = shareReducer(
+      loaded({
+        draft,
+        repository: 'owner/repo',
+        issue: { number: 1, url: 'https://github.com/owner/repo/issues/1', repository: 'owner/repo' },
+      }),
+      choose,
+    );
+    expect(filed.addTo).toBeUndefined();
+  });
+  it('restores the target saved with the draft', () => {
+    expect(loaded({ draft, repository: 'owner/repo', addTo: 118 }).addTo).toBe(118);
+    const saved = shareReducer(loaded(), {
+      type: 'saved',
+      saved: { draft, repository: 'owner/repo', addTo: 97 },
+    });
+    expect(saved.addTo).toBe(97);
+  });
+});

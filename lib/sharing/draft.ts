@@ -64,7 +64,9 @@ export function mergeStaleEdit(edited: SavedDraft, stored: SavedDraft | undefine
     issue: stored.issue,
     attempt: stored.attempt,
     // A submitted request's labels and assignees are what GitHub was asked for.
-    ...(submitted ? { labels: stored.labels, assignees: stored.assignees } : {}),
+    ...(submitted
+      ? { labels: stored.labels, assignees: stored.assignees, addTo: stored.addTo }
+      : {}),
   };
 }
 export const REPORT_LEVELS: { id: VerbosityLevel; label: string }[] = [

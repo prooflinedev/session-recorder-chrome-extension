@@ -5,6 +5,22 @@ import { defaultSharingSettings, preferredRepository, type SharingSettings } fro
 import { initialDraft, type Publication, type SavedDraft } from '@/lib/sharing/draft';
 import type { IssueDraft } from '@/lib/sharing/summary';
 import { triageFor, withTriage, type TriageDefaults } from '@/lib/sharing/triage';
+import type { ErrorFingerprint } from '@/lib/sharing/fingerprint';
+import type { DuplicateMatches } from '@/lib/sharing/duplicates';
+
+export interface DuplicateState extends DuplicateMatches {
+  status: 'idle' | 'loading' | 'ready' | 'error';
+  /** The repository searched; results for another repository are dropped. */
+  repository: string;
+  error: string;
+}
+const noDuplicates: DuplicateState = {
+  status: 'idle',
+  repository: '',
+  exact: [],
+  related: [],
+  error: '',
+};
 
 export interface ShareState {
   summaryRequestId?: string;
@@ -30,6 +46,10 @@ export interface ShareState {
   labels: string[];
   assignees: string[];
   triageDefaults: TriageDefaults;
+  fingerprint?: ErrorFingerprint;
+  duplicates: DuplicateState;
+  /** The existing issue chosen with "Add to #N". */
+  addTo?: number;
 }
 export type ShareAction =
   | {
@@ -46,6 +66,11 @@ export type ShareAction =
   | { type: 'saved'; saved: SavedDraft }
   | { type: 'repository'; repository: string }
   | { type: 'triage'; labels: string[]; assignees: string[] }
+  | { type: 'fingerprint'; fingerprint?: ErrorFingerprint }
+  | { type: 'duplicates-loading'; repository: string }
+  | { type: 'duplicates-ready'; repository: string; matches: DuplicateMatches }
+  | { type: 'duplicates-failed'; repository: string; message: string }
+  | { type: 'add-to'; issueNumber?: number }
   | { type: 'confirm-delete'; confirming: boolean }
   | { type: 'start'; operation: ShareState['operation'] }
   | { type: 'progress'; message: string }
@@ -75,6 +100,7 @@ export function initialShareState(level: VerbosityLevel): ShareState {
     labels: [],
     assignees: [],
     triageDefaults: {},
+    duplicates: noDuplicates,
   };
 }
 
@@ -121,6 +147,7 @@ export function shareReducer(state: ShareState, action: ShareAction): ShareState
         summaryRequestId: action.saved?.summaryRequestId,
         issue: action.saved?.issue,
         attempt: action.saved?.attempt,
+        addTo: action.saved?.addTo,
         draftSource: action.saved?.draftSource ?? (action.saved ? 'edited' : 'initial'),
         level: action.saved?.publication?.level ?? state.level,
       };
@@ -156,6 +183,7 @@ export function shareReducer(state: ShareState, action: ShareAction): ShareState
         ...state,
         repository: action.repository,
         ...triageFor(state.triageDefaults, action.repository),
+        duplicates: noDuplicates,
       };
     case 'triage': {
       if (locked(state)) return state;
@@ -166,6 +194,25 @@ export function shareReducer(state: ShareState, action: ShareAction): ShareState
         triageDefaults: rememberChoice(state.triageDefaults, state.repository, choice),
       };
     }
+    case 'fingerprint':
+      return { ...state, fingerprint: action.fingerprint };
+    case 'duplicates-loading':
+      return { ...state, duplicates: { ...noDuplicates, status: 'loading', repository: action.repository } };
+    case 'duplicates-ready':
+    case 'duplicates-failed':
+      // A search for a previously selected repository no longer applies.
+      if (state.duplicates.status !== 'loading' || state.duplicates.repository !== action.repository)
+        return state;
+      return {
+        ...state,
+        duplicates:
+          action.type === 'duplicates-ready'
+            ? { ...state.duplicates, ...action.matches, status: 'ready' }
+            : { ...state.duplicates, status: 'error', error: action.message },
+      };
+    case 'add-to':
+      if (locked(state)) return state;
+      return { ...state, addTo: action.issueNumber };
     case 'confirm-delete':
       return { ...state, confirmingDelete: action.confirming };
     case 'start':

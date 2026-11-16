@@ -72,4 +72,16 @@ describe('saving an edit over another tab’s draft', () => {
     expect(saved.labels).toEqual(['bug']);
     expect(saved.assignees).toEqual(['octocat']);
   });
+  it('keeps the issue another tab submitted a comment to', () => {
+    const saved = mergeStaleEdit(
+      { ...edited, addTo: 97 },
+      {
+        draft: { title: 'Older', body: 'Older summary' },
+        repository: 'owner/repo',
+        addTo: 118,
+        attempt: { id: 'a', repository: 'owner/repo', startedAt: '2026-11-17T00:00:00Z', issueNumber: 118 },
+      },
+    );
+    expect(saved.addTo).toBe(118);
+  });
 });
