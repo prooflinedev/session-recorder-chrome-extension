@@ -141,7 +141,13 @@ test('older connected profiles use Proofline without manual setup or service ove
   ]) {
     await page.getByRole('link', { name: section.link, exact: true }).click();
     await expect(page.getByText(section.message, { exact: true })).toBeVisible();
-    await expect(page.locator('#settings-page input,#settings-page select,#settings-page textarea')).toHaveCount(0);
+    // Vocabulary is content for Proofline transcription, not a provider override.
+    const fields = page.locator('#settings-page input,#settings-page select,#settings-page textarea');
+    if (section.link !== 'Transcription') await expect(fields).toHaveCount(0);
+    else {
+      await expect(fields).toHaveCount(1);
+      await expect(page.getByRole('region', { name: 'Vocabulary' }).getByRole('textbox')).toHaveValue('alice\nproduct');
+    }
   }
   await page.setViewportSize({ width: 1100, height: 800 });
   await page.screenshot({ path: 'test-results/proofline-connected-settings-light.png', fullPage: true });

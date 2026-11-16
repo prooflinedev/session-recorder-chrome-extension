@@ -18,6 +18,7 @@ import { verifyCloudflare } from '@/lib/sharing/cloudflare';
 import { validateModelConfig } from '@/lib/sharing/summary';
 import { repositoryPath, verifyGitHub } from '@/lib/sharing/github';
 import { errorMessage } from '@/lib/sharing/draft';
+import { moveRenamedVocabulary } from '@/lib/transcription/custom-vocabulary';
 
 interface State {
   settings: SharingSettings;
@@ -185,7 +186,10 @@ export function useSharingSettings() {
         )
           validateModelConfig(state.settings.provider, model);
       }
+      const previous =
+        section === 'github' ? (await loadSharingSettings()).repositories : [];
       await saveSharingSettings({ ...state.settings, repositories });
+      if (section === 'github') await moveRenamedVocabulary(previous, repositories);
       dispatch({
         type: 'saved',
         message:

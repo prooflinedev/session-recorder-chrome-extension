@@ -16,7 +16,9 @@ import { DEFAULT_HEADER_BLOCKLIST, DEFAULT_KEY_PATTERN } from '@/lib/capture/red
 import { ProoflineSettings } from './ProoflineSettings';
 import { ServicesSettings } from './ServicesSettings';
 import { SharingSettings } from './SharingSettings';
+import { VocabularySettings } from './VocabularySettings';
 import { useSharingSettings } from './useSharingSettings';
+import { useTranscriptionVocabulary } from './useTranscriptionVocabulary';
 import { useCaptureSettings } from './useCaptureSettings';
 import { useSettingsNavigation } from './useSettingsNavigation';
 import { formatBytes, totalEvents, clampInt } from './settings-utils';
@@ -43,6 +45,8 @@ function SavedBadge({ show }: { show: boolean }) {
 export function SettingsForm(): React.JSX.Element {
   const { page, navigate } = useSettingsNavigation(SETTINGS_PAGES.map((p) => p.id));
   const sharing = useSharingSettings();
+  // Owned here so unsaved terms survive switching settings pages.
+  const vocabulary = useTranscriptionVocabulary(sharing.settings);
   const { state, providerMeta, usagePct, actions } = useCaptureSettings();
   const {
     tx,
@@ -204,6 +208,10 @@ export function SettingsForm(): React.JSX.Element {
                 </p>
               )}
             </section>
+          )}
+          {/* Vocabulary applies to personal and Proofline transcription alike. */}
+          {page === 'transcription' && sharing.loaded && (
+            <VocabularySettings settings={sharing.settings} controller={vocabulary} />
           )}
 
           {/* ---------------------------------------------------------------- */}
