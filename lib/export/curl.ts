@@ -7,6 +7,8 @@ const SKIPPED_HEADERS = new Set([
   'accept-encoding',
 ]);
 
+const SHAPE_SUMMARY_PLACEHOLDER = '«body reduced to shape summary»';
+
 /**
  * Safely quotes a string for POSIX-compliant shells (sh, bash, zsh).
  * Strips NUL bytes so strings cannot be truncated by C-based shell parsers.
@@ -24,17 +26,19 @@ export function buildCurlCommand(req: NetRequestPayload): string | null {
   if (req.websocket) return null;
 
   const method = (req.method || 'GET').toUpperCase();
+  const bodyText = req.requestBody?.text;
   const hasRawBody =
     Boolean(req.requestBody?.present) &&
-    typeof req.requestBody?.text === 'string' &&
-    req.requestBody.text.length > 0;
+    typeof bodyText === 'string' &&
+    bodyText.length > 0 &&
+    bodyText !== SHAPE_SUMMARY_PLACEHOLDER;
 
   const lines: string[] = [];
 
   if (method === 'GET' && !hasRawBody) {
-    lines.push(`curl ${shellQuote(req.url)}`);
+    lines.push(`curl --globoff ${shellQuote(req.url)}`);
   } else {
-    lines.push(`curl -X ${shellQuote(method)} ${shellQuote(req.url)}`);
+    lines.push(`curl --globoff -X ${shellQuote(method)} ${shellQuote(req.url)}`);
   }
 
   for (const header of req.requestHeaders ?? []) {
@@ -44,8 +48,8 @@ export function buildCurlCommand(req: NetRequestPayload): string | null {
     lines.push(`-H ${shellQuote(`${name}: ${header.value}`)}`);
   }
 
-  if (hasRawBody && req.requestBody?.text) {
-    lines.push(`--data-raw ${shellQuote(req.requestBody.text)}`);
+  if (hasRawBody && bodyText) {
+    lines.push(`--data-raw ${shellQuote(bodyText)}`);
   }
 
   return lines.join(' \\\n  ');

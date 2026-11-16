@@ -1,6 +1,6 @@
 import { test, expect, extUrl } from './support';
 
-test('copies a shell-escaped cURL command for HTTP requests and omits WebSockets', async ({
+test('copies full shell-escaped cURL command even in Compact mode and omits WebSockets', async ({
   context,
   extensionId,
 }) => {
@@ -71,7 +71,7 @@ test('copies a shell-escaped cURL command for HTTP requests and omits WebSockets
         payload: {
           requestId: 'req-http-1',
           method: 'POST',
-          url: 'https://api.example.com/v1/checkout',
+          url: 'https://api.example.com/v1/checkout?filter[status]=pending',
           status: 500,
           timing: { startedAt: ts + 500, durationMs: 142 },
           requestHeaders: [
@@ -116,7 +116,10 @@ test('copies a shell-escaped cURL command for HTTP requests and omits WebSockets
 
   await page.goto(extUrl(extensionId, `report.html?session=${sessionId}`));
 
-  // Capture clipboard writes deterministically across headless and headed Chromium.
+  // Switch to Compact (L2) where displayed JSON bodies are reduced to shape summaries.
+  await page.getByRole('button', { name: 'Compact', exact: true }).click();
+  await expect(page.getByText('request shape')).toBeVisible();
+
   await page.evaluate(() => {
     (window as unknown as { __copiedCurl: string | null }).__copiedCurl = null;
     Object.defineProperty(navigator, 'clipboard', {
@@ -130,7 +133,7 @@ test('copies a shell-escaped cURL command for HTTP requests and omits WebSockets
   });
 
   const copyBtn = page.getByRole('button', {
-    name: 'Copy cURL for POST /v1/checkout',
+    name: /Copy cURL for POST \/v1\/checkout/,
   });
   await expect(copyBtn).toBeVisible();
   await expect(
@@ -145,7 +148,7 @@ test('copies a shell-escaped cURL command for HTTP requests and omits WebSockets
   );
   expect(copied).toBe(
     [
-      `curl -X 'POST' 'https://api.example.com/v1/checkout'`,
+      `curl --globoff -X 'POST' 'https://api.example.com/v1/checkout?filter[status]=pending'`,
       `-H 'Content-Type: application/json'`,
       `-H 'Authorization: «redacted»'`,
       `--data-raw '{"plan":"pro","note":"O'\\''Connor"}'`,
