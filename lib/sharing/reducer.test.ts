@@ -143,4 +143,21 @@ describe('share workflow state', () => {
     state = shareReducer(state, { type: 'repository', repository: 'Owner/Repo' });
     expect([state.labels, state.assignees]).toEqual([['regression'], []]);
   });
+  it('keeps a reopened draft’s choice after switching repositories away and back', () => {
+    let state = shareReducer(initialShareState('L1'), {
+      type: 'loaded',
+      session: session(),
+      settings: settingsFor('owner/repo'),
+      triageDefaults: { ...triageDefaults, 'owner/repo': { labels: ['checkout'], assignees: [] } },
+      saved: {
+        draft: { title: 'Edited', body: 'My summary' },
+        repository: 'owner/repo',
+        labels: ['bug'],
+        assignees: [],
+      },
+    });
+    state = shareReducer(state, { type: 'repository', repository: 'team/web' });
+    state = shareReducer(state, { type: 'repository', repository: 'owner/repo' });
+    expect([state.labels, state.assignees]).toEqual([['bug'], []]);
+  });
 });

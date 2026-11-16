@@ -83,13 +83,30 @@ function locked(state: ShareState): boolean {
   return state.operation !== 'idle' || !!state.attempt || !!state.issue;
 }
 
+/** The in-memory defaults with this repository's choice; incomplete repositories keep them as is. */
+function rememberChoice(
+  defaults: TriageDefaults,
+  repository: string,
+  choice: { labels: string[]; assignees: string[] },
+): TriageDefaults {
+  try {
+    return withTriage(defaults, repository, choice);
+  } catch {
+    return defaults;
+  }
+}
+
 export function shareReducer(state: ShareState, action: ShareAction): ShareState {
   switch (action.type) {
     case 'loaded': {
       const repository = action.saved?.issue?.repository ?? action.saved?.attempt?.repository ?? (action.saved?.repository || preferredRepository(action.settings));
-      const triageDefaults = action.triageDefaults ?? {};
-      const remembered = triageFor(triageDefaults, repository);
+      const stored = action.triageDefaults ?? {};
       const chosen = action.saved?.labels || action.saved?.assignees ? action.saved : undefined;
+      const choice = chosen
+        ? { labels: chosen.labels ?? [], assignees: chosen.assignees ?? [] }
+        : triageFor(stored, repository);
+      // A draft's own choice wins over a newer default when switching repositories and back.
+      const triageDefaults = chosen ? rememberChoice(stored, repository, choice) : stored;
       return {
         ...state,
         session: action.session,
@@ -99,8 +116,7 @@ export function shareReducer(state: ShareState, action: ShareAction): ShareState
         draft: action.saved?.draft ?? initialDraft(action.session.name),
         repository,
         triageDefaults,
-        labels: chosen ? (chosen.labels ?? []) : remembered.labels,
-        assignees: chosen ? (chosen.assignees ?? []) : remembered.assignees,
+        ...choice,
         publication: action.saved?.publication,
         summaryRequestId: action.saved?.summaryRequestId,
         issue: action.saved?.issue,
@@ -144,13 +160,11 @@ export function shareReducer(state: ShareState, action: ShareAction): ShareState
     case 'triage': {
       if (locked(state)) return state;
       const choice = { labels: action.labels, assignees: action.assignees };
-      let triageDefaults = state.triageDefaults;
-      try {
-        triageDefaults = withTriage(triageDefaults, state.repository, choice);
-      } catch {
-        /* An incomplete repository keeps the choice only with this draft. */
-      }
-      return { ...state, ...choice, triageDefaults };
+      return {
+        ...state,
+        ...choice,
+        triageDefaults: rememberChoice(state.triageDefaults, state.repository, choice),
+      };
     }
     case 'confirm-delete':
       return { ...state, confirmingDelete: action.confirming };
