@@ -3,13 +3,13 @@
  *
  * Strips sensitive request/response headers, recursively scrubs values under
  * secret-looking keys in JSON and form-urlencoded bodies, and masks matching
- * URL query-param values. Defaults ALWAYS apply; the per-session master switch
+ * URL query-param and fragment-param values. Defaults ALWAYS apply; the per-session master switch
  * (`settings.redactionEnabled`) is handled by the caller — this module is a
  * side-effect-free transform that never touches chrome/DOM/network and never
  * mutates its inputs.
  */
 
-import type { NetHeader, RedactionRules } from '@/lib/session/types';
+import type { CaptureSettings, NetHeader, RedactionRules } from '@/lib/session/types';
 
 /** Marker substituted for any redacted value. */
 export const REDACTED = '«redacted»';
@@ -196,25 +196,11 @@ export function redactBody(
   return { text, redacted: false };
 }
 
-/**
- * Redact matching query-param VALUES in a URL while preserving the rest of its
- * structure (scheme/host/path/hash/param order/encoding). Works on absolute and
- * relative URLs; a URL without a query string is returned unchanged.
- */
-export function redactUrl(url: string, rules: RedactionRules): string {
-  const matcher = buildUrlMatcher(rules);
-
-  const hashIdx = url.indexOf('#');
-  const hash = hashIdx === -1 ? '' : url.slice(hashIdx);
-  const base = hashIdx === -1 ? url : url.slice(0, hashIdx);
-
-  const qIdx = base.indexOf('?');
-  if (qIdx === -1) return url;
-
-  const head = base.slice(0, qIdx);
-  const query = base.slice(qIdx + 1);
-  if (query.length === 0) return url;
-
+/** Mask matching values in a `k=v&k=v` string; `null` when nothing matched. */
+function redactParams(
+  query: string,
+  matcher: (name: string) => boolean,
+): string | null {
   let changed = false;
   const parts = query.split('&').map((part) => {
     const eq = part.indexOf('=');
@@ -226,6 +212,65 @@ export function redactUrl(url: string, rules: RedactionRules): string {
     }
     return part;
   });
+  return changed ? parts.join('&') : null;
+}
 
-  return changed ? `${head}?${parts.join('&')}${hash}` : url;
+/**
+ * Redact parameters carried in a URL fragment (without its `#`). Two shapes
+ * hold credentials in practice:
+ * - OAuth implicit / magic-link redirects put params directly in the fragment
+ *   (`#access_token=…&expires_in=…`).
+ * - Hash routers put a query after the route (`#/reset?token=…`).
+ * Plain anchors (`#section`) and routes without a query are left alone.
+ */
+function redactFragment(
+  fragment: string,
+  matcher: (name: string) => boolean,
+): string | null {
+  const qIdx = fragment.indexOf('?');
+  if (qIdx !== -1) {
+    const params = redactParams(fragment.slice(qIdx + 1), matcher);
+    return params === null ? null : `${fragment.slice(0, qIdx + 1)}${params}`;
+  }
+  if (!/^[^/=&]+=/.test(fragment)) return null;
+  return redactParams(fragment, matcher);
+}
+
+/**
+ * Redact matching parameter VALUES in a URL's query string and fragment while
+ * preserving the rest of its structure (scheme/host/path/param order/encoding).
+ * Works on absolute and relative URLs; a URL with nothing to redact is returned
+ * unchanged.
+ */
+export function redactUrl(url: string, rules: RedactionRules): string {
+  const matcher = buildUrlMatcher(rules);
+
+  const hashIdx = url.indexOf('#');
+  const base = hashIdx === -1 ? url : url.slice(0, hashIdx);
+  const fragment = hashIdx === -1 ? null : url.slice(hashIdx + 1);
+
+  const qIdx = base.indexOf('?');
+  const head = qIdx === -1 ? base : base.slice(0, qIdx);
+  const query = qIdx === -1 ? '' : base.slice(qIdx + 1);
+
+  const redactedQuery = query.length > 0 ? redactParams(query, matcher) : null;
+  const redactedFragment =
+    fragment !== null && fragment.length > 0 ? redactFragment(fragment, matcher) : null;
+  if (redactedQuery === null && redactedFragment === null) return url;
+
+  const search = qIdx === -1 ? '' : `?${redactedQuery ?? query}`;
+  const hash = fragment === null ? '' : `#${redactedFragment ?? fragment}`;
+  return `${head}${search}${hash}`;
+}
+
+/**
+ * Apply a session's URL rules to a page URL (navigation, SPA route, tab) before
+ * it is stored. Honors the per-session master switch, like network capture.
+ */
+export function redactPageUrl(
+  url: string,
+  settings: Pick<CaptureSettings, 'redactionEnabled' | 'customRedaction'>,
+): string {
+  if (!settings.redactionEnabled || !url) return url;
+  return redactUrl(url, settings.customRedaction);
 }

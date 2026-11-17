@@ -11,6 +11,7 @@ import {
   buildKeyMatcher,
   redactBody,
   redactHeaders,
+  redactPageUrl,
   redactUrl,
 } from './redaction';
 
@@ -297,5 +298,72 @@ describe('redactUrl', () => {
   it('matches param names after url-decoding', () => {
     const out = redactUrl('https://x.com/p?api%5Fkey=v&z=1', EMPTY_RULES);
     expect(out).toBe(`https://x.com/p?api%5Fkey=${REDACTED}&z=1`);
+  });
+
+  it('redacts OAuth implicit-flow params in the fragment', () => {
+    const out = redactUrl(
+      'https://app.example.com/callback#access_token=eyJhbGci&token_type=bearer&expires_in=3600',
+      EMPTY_RULES,
+    );
+    expect(out).toBe(
+      `https://app.example.com/callback#access_token=${REDACTED}&token_type=${REDACTED}&expires_in=3600`,
+    );
+  });
+
+  it('redacts a hash-router query and keeps its route', () => {
+    const out = redactUrl('https://x.com/#/reset?reset_token=abc&lang=en', EMPTY_RULES);
+    expect(out).toBe(`https://x.com/#/reset?reset_token=${REDACTED}&lang=en`);
+  });
+
+  it('redacts the query and the fragment together', () => {
+    const out = redactUrl('/p?token=a&q=1#refresh_token=b', EMPTY_RULES);
+    expect(out).toBe(`/p?token=${REDACTED}&q=1#refresh_token=${REDACTED}`);
+  });
+
+  it('applies custom URL patterns to fragment params', () => {
+    const out = redactUrl(
+      'https://x.com/#invite=xyz&ref=home',
+      rules({ urlParamPatterns: ['^invite$'] }),
+    );
+    expect(out).toBe(`https://x.com/#invite=${REDACTED}&ref=home`);
+  });
+
+  it('leaves anchors, plain routes and harmless fragments unchanged', () => {
+    for (const url of [
+      'https://x.com/p#section-2',
+      'https://x.com/#/settings/profile',
+      'https://x.com/#/search?q=hi',
+      'https://x.com/p#:~:text=token',
+      'https://x.com/p?q=1#',
+      'https://x.com/p#',
+    ]) {
+      expect(redactUrl(url, EMPTY_RULES)).toBe(url);
+    }
+  });
+});
+
+describe('redactPageUrl', () => {
+  const on = { redactionEnabled: true, customRedaction: EMPTY_RULES };
+
+  it('redacts page URLs with the session rules', () => {
+    expect(redactPageUrl('https://x.com/verify?token=t#access_token=a', on)).toBe(
+      `https://x.com/verify?token=${REDACTED}#access_token=${REDACTED}`,
+    );
+    expect(
+      redactPageUrl('https://x.com/?coupon=FREE', {
+        ...on,
+        customRedaction: rules({ urlParamPatterns: ['coupon'] }),
+      }),
+    ).toBe(`https://x.com/?coupon=${REDACTED}`);
+  });
+
+  it('keeps the URL when redaction is off for the session', () => {
+    const url = 'https://x.com/verify?token=t';
+    expect(redactPageUrl(url, { ...on, redactionEnabled: false })).toBe(url);
+  });
+
+  it('passes empty and non-web URLs through', () => {
+    expect(redactPageUrl('', on)).toBe('');
+    expect(redactPageUrl('about:blank', on)).toBe('about:blank');
   });
 });
