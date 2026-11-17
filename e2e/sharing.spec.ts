@@ -1,4 +1,12 @@
-import { test, expect, extUrl, dispatch, tabIdForUrl } from './support';
+import {
+  test,
+  expect,
+  extUrl,
+  dispatch,
+  tabIdForUrl,
+  fromExtension,
+  fulfillWebsiteRequest,
+} from './support';
 
 test('keeps provider credentials separate and restores each provider configuration', async ({
   context,
@@ -184,7 +192,8 @@ test('files an issue in one click with an automatic summary and protected report
   await context.route('https://github.com/**', (route) =>
     route.fulfill({
       contentType: 'text/html',
-      body: '<h1>GitHub issue composer test</h1>',
+      // Like GitHub's own page, the issue fixture calls the GitHub API without the token.
+      body: '<h1>GitHub issue composer test</h1><script>fetch("https://api.github.com/user")</script>',
     }),
   );
   let releaseVerification!: () => void;
@@ -198,6 +207,11 @@ test('files an issue in one click with an automatic summary and protected report
     if (request.url().includes('/chat/completions')) summaries++;
   });
   await context.route('https://api.github.com/**', async (route) => {
+    if (!fromExtension(route.request())) {
+      // The opened issue page is GitHub's own; it must never see the stored token.
+      await fulfillWebsiteRequest(route, ['github-private-key']);
+      return;
+    }
     expect(route.request().headers().authorization).toBe('Bearer github-private-key');
     if (route.request().method() === 'POST') {
       issues++;

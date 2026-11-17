@@ -12,13 +12,14 @@
     "zip": "wxt zip",
     "compile": "tsc --noEmit",
     "compile:e2e": "tsc -p e2e/tsconfig.json",
-    "test": "vitest run",
+    "test": "pnpm test:unit && bash scripts/check-browser-ci.sh",
     "test:watch": "vitest",
     "test:e2e": "wxt build && playwright test",
     "test:e2e:headed": "wxt build && HEADED=1 playwright test",
     "og": "node design/generate-og.mjs",
     "store": "node design/generate-store.mjs",
-    "postinstall": "wxt prepare"
+    "postinstall": "wxt prepare",
+    "test:unit": "vitest run"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",
