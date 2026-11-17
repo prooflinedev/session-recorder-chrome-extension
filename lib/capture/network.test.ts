@@ -362,6 +362,111 @@ describe('NetworkCapturer redirects', () => {
     return headers.find((h) => h.name.toLowerCase() === name)?.value;
   }
 
+  it.each(['before', 'after', 'split'])(
+    'pairs ExtraInfo with its redirect hop when delivered %s the base events',
+    async (order) => {
+      const send = vi.fn(async () => ({ body: 'final response', base64Encoded: false }));
+      const { cap, emitted } = makeCapturer({ send });
+      const info = (kind: 'request' | 'response', hop: string) =>
+        cap.handle(1, kind === 'request'
+          ? 'Network.requestWillBeSentExtraInfo'
+          : 'Network.responseReceivedExtraInfo', {
+          requestId: 'ordered',
+          headers: { [`X-${kind}-Hop`]: hop },
+          ...(kind === 'response' ? { statusCode: hop === 'first' ? 302 : 200 } : {}),
+        });
+      if (order !== 'after') {
+        info('request', 'first');
+        info('request', 'final');
+      }
+      if (order === 'before') {
+        info('response', 'first');
+        info('response', 'final');
+      }
+      cap.handle(1, 'Network.requestWillBeSent', {
+        requestId: 'ordered',
+        request: { method: 'POST', url: 'https://app.example/login', headers: {}, postData: 'name=alice' },
+      });
+      cap.handle(1, 'Network.requestWillBeSent', {
+        requestId: 'ordered',
+        request: { method: 'GET', url: 'https://app.example/cached', headers: {} },
+        redirectHasExtraInfo: true,
+        redirectResponse: { status: 302, headers: { Location: '/cached' } },
+      });
+      cap.handle(1, 'Network.requestWillBeSent', {
+        requestId: 'ordered',
+        request: { method: 'GET', url: 'https://app.example/final', headers: {} },
+        redirectHasExtraInfo: false,
+        redirectResponse: { status: 307, headers: { Location: '/final' } },
+      });
+      cap.handle(1, 'Network.responseReceived', {
+        requestId: 'ordered',
+        hasExtraInfo: true,
+        response: { status: 200, headers: {}, mimeType: 'text/plain' },
+      });
+      cap.handle(1, 'Network.loadingFinished', { requestId: 'ordered' });
+      // Headers must not delay fetching the body, which CDP can evict.
+      expect(send).toHaveBeenCalledWith(1, 'Network.getResponseBody', { requestId: 'ordered' });
+      await Promise.resolve();
+      await Promise.resolve();
+      if (order !== 'before') expect(emitted).toHaveLength(0);
+      if (order === 'after') {
+        info('request', 'first');
+        info('request', 'final');
+      }
+      if (order !== 'before') {
+        info('response', 'first');
+        info('response', 'final');
+      }
+      await vi.waitFor(() => expect(emitted).toHaveLength(3));
+      const hops = emitted.map(payloadOf);
+      expect(hops.map((p) => [
+        p.url, p.status,
+        header(p.requestHeaders, 'x-request-hop'),
+        header(p.responseHeaders, 'x-response-hop'),
+      ])).toEqual([
+        ['https://app.example/login', 302, 'first', 'first'],
+        ['https://app.example/cached', 307, undefined, undefined],
+        ['https://app.example/final', 200, 'final', 'final'],
+      ]);
+      expect(hops[0]!.requestBody?.text).toBe('name=alice');
+      expect(hops[1]!.requestBody).toBeUndefined();
+      expect(hops[2]!.requestBody).toBeUndefined();
+      expect(hops[2]!.responseBody?.text).toBe('final response');
+      expect(header(hops[2]!.responseHeaders, 'location')).toBeUndefined();
+    },
+  );
+
+  it('keeps available extra headers when a request fails without responseReceived', () => {
+    const { cap, emitted } = makeCapturer();
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'cors',
+      request: { method: 'GET', url: 'https://app.example/blocked', headers: {} },
+    });
+    cap.handle(1, 'Network.responseReceivedExtraInfo', {
+      requestId: 'cors', statusCode: 403, headers: { 'X-Blocked': 'cors' },
+    });
+    cap.handle(1, 'Network.loadingFailed', { requestId: 'cors', errorText: 'net::ERR_FAILED' });
+    expect(emitted).toHaveLength(1);
+    expect(payloadOf(emitted[0]!)).toMatchObject({ status: 403, failed: true });
+    expect(header(payloadOf(emitted[0]!).responseHeaders, 'x-blocked')).toBe('cors');
+  });
+
+  it('drops unpaired extra headers on reset', () => {
+    const { cap, emitted } = makeCapturer();
+    cap.handle(1, 'Network.requestWillBeSentExtraInfo', {
+      requestId: 'reused', headers: { 'X-Old-Session': 'old' },
+    });
+    cap.reset();
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'reused',
+      request: { method: 'GET', url: 'https://app.example/new', headers: {} },
+    });
+    cap.handle(1, 'Network.loadingFailed', { requestId: 'reused', errorText: 'net::ERR_ABORTED' });
+    expect(emitted).toHaveLength(1);
+    expect(header(payloadOf(emitted[0]!).requestHeaders, 'x-old-session')).toBeUndefined();
+  });
+
   it('emits the 302 hop and the follow-up GET as separate requests', async () => {
     const { cap, emitted } = makeCapturer({
       send: vi.fn(async () => ({ body: '<h1>Dashboard</h1>', base64Encoded: false })),

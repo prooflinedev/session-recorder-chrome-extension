@@ -64,6 +64,22 @@ interface PartialRequest {
   startMonotonic?: number;
   websocket?: boolean;
   wsFrames?: WsFrame[];
+  hasExtraInfo?: boolean;
+  requestExtraReceived?: boolean;
+  responseExtraReceived?: boolean;
+  completed?: { tabId: number; extra: RequestCompletion };
+}
+
+interface RequestCompletion {
+  responseBody?: NetBody;
+  failed?: boolean;
+  failureReason?: string;
+}
+
+interface HttpChain {
+  hops: PartialRequest[];
+  requests: Record<string, unknown>[];
+  responses: Record<string, unknown>[];
 }
 
 /** WebSocket frame text cap (bytes ~ chars). */
@@ -73,6 +89,7 @@ const WS_FRAME_CAP = 100;
 
 export class NetworkCapturer {
   private readonly pending = new Map<string, PartialRequest>();
+  private readonly httpChains = new Map<string, HttpChain>();
   /** Last in-flight emit per requestId, so redirect hops sharing one id emit in order. */
   private readonly emitQueue = new Map<string, Promise<void>>();
   /** Bumped on reset so deferred emits from a previous recording are dropped. */
@@ -126,6 +143,7 @@ export class NetworkCapturer {
   /** Drop all in-flight state (e.g. between sessions). */
   reset(): void {
     this.pending.clear();
+    this.httpChains.clear();
     this.emitQueue.clear();
     this.generation++;
   }
@@ -156,7 +174,6 @@ export class NetworkCapturer {
 
     // Chrome reuses the requestId for each hop of a redirect and reports the previous
     // hop's response here, so close that hop out before recording the next one.
-    // shortcut: out-of-order *ExtraInfo events can attach raw headers to the adjacent hop, pair them via a queue if that shows up in reports.
     const redirect = asRecord(params.redirectResponse);
     const prev = this.pending.get(requestId);
     if (redirect && prev) {
@@ -168,10 +185,11 @@ export class NetworkCapturer {
         prev.timing.durationMs = Math.max(0, Math.round((params.timestamp - prev.startMonotonic) * 1000));
       }
       this.pending.delete(requestId);
-      this.emitRequest(tabId, prev, {});
+      prev.hasExtraInfo = params.redirectHasExtraInfo === true;
+      prev.completed = { tabId, extra: {} };
     }
 
-    const p = this.ensure(requestId);
+    const p = this.ensureHttp(requestId);
 
     const request = asRecord(params.request);
     if (request) {
@@ -197,19 +215,21 @@ export class NetworkCapturer {
         : Date.now();
     if (typeof params.timestamp === 'number') p.startMonotonic = params.timestamp;
     p.timing = { startedAt: Math.round(wallTime) };
+    this.drainHttp(requestId);
   }
 
   private onRequestExtraInfo(params: Record<string, unknown>): void {
     const requestId = asString(params.requestId);
     if (!requestId) return;
-    const p = this.ensure(requestId);
-    mergeHeaders(p.reqHeaders, asRecord(params.headers));
+    this.httpChain(requestId).requests.push({ headers: params.headers });
+    this.drainHttp(requestId);
   }
 
   private onResponseReceived(params: Record<string, unknown>): void {
     const requestId = asString(params.requestId);
     if (!requestId) return;
-    const p = this.ensure(requestId);
+    const p = this.ensureHttp(requestId);
+    p.hasExtraInfo = params.hasExtraInfo === true;
 
     const response = asRecord(params.response);
     if (response) {
@@ -225,16 +245,17 @@ export class NetworkCapturer {
     }
     const type = asString(params.type);
     if (type) p.resourceType = type;
+    this.drainHttp(requestId);
   }
 
   private onResponseExtraInfo(params: Record<string, unknown>): void {
     const requestId = asString(params.requestId);
     if (!requestId) return;
-    const p = this.ensure(requestId);
-    mergeHeaders(p.respHeaders, asRecord(params.headers));
-    if (typeof params.statusCode === 'number' && p.status === undefined) {
-      p.status = params.statusCode;
-    }
+    this.httpChain(requestId).responses.push({
+      headers: params.headers,
+      statusCode: params.statusCode,
+    });
+    this.drainHttp(requestId);
   }
 
   private async onLoadingFinished(
@@ -280,7 +301,7 @@ export class NetworkCapturer {
         responseBody = { present: false };
       }
 
-      this.emitRequest(tabId, p, { responseBody });
+      this.completeHttp(tabId, p, { responseBody });
     } catch {
       /* swallow — handle() must never throw */
     }
@@ -296,7 +317,78 @@ export class NetworkCapturer {
     if (!p) return;
     this.pending.delete(requestId);
     const failureReason = asString(params.errorText);
-    this.emitRequest(tabId, p, { failed: true, failureReason });
+    this.completeHttp(tabId, p, { failed: true, failureReason });
+  }
+
+  private httpChain(requestId: string): HttpChain {
+    let chain = this.httpChains.get(requestId);
+    if (!chain) {
+      chain = { hops: [], requests: [], responses: [] };
+      this.httpChains.set(requestId, chain);
+    }
+    return chain;
+  }
+
+  private ensureHttp(requestId: string): PartialRequest {
+    const p = this.ensure(requestId);
+    const chain = this.httpChain(requestId);
+    if (!chain.hops.includes(p)) chain.hops.push(p);
+    return p;
+  }
+
+  private completeHttp(
+    tabId: number,
+    p: PartialRequest,
+    extra: RequestCompletion,
+  ): void {
+    // A body fetch may finish after reset; it must not resurrect the old chain.
+    if (!this.httpChains.get(p.requestId)?.hops.includes(p)) return;
+    p.completed = { tabId, extra };
+    this.drainHttp(p.requestId);
+  }
+
+  private drainHttp(requestId: string): void {
+    const chain = this.httpChains.get(requestId);
+    if (!chain) return;
+    // Each ExtraInfo stream is in hop order, but can lead or lag the base
+    // events. CDP's flags tell us which hops consume a pair (cached/internal
+    // redirects may consume neither). Never attach by the current pending hop.
+    for (const p of chain.hops) {
+      if (p.hasExtraInfo === undefined && !p.completed) break;
+      if (p.hasExtraInfo === false) continue;
+      if (!p.requestExtraReceived && chain.requests.length) {
+        mergeHeaders(p.reqHeaders, asRecord(chain.requests.shift()!.headers));
+        p.requestExtraReceived = true;
+      }
+      if (!p.responseExtraReceived && chain.responses.length) {
+        const info = chain.responses.shift()!;
+        mergeHeaders(p.respHeaders, asRecord(info.headers));
+        if (typeof info.statusCode === 'number' && p.status === undefined) {
+          p.status = info.statusCode;
+        }
+        p.responseExtraReceived = true;
+      }
+      if (p.hasExtraInfo && (!p.requestExtraReceived || !p.responseExtraReceived)) {
+        break;
+      }
+    }
+    while (chain.hops.length) {
+      const p = chain.hops[0]!;
+      if (
+        !p.completed ||
+        (p.hasExtraInfo && (!p.requestExtraReceived || !p.responseExtraReceived))
+      ) break;
+      chain.hops.shift();
+      this.emitRequest(p.completed.tabId, p, p.completed.extra);
+    }
+    if (
+      !chain.hops.length &&
+      !chain.requests.length &&
+      !chain.responses.length &&
+      !this.pending.has(requestId)
+    ) {
+      this.httpChains.delete(requestId);
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -477,11 +569,7 @@ export class NetworkCapturer {
   private emitRequest(
     tabId: number,
     p: PartialRequest,
-    extra: {
-      responseBody?: NetBody;
-      failed?: boolean;
-      failureReason?: string;
-    },
+    extra: RequestCompletion,
   ): void {
     const settings = this.deps.getSettings();
     const rules = settings.customRedaction;
