@@ -511,6 +511,7 @@ describe('NetworkCapturer redirects', () => {
         statusText: 'Found',
         headers: { Location: '/dashboard' },
         mimeType: 'text/html',
+        fromDiskCache: true,
       },
       type: 'Document',
     });
@@ -526,6 +527,7 @@ describe('NetworkCapturer redirects', () => {
     expect(hop1).toMatchObject({ method: 'POST', url: 'https://app.example.com/login', status: 302 });
     expect(hop1!.requestBody?.present).toBe(true);
     expect(header(hop1!.responseHeaders, 'location')).toBe('/dashboard');
+    expect(hop1).toMatchObject({ mime: 'text/html', fromCache: true });
 
     expect(hop2).toMatchObject({ method: 'GET', url: 'https://app.example.com/dashboard', status: 200 });
     expect(hop2!.requestBody?.present ?? false).toBe(false);

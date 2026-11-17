@@ -82,6 +82,19 @@ interface HttpChain {
   responses: Record<string, unknown>[];
 }
 
+/** Copy a CDP Response (or a redirect hop's `redirectResponse`) onto a record. */
+function applyResponse(p: PartialRequest, response: Record<string, unknown>): void {
+  if (typeof response.status === 'number') p.status = response.status;
+  const statusText = asString(response.statusText);
+  if (statusText) p.statusText = statusText;
+  mergeHeaders(p.respHeaders, asRecord(response.headers));
+  const mime = asString(response.mimeType);
+  if (mime) p.mime = mime;
+  if (response.fromDiskCache === true || response.fromServiceWorker === true) {
+    p.fromCache = true;
+  }
+}
+
 /** WebSocket frame text cap (bytes ~ chars). */
 const WS_FRAME_TEXT_CAP = 2 * 1024;
 /** Max WebSocket frames retained per socket. */
@@ -177,10 +190,7 @@ export class NetworkCapturer {
     const redirect = asRecord(params.redirectResponse);
     const prev = this.pending.get(requestId);
     if (redirect && prev) {
-      if (typeof redirect.status === 'number') prev.status = redirect.status;
-      const statusText = asString(redirect.statusText);
-      if (statusText) prev.statusText = statusText;
-      mergeHeaders(prev.respHeaders, asRecord(redirect.headers));
+      applyResponse(prev, redirect);
       if (prev.timing && prev.startMonotonic !== undefined && typeof params.timestamp === 'number') {
         prev.timing.durationMs = Math.max(0, Math.round((params.timestamp - prev.startMonotonic) * 1000));
       }
@@ -232,17 +242,7 @@ export class NetworkCapturer {
     p.hasExtraInfo = params.hasExtraInfo === true;
 
     const response = asRecord(params.response);
-    if (response) {
-      if (typeof response.status === 'number') p.status = response.status;
-      const statusText = asString(response.statusText);
-      if (statusText) p.statusText = statusText;
-      mergeHeaders(p.respHeaders, asRecord(response.headers));
-      const mime = asString(response.mimeType);
-      if (mime) p.mime = mime;
-      if (response.fromDiskCache === true || response.fromServiceWorker === true) {
-        p.fromCache = true;
-      }
-    }
+    if (response) applyResponse(p, response);
     const type = asString(params.type);
     if (type) p.resourceType = type;
     this.drainHttp(requestId);
