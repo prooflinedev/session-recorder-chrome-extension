@@ -2,7 +2,7 @@ import { defineConfig } from '@playwright/test';
 
 /**
  * E2E config. Tests load the *built* extension from `.output/chrome-mv3`, so run
- * `pnpm build` first (the `pretest:e2e` script does this). A tiny static server
+ * `pnpm build` first (`pnpm test:e2e` and the CI test script do this). A tiny static server
  * hosts the demo page over http so the content scripts inject (they do not run on
  * file:// without "allow file access").
  *
@@ -22,7 +22,7 @@ export default defineConfig({
   webServer: {
     command: 'python3 -m http.server 5319 --directory demo',
     port: 5319,
-    reuseExistingServer: true,
+    reuseExistingServer: !process.env.CI,
     timeout: 30_000,
   },
   use: {
