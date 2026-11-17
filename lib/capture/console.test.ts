@@ -113,6 +113,22 @@ describe('ConsoleCapturer', () => {
     expect(emitted[1]!.type).toBe('error');
   });
 
+  it.each([true, false])('preserves fallback exception stack locations with redaction %s', (enabled) => {
+    settings.redactionEnabled = enabled;
+    const stack = '    at load (https://api.test/app.js?token=secret:5:9)';
+    cap.handle(2, 'Runtime.exceptionThrown', {
+      exceptionDetails: {
+        exception: { type: 'object', subtype: 'error', description: `TypeError: boom\n${stack}` },
+      },
+    });
+    expect(emitted).toHaveLength(1);
+    const payload = emitted[0]!.payload as import('@/lib/session/types').ErrorPayload;
+    expect(payload.message).toBe('TypeError: boom');
+    expect(payload.stack).toBe(enabled
+      ? '    at load (https://api.test/app.js?token=«redacted»:5:9)'
+      : stack);
+  });
+
   it('Log.entryAdded error -> error origin log', () => {
     cap.handle(3, 'Log.entryAdded', {
       entry: { level: 'error', text: 'CSP violation', url: 'https://x', lineNumber: 1 },

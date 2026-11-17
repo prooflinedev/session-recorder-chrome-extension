@@ -81,6 +81,26 @@ describe('redactUrlsInText', () => {
     const input = 'Load failed at https://example.test/app.js?page=2#section';
     expect(redactUrlsInText(input, EMPTY_RULES)).toBe(input);
   });
+
+  it('preserves text stack coordinates while redacting the whole query value', () => {
+    const input = [
+      '    at load (https://api.test/app.js?token=secret):123:456:5:9)',
+      '    at https://api.test/app.js?ticket=private:12:34',
+      '    at next (https://api.test/app.js?page=2:7:8)\r',
+    ].join('\n');
+    expect(redactUrlsInText(input, rules({ urlParamPatterns: ['ticket'] }))).toBe([
+      `    at load (https://api.test/app.js?token=${REDACTED}:5:9)`,
+      `    at https://api.test/app.js?ticket=${REDACTED}:12:34`,
+      '    at next (https://api.test/app.js?page=2:7:8)\r',
+    ].join('\n'));
+  });
+
+  it('does not treat punctuation in an ordinary URL value as a stack location', () => {
+    expect(redactUrlsInText(
+      'Request failed at https://api.test/app.js?token=secret):123:456',
+      EMPTY_RULES,
+    )).toBe(`Request failed at https://api.test/app.js?token=${REDACTED}`);
+  });
 });
 
 describe('buildKeyMatcher', () => {

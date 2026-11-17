@@ -232,7 +232,15 @@ export function redactUrl(url: string, rules: RedactionRules): string {
 
 /** Apply the same URL rules to web/socket URLs embedded in browser diagnostics. */
 export function redactUrlsInText(text: string, rules: RedactionRules): string {
-  return text.replace(/\b(?:https?|wss?):\/\/[^\s"'<>`]+/gi, (url) =>
-    redactUrl(url, rules),
-  );
+  const redactText = (value: string) =>
+    value.replace(/\b(?:https?|wss?):\/\/[^\s"'<>`]+/gi, (url) => redactUrl(url, rules));
+
+  return text.split('\n').map((line) => {
+    // V8's text stack frames append coordinates outside the URL. Only split
+    // that suffix in a stack frame: colons and parentheses elsewhere can be
+    // part of a sensitive query value and must be redacted with that value.
+    const frame = /^([ \t]*at (?:[^\r\n]* \()?)(https?:\/\/[^\r\n]+)(:\d+:\d+\)?)(\r?)$/.exec(line);
+    if (!frame) return redactText(line);
+    return `${redactText(frame[1]!)}${redactUrl(frame[2]!, rules)}${frame[3]}${frame[4]}`;
+  }).join('\n');
 }
