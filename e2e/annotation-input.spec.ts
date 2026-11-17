@@ -146,6 +146,8 @@ test('batch dictation fills the open comment promptly and stays out of narration
   const report = await context.newPage();
   await report.goto(extUrl(extensionId, `report.html?session=${started.session.id}`));
   await expect(report.getByText(dictated, { exact: true })).toBeVisible();
+  await report.getByText(dictated, { exact: true }).scrollIntoViewIfNeeded();
+  await report.screenshot({ path: '.impeccable/review/report-dictated-annotation.png' });
   await expect(report.getByText(new RegExp(`${narration[0]}(?!\\d)`)).first()).toBeVisible();
   // Speech after the comment was saved belongs to no comment and is not narration.
   for (const words of spoken.filter((w) => !dictated.includes(w))) await expect(report.getByText(new RegExp(`${words}(?!\\d)`))).toHaveCount(0);

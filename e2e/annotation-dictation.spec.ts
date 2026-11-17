@@ -75,6 +75,11 @@ for (const provider of ['deepgram', 'elevenlabs'] as const) test(`${provider}: d
   await expect(input).toHaveValue('Add a useful empty state.');
   await input.fill('A manually corrected comment.');
   await page.screenshot({path:`.impeccable/review/annotation-dictation-${provider}.png`});
+  // A live socket failure reaches the open comment and keeps its text.
+  await dispatch(background,{kind:'transcript/error',sessionId:started.session.id,error:'Live transcription disconnected.'});
+  await expect(host.getByRole('status')).toHaveText('Transcription failed: Live transcription disconnected. Type the rest of your comment.');
+  await expect(input).toHaveValue('A manually corrected comment.');
+  await page.screenshot({path:`.impeccable/review/annotation-dictation-${provider}-error.png`});
   await dispatch(background,{kind:'session/stop'});
   // Dictated utterances belong to their comments; the earlier stray result stays narration.
   const {events} = await dispatch<{events:Array<{type:string;payload:any}>}>(background,{kind:'events/get',sessionId:started.session.id});
