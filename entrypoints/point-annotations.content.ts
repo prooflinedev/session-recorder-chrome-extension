@@ -26,6 +26,7 @@ export default defineContentScript({
     onContentMessage((message) => {
       if (message.kind === 'content/mic') { micOn = message.on; overlay?.setMicState(micOn); }
       if (message.kind === 'content/dictation') overlay?.receiveTranscript(message);
+      if (message.kind === 'content/dictation-status') overlay?.receiveDictationStatus(message);
       if (message.kind === 'content/point-annotate') setOn(message.on);
       if (message.kind === 'content/setActive' && !message.active) setOn(false);
       if (message.kind === 'content/annotate' && message.on) setOn(false);

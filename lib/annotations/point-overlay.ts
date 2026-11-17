@@ -28,9 +28,9 @@ const styles = `
 .composer{position:fixed;display:flex;align-items:center;gap:8px;width:min(360px,calc(100vw - 48px));min-height:48px;padding:6px 7px 6px 16px;border:1px solid #dddfe3;border-radius:26px;background:#fff;box-shadow:0 2px 8px #00000016;pointer-events:auto}
 textarea{display:block;flex:1;min-width:0;min-height:24px;max-height:120px;padding:3px 0;border:0;outline:0;background:transparent;resize:none;line-height:20px;caret-color:#1683ff}textarea::placeholder{color:#737780}.composer:focus-within{border-color:#a5a9b2}
 .icon{display:grid;place-items:center;width:32px;height:32px;flex:none;border:0;border-radius:50%;background:transparent;padding:7px}.icon:hover{background:#eceef1}.submit{background:#25272c;color:white}.submit:hover{background:#42454d}.submit:disabled{background:#e6e8ec;color:#888c95;cursor:default}.mic[aria-pressed=true]{color:#b83432;background:#fce9e8}
-.pin{position:fixed;display:grid;place-items:center;width:28px;height:28px;background:#1269ca;color:#fff;border:2px solid white;border-radius:50% 50% 50% 5px;font-size:12px;font-weight:600;pointer-events:none}.pins .pin{pointer-events:auto;cursor:pointer}.exit{position:fixed;right:12px;top:12px;pointer-events:auto;background:#fff;border:1px solid #dddfe3}.status{position:fixed;max-width:min(360px,calc(100vw - 32px));padding:8px 12px;border-radius:8px;background:#fff;color:#ae302a;box-shadow:0 2px 6px #0002;font-size:12px;pointer-events:none}.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+.pin{position:fixed;display:grid;place-items:center;width:28px;height:28px;background:#1269ca;color:#fff;border:2px solid white;border-radius:50% 50% 50% 5px;font-size:12px;font-weight:600;pointer-events:none}.pins .pin{pointer-events:auto;cursor:pointer}.exit{position:fixed;right:12px;top:12px;pointer-events:auto;background:#fff;border:1px solid #dddfe3}.status{position:fixed;max-width:min(360px,calc(100vw - 32px));padding:8px 12px;border-radius:8px;background:#fff;color:#ae302a;box-shadow:0 2px 6px #0002;font-size:12px;pointer-events:none}.status.pending{color:#4d5159}.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
 :focus-visible{outline:2px solid #1683ff;outline-offset:3px}textarea:focus-visible,.exit:focus{outline:none}.exit:focus-visible{border-color:currentColor}::selection{background:#1683ff33}:host(.saving) .exit,:host(.saving) .pins{visibility:hidden}
-@media(prefers-color-scheme:dark){:host{color:#f2f2f3}.composer,.exit,.status{background:#2c2c2d;border-color:#424244}.composer:focus-within{border-color:#67676b}textarea::placeholder{color:#a3a3aa}.icon:hover{background:#414145}.submit{background:#e3e3e6;color:#242426}.submit:hover{background:#fff}.submit:disabled{background:#505054;color:#a3a3aa}.mic[aria-pressed=true]{color:#ffaba5;background:#59312f}.status{color:#ffb0aa}}
+@media(prefers-color-scheme:dark){:host{color:#f2f2f3}.composer,.exit,.status{background:#2c2c2d;border-color:#424244}.composer:focus-within{border-color:#67676b}textarea::placeholder{color:#a3a3aa}.icon:hover{background:#414145}.submit{background:#e3e3e6;color:#242426}.submit:hover{background:#fff}.submit:disabled{background:#505054;color:#a3a3aa}.mic[aria-pressed=true]{color:#ffaba5;background:#59312f}.status{color:#ffb0aa}.status.pending{color:#c7c7cc}}
 `;
 
 /** Owns its shadow DOM and listeners; all UI transitions go through the reducer. */
@@ -304,7 +304,7 @@ export class PointAnnotationOverlay {
     });
   }
   private render() {
-    const { status, text, message, comments } = this.state;
+    const { status, text, message, comments, transcribing } = this.state;
     this.host.classList.toggle('saving', status === 'saving');
     this.composer.hidden = status !== 'editing';
     this.pin.hidden = status === 'picking';
@@ -317,8 +317,10 @@ export class PointAnnotationOverlay {
     this.micButton.disabled = this.micPending;
     this.micButton.setAttribute('aria-label', this.micOn ? 'Turn off dictation microphone' : 'Dictate comment');
     this.micButton.title = this.micOn ? 'Microphone on — speak to add your comment' : 'Turn on microphone to dictate';
-    this.status.textContent = message;
-    this.status.hidden = !message;
+    const notice = message || (transcribing ? 'Transcribing your speech…' : '');
+    this.status.textContent = notice;
+    this.status.hidden = !notice;
+    this.status.classList.toggle('pending', !message && transcribing);
     this.status.classList.toggle('sr-only', status === 'picking');
     if (this.pins.childElementCount !== comments.length) {
       this.pins.replaceChildren(
@@ -357,6 +359,12 @@ export class PointAnnotationOverlay {
     if (message.id !== this.dictationId || this.state.status !== 'editing') return;
     this.dictationDraft = dictationReducer(this.dictationDraft, { type: 'transcript', ...message });
     this.dispatch({ type: 'text', text: this.dictationDraft.text });
+  }
+  receiveDictationStatus(message: Extract<ContentMessage, { kind: 'content/dictation-status' }>) {
+    if (message.id !== this.dictationId || this.state.status !== 'editing') return;
+    this.dispatch({ type: 'transcribing', pending: message.pending });
+    // The typed and dictated text stays in the composer; only the notice changes.
+    if (message.error) this.dispatch({ type: 'error', message: `Transcription failed: ${message.error.replace(/[.\s]+$/, '')}. Type the rest of your comment.` });
   }
   private stopDictation() {
     const id = this.dictationId;
