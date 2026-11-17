@@ -102,6 +102,19 @@ describe('NetworkCapturer WebSockets', () => {
     expect(emitted).toHaveLength(1);
   });
 
+  it('redacts secrets in text frames', () => {
+    const { cap, emitted } = makeCapturer();
+    cap.handle(4, 'Network.webSocketCreated', { requestId: 'ws-3', url: 'wss://x/y' });
+    cap.handle(4, 'Network.webSocketFrameSent', {
+      requestId: 'ws-3',
+      response: { opcode: 1, payloadData: '{"token":"WS_SECRET","n":1}' },
+    });
+    cap.flushOpen();
+    const text = payloadOf(emitted[0]!).wsFrames![0]!.text!;
+    expect(text).not.toContain('WS_SECRET');
+    expect(JSON.parse(text)).toEqual({ token: '«redacted»', n: 1 });
+  });
+
   it('flushOpen leaves in-flight normal requests untouched', () => {
     const { cap, emitted } = makeCapturer();
     cap.handle(1, 'Network.requestWillBeSent', {

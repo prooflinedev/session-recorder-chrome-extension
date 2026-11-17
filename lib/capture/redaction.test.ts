@@ -225,6 +225,27 @@ describe('redactBody — JSON', () => {
     expect(text).toBe(input);
   });
 
+  it("redacts JSON behind a )]}' prefix and keeps the prefix", () => {
+    const input = `)]}'\n{"token":"SECRET","ok":1}`;
+    const { text, redacted } = redactBody(input, 'application/json', EMPTY_RULES);
+    expect(redacted).toBe(true);
+    expect(text.startsWith(")]}'\n")).toBe(true);
+    expect(text).not.toContain('SECRET');
+    expect(JSON.parse(text.slice(5))).toEqual({ token: REDACTED, ok: 1 });
+  });
+
+  it('redacts newline-delimited JSON line by line', () => {
+    const input = '{"token":"A1","i":1}\n{"i":2}\n{"password":"B2"}\n';
+    const { text, redacted } = redactBody(input, 'application/x-ndjson', EMPTY_RULES);
+    expect(redacted).toBe(true);
+    expect(text).not.toMatch(/A1|B2/);
+    expect(text.split('\n').filter(Boolean).map((l) => JSON.parse(l))).toEqual([
+      { token: REDACTED, i: 1 },
+      { i: 2 },
+      { password: REDACTED },
+    ]);
+  });
+
   it('handles JSON arrays at the top level', () => {
     const input = JSON.stringify([{ secret: 's' }, { ok: 1 }]);
     const { text, redacted } = redactBody(input, 'application/json', EMPTY_RULES);

@@ -316,7 +316,12 @@ export class NetworkCapturer {
     const opcode =
       response && typeof response.opcode === 'number' ? response.opcode : 0;
     const payload = (response && asString(response.payloadData)) ?? '';
-    let text = payload;
+    const settings = this.deps.getSettings();
+    // Text frames only (opcode 1); binary frames are base64 and have no keys.
+    let text =
+      settings.redactionEnabled && opcode === 1
+        ? redactBody(payload, undefined, settings.customRedaction).text
+        : payload;
     let truncated = false;
     if (text.length > WS_FRAME_TEXT_CAP) {
       text = text.slice(0, WS_FRAME_TEXT_CAP);
