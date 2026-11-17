@@ -362,6 +362,8 @@ async function startStreaming(
     };
     sock.onerror = () => {
       // Keep recording audio; the open composer shows that dictation stopped.
+      // A socket retired by a vocabulary refresh no longer carries dictation.
+      if (sock !== streamSocket) return;
       void sendMessage({ kind: 'transcript/error', sessionId, error: 'Live transcription disconnected.' }).catch(() => {});
     };
 
