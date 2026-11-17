@@ -15,6 +15,7 @@ We prefix every path with a single root directory named after the session, so th
   MANIFEST.md          # index of every included asset (path, kind, size)
   transcript.json      # voice segments; an empty array when there are none
   openapi.json         # inferred API description, when capture is enabled and endpoints exist
+  network.har          # HAR 1.2 log of the captured requests, when there are any
   screenshots/
     001-0004.jpg       # {seq}-{mmss}.jpg: seq order, timestamp in the name
     002-0011.jpg
@@ -37,6 +38,7 @@ Note the following:
 
 - `report.md` is the primary artifact. It is a single chronological narrative with `[mm:ss]` timestamps, section breaks at navigations and tab switches, fenced network bodies and console or error output, screenshot references, and blockquotes for your markers and notes. At Compact and Minimal it retains the main text evidence. Visual details may still require the referenced screenshots or other assets.
 - `session.json` is the machine-readable mirror. It holds the trimmed event stream (the same events, in the same order as the report) plus session metadata, with all asset references rewritten to their zip-relative paths. Use it when you want to program against the events rather than read prose.
+- `network.har` holds the requests from `session.json` in HAR 1.2 form, for the Chrome DevTools Network panel (Import HAR), Charles, Fiddler, or Playwright's `routeFromHAR`. It follows the export level: requests and bodies the level drops are absent here too. Bodies are the inline copies from `session.json`, so the file stays about as large as `session.json`. A body cut at the inline capture cap or summarized by the level keeps its partial text with a `comment`; its full copy, when stored, is under `network/`. Export at Full when you need complete responses. URLs, headers and bodies carry the same redaction as the rest of the export, and `cookies` arrays stay empty.
 - `MANIFEST.md` lists every asset actually included in the zip. Some assets are dropped at higher verbosity levels (see below), so the report never points at a file that is not there.
 - Asset naming embeds the sequence and timestamp (`{seq}-{mmss}`) so files sort in capture order and cross-reference the `[mm:ss]` marks in `report.md`.
 - We include only assets still referenced by a surviving event. The exceptions are annotation screenshots, audio, and file assets, which we always include regardless of level because they are protected signal.
