@@ -14,6 +14,8 @@ Session Recorder is a **free, open-source Chrome extension** for QA and product 
 
 The arrow beside **File issue** selects a repository and remembers your last choice for new reports. Annotations and spoken notes lead the AI summary; console and network details support it. Filing shows progress and can be canceled.
 
+While recording, keyboard shortcuts keep you on the page: **Alt+Shift+A** toggles annotation, **Alt+Shift+M** drops a marker, **Alt+Shift+S** takes a screenshot and **Alt+Shift+P** pauses or resumes. Change them at `chrome://extensions/shortcuts`.
+
 Recording, annotation and ZIP export work without an account or API key. Configure publishing and GitHub access once to use one-click filing. AI is optional: you can edit the issue draft yourself.
 
 <picture>

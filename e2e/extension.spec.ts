@@ -16,12 +16,17 @@ test('loads with a service worker and the expected manifest', async ({
   expect(manifest.permissions).toEqual(
     expect.arrayContaining(['debugger', 'sidePanel', 'downloads', 'offscreen']),
   );
-  // Side panel + both keyboard commands wired.
+  // Side panel + all keyboard commands wired.
   expect((manifest as Record<string, any>).side_panel?.default_path).toBe(
     'sidepanel.html',
   );
   expect(Object.keys((manifest as Record<string, any>).commands ?? {})).toEqual(
-    expect.arrayContaining(['toggle-annotation', 'add-marker']),
+    expect.arrayContaining([
+      'toggle-annotation',
+      'add-marker',
+      'capture-screenshot',
+      'toggle-pause',
+    ]),
   );
 
   // The test hook is installed on the SW global.
