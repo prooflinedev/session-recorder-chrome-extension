@@ -14,6 +14,8 @@ export interface PointAnnotationState {
   message: string;
   comments: SavedPointComment[];
   dictating: boolean;
+  /** Dictated speech for this comment is still being transcribed. */
+  transcribing: boolean;
 }
 export type PointAnnotationAction =
   | { type: 'select'; selection: AnnotationSelection }
@@ -22,6 +24,7 @@ export type PointAnnotationAction =
   | { type: 'save' }
   | { type: 'saved' }
   | { type: 'dictate'; active: boolean }
+  | { type: 'transcribing'; pending: boolean }
   | { type: 'error'; message: string };
 export const initialPointAnnotationState: PointAnnotationState = {
   text: '',
@@ -29,6 +32,7 @@ export const initialPointAnnotationState: PointAnnotationState = {
   message: '',
   comments: [],
   dictating: false,
+  transcribing: false,
 };
 export function pointAnnotationReducer(
   state: PointAnnotationState,
@@ -46,10 +50,11 @@ export function pointAnnotationReducer(
         text: '',
         status: 'picking',
         dictating: false,
+        transcribing: false,
         message: '',
       };
     case 'save':
-      return { ...state, status: 'saving', dictating: false, message: '' };
+      return { ...state, status: 'saving', dictating: false, transcribing: false, message: '' };
     case 'saved':
       return {
         ...initialPointAnnotationState,
@@ -60,6 +65,8 @@ export function pointAnnotationReducer(
       };
     case 'dictate':
       return { ...state, dictating: action.active };
+    case 'transcribing':
+      return { ...state, transcribing: action.pending && state.status === 'editing' };
     case 'error':
       return { ...state, status: 'editing', dictating: false, message: action.message };
   }

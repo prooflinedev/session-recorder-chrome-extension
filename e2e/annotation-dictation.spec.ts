@@ -47,8 +47,17 @@ for (const provider of ['deepgram', 'elevenlabs'] as const) test(`${provider}: d
   await expect.poll(()=>!!socket).toBe(true);
   await expect.poll(()=>dictionary).toContain('Proofline');
   const result = (text:string,final:boolean,start:number) => socket!.send(JSON.stringify(provider === 'elevenlabs' ? {message_type:final?'committed_transcript':'partial_transcript',text} : {type:'Results',start,duration:1,is_final:final,channel:{alternatives:[{transcript:text,words:[]}]}}));
+  // Receive-to-render latency for an injected provider event; it excludes the
+  // provider's own recognition time, which only a live measurement can show.
+  await page.evaluate(() => {
+    const field = document.querySelector('#__session_recorder_point_annotation_host__')!.shadowRoot!.querySelector('textarea')!;
+    const watch = () => (field.value ? ((window as any).__renderedAt = Date.now()) : setTimeout(watch, 1));
+    watch();
+  });
+  const sentAt = Date.now();
   result('Finishing recipe',false,1);
   await expect(input).toHaveValue('Finishing recipe');
+  console.log(`${provider} dictation: provider event to rendered comment ${(await page.evaluate(() => (window as any).__renderedAt)) - sentAt} ms`);
   result('Finishing recipes needs help.',true,1);
   await expect(input).toHaveValue('Finishing recipes needs help.');
   if (provider === 'deepgram') result('Finishing recipes needs help.',true,1);
@@ -67,4 +76,12 @@ for (const provider of ['deepgram', 'elevenlabs'] as const) test(`${provider}: d
   await input.fill('A manually corrected comment.');
   await page.screenshot({path:`.impeccable/review/annotation-dictation-${provider}.png`});
   await dispatch(background,{kind:'session/stop'});
+  // Dictated utterances belong to their comments; the earlier stray result stays narration.
+  const {events} = await dispatch<{events:Array<{type:string;payload:any}>}>(background,{kind:'events/get',sessionId:started.session.id});
+  const voice = events.filter(e => e.type === 'voice-segment' && e.payload.transcript);
+  expect(voice.map(e => [e.payload.transcript, e.payload.dictation === true])).toEqual(expect.arrayContaining([
+    ['Finishing recipes needs help.', true],
+    ['Add a useful empty state.', true],
+    ['old comment', false],
+  ]));
 });

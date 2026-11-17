@@ -53,6 +53,12 @@ every verbosity level.
 
 ## Interaction events
 
+Annotation owns input while the comment overlay or screenshot markup is open:
+no interaction event is recorded then. Typing and scrolling that were still
+settling when annotation began are recorded at that moment; unsettled hovers
+and selections are dropped. Capture resumes with the session's hover dwell when
+annotation closes.
+
 ### `click`
 `ClickPayload` records a pointer click on an element.
 
@@ -94,7 +100,7 @@ shortcut chord.
 
 ### `hover`
 
-`HoverPayload` stores `descriptor: ElementDescriptor` and `dwellMs: number`. It records a sustained pointer hover. L1 and higher drop unprotected hover events.
+`HoverPayload` stores `descriptor: ElementDescriptor` and `dwellMs: number`. It records a sustained pointer hover. A pointer that leaves the page before the dwell ends records nothing. L1 and higher drop unprotected hover events.
 
 ### `text-select`
 `TextSelectPayload` records a settled text selection (or its deselection). The
@@ -297,6 +303,7 @@ protected.
 | `transcriptionError`| `string` (optional)                 | Error message when transcription failed. |
 | `provider`          | `string` (optional)                 | Transcription provider used. |
 | `streamed`          | `boolean` (optional)                | Transcript arrived through live streaming. |
+| `dictation`         | `boolean` (optional)                | Speech captured while a page-comment composer was open. The saved annotation carries its text, so reports, summaries and `transcript.json` omit it from narration; the audio stays in the export. |
 | `anchorContext`     | `string` (optional)                 | Nearby interaction context for narration. |
 | `transcriptionGeneration` | `number` (optional)           | Local retry generation. |
 | `transcriptionTerminalFailure` | `boolean` (optional)      | Prevents automatic retry of a terminal failure. |
