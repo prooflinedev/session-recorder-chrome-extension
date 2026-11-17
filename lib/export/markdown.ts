@@ -12,6 +12,7 @@
  * are cloned before sorting), no global mutable state.
  */
 
+import { isDictatedSpeech } from '@/lib/session/events';
 import type {
   AnnotationShape,
   AssetMeta,
@@ -636,8 +637,9 @@ function renderAppendices(
 // ----------------------------------------------------------------------------
 
 function sortedEvents(events: SessionEvent[]): SessionEvent[] {
-  // Clone before sorting — this module must not mutate its inputs.
-  return [...events].sort((a, b) => a.t - b.t);
+  // Clone before sorting — this module must not mutate its inputs. Dictated
+  // speech already appears as the annotation it produced.
+  return events.filter((e) => !isDictatedSpeech(e)).sort((a, b) => a.t - b.t);
 }
 
 
