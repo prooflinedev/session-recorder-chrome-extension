@@ -152,7 +152,7 @@ describe('NetworkCapturer API-spec full-body capture', () => {
       .mockImplementationOnce(() => new Promise((resolve) => { finishOldBody = resolve; }));
     const storeBodyAsset = vi.fn(async () => 'asset-old');
     const { cap, emitted } = makeCapturer({
-      getSettings: () => API_SETTINGS,
+      getSettings: () => ({ ...API_SETTINGS, inlineBodyCapBytes: 16 }),
       send,
       storeBodyAsset,
     });
@@ -161,9 +161,11 @@ describe('NetworkCapturer API-spec full-body capture', () => {
     // Reuse even the request ID: membership must identify the old hop itself.
     finishXhr(cap, 'https://api.example.com/v1/new');
     await vi.waitFor(() => expect(emitted).toHaveLength(1));
-    finishOldBody({ body: bigJson, base64Encoded: false });
+    finishOldBody({ body: `{"old":"${'x'.repeat(64)}"}`, base64Encoded: false });
+    // send() is the only await before the mocked store call. Let its entire
+    // continuation settle, including the unguarded path used as the regression.
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(storeBodyAsset).not.toHaveBeenCalled();
+    expect(storeBodyAsset.mock.calls.length).toBe(0);
     expect(emitted).toHaveLength(1);
     expect(payloadOf(emitted[0]!)).toMatchObject({ url: 'https://api.example.com/v1/new' });
   });
