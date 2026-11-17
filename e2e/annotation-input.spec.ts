@@ -229,3 +229,40 @@ test('pending and failed dictation keep the comment, and late speech stays out o
     [true, 'Words for the cancelled comment.'],
   ]);
 });
+
+test('a streamed recording of dictation alone keeps its audio without becoming narration', async ({ context, background, extensionId }) => {
+  let socket: import('@playwright/test').WebSocketRoute | undefined;
+  await context.routeWebSocket('wss://api.deepgram.com/**', (ws) => { socket = ws; });
+  const media = await context.newPage();
+  await media.goto(extUrl(extensionId, 'offscreen.html'));
+  await background.evaluate(async () => {
+    // Run the real offscreen recorder in an inspectable page (see annotation-dictation.spec.ts).
+    chrome.offscreen.createDocument = async () => {};
+    chrome.offscreen.closeDocument = async () => {};
+    await chrome.storage.local.set({ micGranted: true, transcription: { provider: 'deepgram', apiKey: 'test-only', model: 'nova-3' } });
+  });
+  const page = await context.newPage();
+  await page.goto('/');
+  const tabId = await tabIdForUrl(background, 'http://localhost:5319');
+  const started = await dispatch<{ session: { id: string } }>(background, { kind: 'session/start', tabId });
+  await dispatch(background, { kind: 'point-annotation/toggle', on: true });
+  const host = pointHost(page);
+  const get = (await page.locator('#btn-get').boundingBox())!;
+  await page.mouse.click(get.x + 4, get.y + 4);
+  const comment = host.getByRole('textbox', { name: 'Comment', exact: true });
+  await host.getByRole('button', { name: 'Dictate comment', exact: true }).click();
+  await expect.poll(() => !!socket).toBe(true);
+  socket!.send(JSON.stringify({ type: 'Results', start: 1, duration: 1, is_final: true, channel: { alternatives: [{ transcript: 'Only a comment.', words: [] }] } }));
+  await expect(comment).toHaveValue('Only a comment.');
+  await comment.press('Enter');
+  await expect(host.getByRole('status')).toHaveText('Comment added to the recording.');
+  await dispatch(background, { kind: 'session/stop' });
+
+  // The full-session audio arrives at stop; it stays with the dictation and is not transcribed again.
+  await expect.poll(async () => (await eventsOf(background, started.session.id))
+    .some((e) => e.type === 'voice-segment' && e.payload.assetId)).toBe(true);
+  const voice = (await eventsOf(background, started.session.id)).filter((e) => e.type === 'voice-segment');
+  expect(voice.map((e) => [e.payload.transcript, e.payload.dictation === true, !!e.payload.assetId])).toEqual([
+    ['Only a comment.', true, true],
+  ]);
+});

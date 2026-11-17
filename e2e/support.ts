@@ -86,30 +86,33 @@ export const test = base.extend<Fixtures>({
   context: async ({}, use) => {
     const headed = !!process.env.HEADED;
     const offline = await startOfflineHttpsFixture();
-    const context = await chromium.launchPersistentContext('', {
-      channel: 'chromium',
-      headless: !headed,
-      ignoreHTTPSErrors: true,
-      args: [
-        `--disable-extensions-except=${EXT_PATH}`,
-        `--load-extension=${EXT_PATH}`,
-        '--host-resolver-rules=MAP * 127.0.0.1, EXCLUDE localhost, EXCLUDE 127.0.0.1',
-        `--testing-fixed-https-port=${offline.port}`,
-        '--disable-background-networking',
-        '--disable-sync',
-        '--disable-domain-reliability',
-        '--no-pings',
-        // Automated recordings use synthetic devices; never prompt for a real mic.
-        '--use-fake-device-for-media-stream',
-        '--use-fake-ui-for-media-stream',
-        '--no-first-run',
-        '--no-default-browser-check',
-      ],
-    });
     try {
-      await use(context);
+      const context = await chromium.launchPersistentContext('', {
+        channel: 'chromium',
+        headless: !headed,
+        ignoreHTTPSErrors: true,
+        args: [
+          `--disable-extensions-except=${EXT_PATH}`,
+          `--load-extension=${EXT_PATH}`,
+          '--host-resolver-rules=MAP * 127.0.0.1, EXCLUDE localhost, EXCLUDE 127.0.0.1',
+          `--testing-fixed-https-port=${offline.port}`,
+          '--disable-background-networking',
+          '--disable-sync',
+          '--disable-domain-reliability',
+          '--no-pings',
+          // Automated recordings use synthetic devices; never prompt for a real mic.
+          '--use-fake-device-for-media-stream',
+          '--use-fake-ui-for-media-stream',
+          '--no-first-run',
+          '--no-default-browser-check',
+        ],
+      });
+      try {
+        await use(context);
+      } finally {
+        await context.close();
+      }
     } finally {
-      await context.close();
       await offline.close();
     }
   },

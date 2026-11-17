@@ -1405,9 +1405,11 @@ class Orchestrator {
   ): Promise<boolean> {
     await this.writer?.flush();
     const events = await getEvents(sessionId);
-    const target = events.find(
-      (e) => e.type === 'voice-segment' && !e.payload.assetId && !e.payload.dictation,
-    );
+    // Prefer narration, so the report plays the audio beside it. A recording of
+    // dictation alone keeps its audio on a dictation segment, which already has
+    // its transcript and stays out of narration.
+    const unattached = events.filter((e) => e.type === 'voice-segment' && !e.payload.assetId);
+    const target = unattached.find((e) => !isDictatedSpeech(e)) ?? unattached[0];
     if (!target || target.type !== 'voice-segment') return false;
     target.payload.assetId = assetId;
     await appendEvents([target]);
