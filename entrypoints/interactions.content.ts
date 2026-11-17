@@ -63,6 +63,8 @@ export default defineContentScript({
 
     // Pending per-element input debounce timers.
     const inputTimers = new Map<Element, ReturnType<typeof setTimeout>>();
+    // Fields whose value a flush already posted, with no input event since.
+    let flushedInputs = new WeakSet<Element>();
     // Active scroll runs keyed by their scroll target (document or element).
     const scrollRuns = new Map<EventTarget, ScrollRun>();
 
@@ -138,6 +140,28 @@ export default defineContentScript({
       return { container: 'window', pos: { x: window.scrollX, y: window.scrollY } };
     }
 
+    function postInput(el: Element): void {
+      inputTimers.delete(el);
+      const sensitive = isSensitiveInput(el);
+      post('input', {
+        descriptor: buildDescriptor(el),
+        value: sensitive ? REDACTED : readValue(el),
+        redacted: sensitive,
+        inputType: inputTypeOf(el),
+      });
+    }
+
+    // The click or key being captured may submit the field, and apps often
+    // clear it in their own handler, which runs after these capture-phase
+    // listeners but before the debounce would fire. Record the value now.
+    function flushPendingInputs(): void {
+      for (const [el, timer] of inputTimers) {
+        clearTimeout(timer);
+        postInput(el);
+        flushedInputs.add(el);
+      }
+    }
+
     // -- capture handlers ----------------------------------------------------
 
     const onClick = (e: MouseEvent): void => {
@@ -146,6 +170,7 @@ export default defineContentScript({
       // Clicks land on the annotation overlay (retargeted to its host) while the
       // user is drawing — those are recorder chrome, not page interactions.
       if (isAnnotationOverlay(target)) return;
+      flushPendingInputs();
       post('click', {
         descriptor: buildDescriptor(target),
         modifiers: modifiersOf(e),
@@ -158,18 +183,16 @@ export default defineContentScript({
       if (!(target instanceof Element)) return;
       if (isAnnotationOverlay(target)) return;
       const el = target;
+      // Leaving a field (Tab, click elsewhere) flushes it and then fires
+      // `change` with the same value; that value is already recorded.
+      if (e.type === 'change' && flushedInputs.has(el)) {
+        flushedInputs.delete(el);
+        return;
+      }
+      flushedInputs.delete(el);
       const existing = inputTimers.get(el);
       if (existing) clearTimeout(existing);
-      const timer = setTimeout(() => {
-        inputTimers.delete(el);
-        const sensitive = isSensitiveInput(el);
-        post('input', {
-          descriptor: buildDescriptor(el),
-          value: sensitive ? REDACTED : readValue(el),
-          redacted: sensitive,
-          inputType: inputTypeOf(el),
-        });
-      }, INPUT_DEBOUNCE_MS);
+      const timer = setTimeout(() => postInput(el), INPUT_DEBOUNCE_MS);
       inputTimers.set(el, timer);
     };
 
@@ -200,6 +223,7 @@ export default defineContentScript({
       if (isAnnotationOverlay(e.target)) return; // typing an annotation label
       const chord = e.ctrlKey || e.metaKey || e.altKey;
       if (!chord && !NAMED_KEYS.has(e.key)) return;
+      flushPendingInputs();
       const focused = document.activeElement;
       post('key', {
         key: keyString(e),
@@ -319,6 +343,7 @@ export default defineContentScript({
       lastSelectionText = null;
       for (const t of inputTimers.values()) clearTimeout(t);
       inputTimers.clear();
+      flushedInputs = new WeakSet();
       for (const run of scrollRuns.values()) {
         if (run.timer) clearTimeout(run.timer);
       }
