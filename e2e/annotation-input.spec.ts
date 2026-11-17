@@ -22,6 +22,8 @@ async function useFixtureTranscription(background: Worker, mode: 'auto' | 'held'
       const reply = mode === 'auto'
         ? { text: `segment ${g.__stt.calls}` }
         : await new Promise<{ text?: string; error?: boolean }>((resolve) => g.__stt.waiting.push(resolve));
+      // Without a fixed reply, the held fixture "recognizes" the uploaded bytes as text.
+      if (!reply.error && reply.text === undefined) reply.text = await ((init?.body as FormData).get('file') as Blob).text();
       g.__stt.repliedAt = Date.now();
       if (reply.error) return new Response('fixture provider unavailable', { status: 503 });
       return new Response(JSON.stringify({ text: reply.text }), { headers: { 'Content-Type': 'application/json' } });
@@ -156,9 +158,11 @@ test('pending and failed dictation keep the comment, and late speech stays out o
   const tabId = await tabIdForUrl(background, 'http://localhost:5319');
   const started = await dispatch<{ session: { id: string; startedAt: number } }>(background, { kind: 'session/start', tabId });
   // An audio segment from the recorder, timed at the current session moment.
-  const segment = () => dispatch(background, {
+  // Its bytes are the words the held fixture recognizes when given no reply text.
+  const segment = (words = '') => dispatch(background, {
     kind: 'audio/segment', sessionId: started.session.id, tStart: Date.now() - started.session.startedAt,
-    tEnd: Date.now() - started.session.startedAt + 1000, dataUrl: 'data:audio/webm;base64,GkXfow==', mime: 'audio/webm',
+    tEnd: Date.now() - started.session.startedAt + 1000, mime: 'audio/webm',
+    dataUrl: `data:audio/webm;base64,${Buffer.from(words || 'audio').toString('base64')}`,
   });
 
   await dispatch(background, { kind: 'point-annotation/toggle', on: true });
@@ -183,6 +187,18 @@ test('pending and failed dictation keep the comment, and late speech stays out o
   const latency = (await page.evaluate(() => (window as any).__renderedAt)) - (await background.evaluate(() => (globalThis as any).__stt.repliedAt));
   console.log(`batch dictation: provider response to rendered comment ${latency} ms`);
 
+  // Segments queued behind an in-flight one keep their spoken order.
+  await comment.fill('');
+  await segment('First,');
+  await expect.poll(() => background.evaluate(() => (globalThis as any).__stt.waiting.length)).toBe(1);
+  await page.waitForTimeout(5);
+  await segment('second,');
+  await page.waitForTimeout(5);
+  await segment('third.');
+  for (let i = 0; i < 3; i += 1) await reply(background, {});
+  await expect(comment).toHaveValue('First, second, third.');
+  await comment.fill('Typed start. The fetch button needs a clear error.');
+
   await segment();
   await reply(background, { error: true });
   await expect(host.getByRole('status')).toContainText('Transcription failed:');
@@ -206,6 +222,9 @@ test('pending and failed dictation keep the comment, and late speech stays out o
   const voice = (await eventsOf(background, started.session.id)).filter((e) => e.type === 'voice-segment');
   expect(voice.map((e) => [e.payload.dictation, e.payload.transcript ?? e.payload.transcriptionError])).toEqual([
     [true, 'The fetch button needs a clear error.'],
+    [true, 'First,'],
+    [true, 'second,'],
+    [true, 'third.'],
     [true, expect.stringContaining('503')],
     [true, 'Words for the cancelled comment.'],
   ]);

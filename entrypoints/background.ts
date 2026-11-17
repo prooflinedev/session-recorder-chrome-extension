@@ -44,7 +44,7 @@ import type {
   TabInfo,
   VoiceSegmentPayload,
 } from '@/lib/session/types';
-import { PROTECTED_TYPES, scoreEvent } from '@/lib/session/events';
+import { PROTECTED_TYPES, isDictatedSpeech, scoreEvent } from '@/lib/session/events';
 import {
   makeDefaultSettings,
   STORAGE_KEYS,
@@ -1337,7 +1337,7 @@ class Orchestrator {
       this.dictationJobs.set(ev.id, dictation.id);
       this.sendDictationStatus(dictation.id);
     }
-    this.enqueueTranscription(ev, session.id, !!dictation);
+    this.enqueueTranscription(ev, session.id);
     return { ok: true };
   }
 
@@ -1803,14 +1803,17 @@ class Orchestrator {
   // Transcription queue (sequential)
   // --------------------------------------------------------------------------
 
-  /** Queue a segment for transcription; dictation goes first because a composer waits on it. */
-  private enqueueTranscription(event: SessionEvent, sessionId: string, first = false): void {
+  /**
+   * Queue a segment for transcription. Dictation runs ahead of narration because
+   * a composer waits on it, and in arrival order so its words stay in sequence.
+   */
+  private enqueueTranscription(event: SessionEvent, sessionId: string): void {
     const key = `${sessionId}/${event.id}`;
     if (this.transcribing.has(key)) return;
     this.transcribing.add(key);
     this.transTotal += 1;
-    if (first) this.transQueue.unshift({ sessionId, event });
-    else this.transQueue.push({ sessionId, event });
+    const narration = isDictatedSpeech(event) ? this.transQueue.findIndex((job) => !isDictatedSpeech(job.event)) : -1;
+    this.transQueue.splice(narration < 0 ? this.transQueue.length : narration, 0, { sessionId, event });
     void this.drainTranscription();
   }
 
