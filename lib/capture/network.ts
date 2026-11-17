@@ -73,6 +73,8 @@ const WS_FRAME_CAP = 100;
 
 export class NetworkCapturer {
   private readonly pending = new Map<string, PartialRequest>();
+  /** Last in-flight emit per requestId, so redirect hops sharing one id emit in order. */
+  private readonly emitQueue = new Map<string, Promise<void>>();
 
   constructor(private readonly deps: NetworkDeps) {}
 
@@ -540,17 +542,26 @@ export class NetworkCapturer {
     }
 
     // Emission stays synchronous unless a full request body must be persisted
-    // first (API-spec capture) — only that path defers by the store round-trip.
-    if (storeRequestBody) {
-      void this.storeRequestBodyThenEmit(tabId, payload, storeRequestBody);
+    // first (API-spec capture), or an earlier redirect hop with the same
+    // requestId is still waiting on that store — then this hop queues behind it.
+    const id = p.requestId;
+    const prior = this.emitQueue.get(id);
+    if (!storeRequestBody && !prior) {
+      this.finishEmit(tabId, payload);
       return;
     }
-    this.finishEmit(tabId, payload);
+    const stored = storeRequestBody
+      ? this.storeRequestBody(payload, storeRequestBody)
+      : undefined;
+    const done = Promise.all([prior, stored]).then(() => this.finishEmit(tabId, payload));
+    this.emitQueue.set(id, done);
+    void done.then(() => {
+      if (this.emitQueue.get(id) === done) this.emitQueue.delete(id);
+    });
   }
 
-  /** Store an overflowing request body as an asset, then emit. Never throws. */
-  private async storeRequestBodyThenEmit(
-    tabId: number,
+  /** Store an overflowing request body as an asset. Never rejects. */
+  private async storeRequestBody(
     payload: NetRequestPayload,
     store: { text: string; mime: string },
   ): Promise<void> {
@@ -560,7 +571,6 @@ export class NetworkCapturer {
     } catch {
       /* asset store failed — keep the truncated inline copy */
     }
-    this.finishEmit(tabId, payload);
   }
 
   private finishEmit(tabId: number, payload: NetRequestPayload): void {

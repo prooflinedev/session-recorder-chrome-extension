@@ -427,4 +427,49 @@ describe('NetworkCapturer redirects', () => {
       ['https://a.example/final', 200],
     ]);
   });
+  it('keeps hop order when an earlier hop is still storing its request body', async () => {
+    let finishStore!: (id: string) => void;
+    const storeBodyAsset = vi.fn(
+      () => new Promise<string>((resolve) => (finishStore = resolve)),
+    );
+    const send = vi.fn(async () => ({ body: '{"ok":true}', base64Encoded: false }));
+    const { cap, emitted } = makeCapturer({
+      getSettings: () => ({ ...SETTINGS, captureApiSpec: true }),
+      storeBodyAsset,
+      send,
+    });
+    const json = { 'content-type': 'application/json' };
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'nav-3',
+      request: {
+        method: 'POST',
+        url: 'https://api.example.com/v1/upload',
+        headers: json,
+        postData: `{"data":"${'x'.repeat(100 * 1024)}"}`,
+      },
+      type: 'XHR',
+    });
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'nav-3',
+      request: { method: 'GET', url: 'https://api.example.com/v1/result', headers: {} },
+      redirectResponse: { status: 303, headers: { Location: '/v1/result' } },
+      type: 'XHR',
+    });
+    cap.handle(1, 'Network.responseReceived', {
+      requestId: 'nav-3',
+      response: { status: 200, headers: json, mimeType: 'application/json' },
+    });
+    cap.handle(1, 'Network.loadingFinished', { requestId: 'nav-3' });
+    await vi.waitFor(() => expect(send).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 0));
+    // The GET is done, but must not land ahead of the POST still being stored.
+    expect(emitted).toHaveLength(0);
+
+    finishStore('asset-post');
+    await vi.waitFor(() => expect(emitted).toHaveLength(2));
+    const [hop1, hop2] = emitted.map(payloadOf);
+    expect(hop1).toMatchObject({ method: 'POST', status: 303 });
+    expect(hop1!.requestBody?.assetId).toBe('asset-post');
+    expect(hop2).toMatchObject({ method: 'GET', status: 200 });
+  });
 });
