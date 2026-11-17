@@ -27,8 +27,9 @@ export function buildDeepgramLiveUrl(
   const base = config.baseUrl?.startsWith('wss')
     ? config.baseUrl
     : 'wss://api.deepgram.com/v1/listen';
+  const model = config.model || 'nova-3';
   const params = new URLSearchParams({
-    model: config.model || 'nova-3',
+    model,
     encoding: 'linear16',
     sample_rate: String(opts.sampleRate ?? DEEPGRAM_SAMPLE_RATE),
     channels: '1',
@@ -36,8 +37,11 @@ export function buildDeepgramLiveUrl(
     punctuate: 'true',
     smart_format: 'true',
   });
-  if (config.language) params.set('language', config.language);
-  addDeepgramKeyterms(params, config.model || 'nova-3', config.keyterms);
+  // Deepgram defaults to English; a blank language means auto-detect, which
+  // Nova-2 and Nova-3 provide as `multi`. Older models keep Deepgram's default.
+  const language = config.language || (/^nova-[23]/.test(model) ? 'multi' : undefined);
+  if (language) params.set('language', language);
+  addDeepgramKeyterms(params, model, config.keyterms);
   return `${base}?${params.toString()}`;
 }
 
