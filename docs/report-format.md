@@ -36,6 +36,7 @@ We prefix every path with a single root directory named after the session, so th
 Note the following:
 
 - `report.md` is the primary artifact. It is a single chronological narrative with `[mm:ss]` timestamps, section breaks at navigations and tab switches, fenced network bodies and console or error output, screenshot references, and blockquotes for your markers and notes. At Compact and Minimal it retains the main text evidence. Visual details may still require the referenced screenshots or other assets.
+- The `report.md` header lists the app URLs, date, duration and the environment the session was recorded in: browser and version, OS, viewport and pixel ratio, language and time zone. `session.json` has the same values under `session.environment`.
 - `session.json` is the machine-readable mirror. It holds the trimmed event stream (the same events, in the same order as the report) plus session metadata, with all asset references rewritten to their zip-relative paths. Use it when you want to program against the events rather than read prose.
 - `MANIFEST.md` lists every asset actually included in the zip. Some assets are dropped at higher verbosity levels (see below), so the report never points at a file that is not there.
 - Asset naming embeds the sequence and timestamp (`{seq}-{mmss}`) so files sort in capture order and cross-reference the `[mm:ss]` marks in `report.md`.

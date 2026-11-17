@@ -275,6 +275,22 @@ describe('renderReport', () => {
     expect(md).toContain('3 endpoint(s)');
   });
 
+  it('puts the recording environment in the header when it was captured', () => {
+    const input = buildSession();
+    input.session.environment = {
+      browser: 'Google Chrome 142.0.7444.59',
+      os: 'macOS 15.1.0 arm',
+      viewport: { width: 1280, height: 720, devicePixelRatio: 2 },
+    };
+    expect(renderReport(input)).toContain(
+      '- **Environment:** Google Chrome 142.0.7444.59 · macOS 15.1.0 arm · viewport 1280×720 @2x',
+    );
+  });
+
+  it('has no environment line for a session recorded before it was captured', () => {
+    expect(renderReport(buildSession())).not.toContain('Environment');
+  });
+
   it('omits the API-spec header line when no spec was compiled', () => {
     const md = renderReport(buildSession());
     expect(md).not.toContain('API spec');

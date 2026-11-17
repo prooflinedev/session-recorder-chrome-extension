@@ -157,8 +157,12 @@ test('records interactions and exports a readable, valid zip', async ({
   expect(report).toContain('BUG HERE'); // our marker
   expect(report).toContain('SELECT'); // the text selection made it to L0
   expect(report).not.toContain('hunter2'); // redaction held
+  // The browser, OS and viewport the session was recorded in.
+  expect(report).toMatch(/- \*\*Environment:\*\* .*viewport \d+×\d+ @[\d.]+x/);
   // session.json is present and valid.
   const jsonKey = Object.keys(files).find((k) => k.endsWith('/session.json'));
   expect(jsonKey).toBeTruthy();
-  JSON.parse(new TextDecoder().decode(files[jsonKey!]));
+  const exported = JSON.parse(new TextDecoder().decode(files[jsonKey!]));
+  expect(exported.session.environment.viewport.width).toBeGreaterThan(0);
+  expect(exported.session.environment.browser).toBeTruthy();
 });

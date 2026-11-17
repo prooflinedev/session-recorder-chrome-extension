@@ -45,6 +45,7 @@ import type {
   VoiceSegmentPayload,
 } from '@/lib/session/types';
 import { PROTECTED_TYPES, scoreEvent } from '@/lib/session/events';
+import { collectEnvironment } from '@/lib/session/environment';
 import {
   makeDefaultSettings,
   STORAGE_KEYS,
@@ -430,6 +431,7 @@ class Orchestrator {
 
     await this.ensureContentScripts(tabId);
     await sendToTab(tabId, { kind: 'content/setActive', active: true, hoverDwellMs: session.settings.hoverDwellMs });
+    session.environment = await collectEnvironment(tabId);
     await this.persistSession();
     this.broadcastState();
 

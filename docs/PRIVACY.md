@@ -30,6 +30,8 @@ recording:
 - Console logs, exceptions, and failed requests
 - Clicks, inputs, scrolls, keystrokes, and page navigations
 - Screenshots of the recorded tab
+- The browser name and version, OS, language, time zone and viewport size when
+  recording starts, so the report says where the bug happened
 - Microphone audio, when you start voice narration
 - Files you upload to the app or attach yourself
 

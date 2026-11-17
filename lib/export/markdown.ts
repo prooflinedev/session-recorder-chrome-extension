@@ -21,6 +21,7 @@ import type {
   SessionEvent,
   VerbosityLevel,
 } from '@/lib/session/types';
+import { describeEnvironment } from '@/lib/session/environment';
 import { buildAnchorMap } from './anchor';
 
 export interface RenderInput {
@@ -145,6 +146,8 @@ function renderHeader(
   lines.push(`- **App:** ${appUrls.length > 0 ? appUrls.join(', ') : '(none)'}`);
   lines.push(`- **Date:** ${new Date(session.startedAt).toISOString()}`);
   lines.push(`- **Duration:** ${formatClock(durationMs)}`);
+  const environment = session.environment && describeEnvironment(session.environment);
+  if (environment) lines.push(`- **Environment:** ${escapeInline(environment)}`);
   lines.push(`- **Verbosity level:** ${input.level}`);
   lines.push(`- **Events:** ${events.length}`);
   if (input.openapi) {
