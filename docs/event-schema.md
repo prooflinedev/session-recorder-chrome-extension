@@ -36,7 +36,12 @@ optional `at` (an explicit ms-epoch timestamp; the funnel defaults to now), and
 - `ElementDescriptor` is a best-effort description of a DOM element, built in a
   content script: `tag` (required), optional `id`, `role`, `ariaLabel`, `name`,
   `text` (visible text, capped at about 80 characters), `selector` (best-effort CSS
-  selector: id, then `[data-testid]`, then a short ancestor path), and `rect`
+  selector: id, then `[data-testid]`, then a short ancestor path), and `rect`.
+  Interactions inside open shadow roots describe the element the user actually
+  hit, not its shadow host; its `selector` is scoped to the shadow root and
+  prefixed with the host's selector, joined by ` >> ` (Playwright's chaining
+  syntax), for example `#checkout > card-field >> #number`. Closed shadow roots
+  stay opaque and describe the host.
 - `NetHeader` is `{ name, value }` (both strings)
 - `NetBody` is described under [net-request](#net-request)
 
