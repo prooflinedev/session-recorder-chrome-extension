@@ -472,4 +472,38 @@ describe('NetworkCapturer redirects', () => {
     expect(hop1!.requestBody?.assetId).toBe('asset-post');
     expect(hop2).toMatchObject({ method: 'GET', status: 200 });
   });
+
+  it('drops queued hops when a new recording starts before storage settles', async () => {
+    let finishStore!: (id: string) => void;
+    const storeBodyAsset = vi.fn(
+      () => new Promise<string>((resolve) => (finishStore = resolve)),
+    );
+    const { cap, emitted } = makeCapturer({
+      getSettings: () => ({ ...SETTINGS, captureApiSpec: true }),
+      storeBodyAsset,
+    });
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'nav-4',
+      request: {
+        method: 'POST',
+        url: 'https://api.example.com/v1/upload',
+        headers: { 'content-type': 'application/json' },
+        postData: `{"data":"${'x'.repeat(100 * 1024)}"}`,
+      },
+      type: 'XHR',
+    });
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'nav-4',
+      request: { method: 'GET', url: 'https://api.example.com/v1/result', headers: {} },
+      redirectResponse: { status: 303, headers: {} },
+      type: 'XHR',
+    });
+    cap.handle(1, 'Network.loadingFailed', { requestId: 'nav-4', errorText: 'net::ERR_ABORTED' });
+    expect(storeBodyAsset).toHaveBeenCalled();
+
+    cap.reset(); // next recording starts
+    finishStore('asset-old');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emitted).toHaveLength(0);
+  });
 });

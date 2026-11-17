@@ -75,6 +75,8 @@ export class NetworkCapturer {
   private readonly pending = new Map<string, PartialRequest>();
   /** Last in-flight emit per requestId, so redirect hops sharing one id emit in order. */
   private readonly emitQueue = new Map<string, Promise<void>>();
+  /** Bumped on reset so deferred emits from a previous recording are dropped. */
+  private generation = 0;
 
   constructor(private readonly deps: NetworkDeps) {}
 
@@ -124,6 +126,8 @@ export class NetworkCapturer {
   /** Drop all in-flight state (e.g. between sessions). */
   reset(): void {
     this.pending.clear();
+    this.emitQueue.clear();
+    this.generation++;
   }
 
   /**
@@ -553,7 +557,10 @@ export class NetworkCapturer {
     const stored = storeRequestBody
       ? this.storeRequestBody(payload, storeRequestBody)
       : undefined;
-    const done = Promise.all([prior, stored]).then(() => this.finishEmit(tabId, payload));
+    const gen = this.generation;
+    const done = Promise.all([prior, stored]).then(() => {
+      if (gen === this.generation) this.finishEmit(tabId, payload);
+    });
     this.emitQueue.set(id, done);
     void done.then(() => {
       if (this.emitQueue.get(id) === done) this.emitQueue.delete(id);
