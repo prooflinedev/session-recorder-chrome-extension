@@ -93,6 +93,6 @@ test('annotation entry flushes pending shadow input and excludes comment typing'
   const { events } = await dispatch<EventsRes>(background, { kind: 'events/get', sessionId: started.session!.id });
   const inputs = events.filter((e) => e.type === 'input');
   expect(inputs).toHaveLength(1);
-  expect(inputs[0].payload).toMatchObject({ value: 'pending shadow value', redacted: false });
+  expect(inputs[0]!.payload).toMatchObject({ value: 'pending shadow value', redacted: false });
   expect(JSON.stringify(events)).not.toContain('annotation-only text');
 });
