@@ -159,6 +159,30 @@ describe('NetworkCapturer API-spec full-body capture', () => {
     cap.handle(1, 'Network.loadingFinished', { requestId: rid });
   }
 
+  it('does not store a delayed response body in a new recording after reset', async () => {
+    let finishOldBody!: (body: { body: string; base64Encoded: boolean }) => void;
+    const send = vi.fn(async () => ({ body: '{"new":true}', base64Encoded: false }))
+      .mockImplementationOnce(() => new Promise((resolve) => { finishOldBody = resolve; }));
+    const storeBodyAsset = vi.fn(async () => 'asset-old');
+    const { cap, emitted } = makeCapturer({
+      getSettings: () => ({ ...API_SETTINGS, inlineBodyCapBytes: 16 }),
+      send,
+      storeBodyAsset,
+    });
+    finishXhr(cap, 'https://api.example.com/v1/old');
+    cap.reset();
+    // Reuse even the request ID: membership must identify the old hop itself.
+    finishXhr(cap, 'https://api.example.com/v1/new');
+    await vi.waitFor(() => expect(emitted).toHaveLength(1));
+    finishOldBody({ body: `{"old":"${'x'.repeat(64)}"}`, base64Encoded: false });
+    // send() is the only await before the mocked store call. Let its entire
+    // continuation settle, including the unguarded path used as the regression.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(storeBodyAsset.mock.calls.length).toBe(0);
+    expect(emitted).toHaveLength(1);
+    expect(payloadOf(emitted[0]!)).toMatchObject({ url: 'https://api.example.com/v1/new' });
+  });
+
   it('stores the full response body past the normal asset cap when the flag is on', async () => {
     const storeBodyAsset = vi.fn(async () => 'asset-api');
     const { cap, emitted } = makeCapturer({
@@ -365,5 +389,265 @@ describe('NetworkCapturer binary bodies', () => {
     const body = payloadOf(emitted[0]!).requestBody!;
     expect(body.text).toContain('plain text here');
     expect(body.text).not.toContain('binary body');
+  });
+});
+
+describe('NetworkCapturer redirects', () => {
+  // Chrome reuses one requestId for every hop of a redirect chain; each later hop's
+  // requestWillBeSent carries the previous hop's response as `redirectResponse`.
+  function header(headers: { name: string; value: string }[], name: string): string | undefined {
+    return headers.find((h) => h.name.toLowerCase() === name)?.value;
+  }
+
+  it.each(['before', 'after', 'split'])(
+    'pairs ExtraInfo with its redirect hop when delivered %s the base events',
+    async (order) => {
+      const send = vi.fn(async () => ({ body: 'final response', base64Encoded: false }));
+      const { cap, emitted } = makeCapturer({ send });
+      const info = (kind: 'request' | 'response', hop: string) =>
+        cap.handle(1, kind === 'request'
+          ? 'Network.requestWillBeSentExtraInfo'
+          : 'Network.responseReceivedExtraInfo', {
+          requestId: 'ordered',
+          headers: { [`X-${kind}-Hop`]: hop },
+          ...(kind === 'response' ? { statusCode: hop === 'first' ? 302 : 200 } : {}),
+        });
+      if (order !== 'after') {
+        info('request', 'first');
+        info('request', 'final');
+      }
+      if (order === 'before') {
+        info('response', 'first');
+        info('response', 'final');
+      }
+      cap.handle(1, 'Network.requestWillBeSent', {
+        requestId: 'ordered',
+        request: { method: 'POST', url: 'https://app.example/login', headers: {}, postData: 'name=alice' },
+      });
+      cap.handle(1, 'Network.requestWillBeSent', {
+        requestId: 'ordered',
+        request: { method: 'GET', url: 'https://app.example/cached', headers: {} },
+        redirectHasExtraInfo: true,
+        redirectResponse: { status: 302, headers: { Location: '/cached' } },
+      });
+      cap.handle(1, 'Network.requestWillBeSent', {
+        requestId: 'ordered',
+        request: { method: 'GET', url: 'https://app.example/final', headers: {} },
+        redirectHasExtraInfo: false,
+        redirectResponse: { status: 307, headers: { Location: '/final' } },
+      });
+      cap.handle(1, 'Network.responseReceived', {
+        requestId: 'ordered',
+        hasExtraInfo: true,
+        response: { status: 200, headers: {}, mimeType: 'text/plain' },
+      });
+      cap.handle(1, 'Network.loadingFinished', { requestId: 'ordered' });
+      // Headers must not delay fetching the body, which CDP can evict.
+      expect(send).toHaveBeenCalledWith(1, 'Network.getResponseBody', { requestId: 'ordered' });
+      await Promise.resolve();
+      await Promise.resolve();
+      if (order !== 'before') expect(emitted).toHaveLength(0);
+      if (order === 'after') {
+        info('request', 'first');
+        info('request', 'final');
+      }
+      if (order !== 'before') {
+        info('response', 'first');
+        info('response', 'final');
+      }
+      await vi.waitFor(() => expect(emitted).toHaveLength(3));
+      const hops = emitted.map(payloadOf);
+      expect(hops.map((p) => [
+        p.url, p.status,
+        header(p.requestHeaders, 'x-request-hop'),
+        header(p.responseHeaders, 'x-response-hop'),
+      ])).toEqual([
+        ['https://app.example/login', 302, 'first', 'first'],
+        ['https://app.example/cached', 307, undefined, undefined],
+        ['https://app.example/final', 200, 'final', 'final'],
+      ]);
+      expect(hops[0]!.requestBody?.text).toBe('name=alice');
+      expect(hops[1]!.requestBody).toBeUndefined();
+      expect(hops[2]!.requestBody).toBeUndefined();
+      expect(hops[2]!.responseBody?.text).toBe('final response');
+      expect(header(hops[2]!.responseHeaders, 'location')).toBeUndefined();
+    },
+  );
+
+  it('keeps available extra headers when a request fails without responseReceived', () => {
+    const { cap, emitted } = makeCapturer();
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'cors',
+      request: { method: 'GET', url: 'https://app.example/blocked', headers: {} },
+    });
+    cap.handle(1, 'Network.responseReceivedExtraInfo', {
+      requestId: 'cors', statusCode: 403, headers: { 'X-Blocked': 'cors' },
+    });
+    cap.handle(1, 'Network.loadingFailed', { requestId: 'cors', errorText: 'net::ERR_FAILED' });
+    expect(emitted).toHaveLength(1);
+    expect(payloadOf(emitted[0]!)).toMatchObject({ status: 403, failed: true });
+    expect(header(payloadOf(emitted[0]!).responseHeaders, 'x-blocked')).toBe('cors');
+  });
+
+  it('drops unpaired extra headers on reset', () => {
+    const { cap, emitted } = makeCapturer();
+    cap.handle(1, 'Network.requestWillBeSentExtraInfo', {
+      requestId: 'reused', headers: { 'X-Old-Session': 'old' },
+    });
+    cap.reset();
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'reused',
+      request: { method: 'GET', url: 'https://app.example/new', headers: {} },
+    });
+    cap.handle(1, 'Network.loadingFailed', { requestId: 'reused', errorText: 'net::ERR_ABORTED' });
+    expect(emitted).toHaveLength(1);
+    expect(header(payloadOf(emitted[0]!).requestHeaders, 'x-old-session')).toBeUndefined();
+  });
+
+  it('emits the 302 hop and the follow-up GET as separate requests', async () => {
+    const { cap, emitted } = makeCapturer({
+      send: vi.fn(async () => ({ body: '<h1>Dashboard</h1>', base64Encoded: false })),
+    });
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'nav-1',
+      request: {
+        method: 'POST',
+        url: 'https://app.example.com/login',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        postData: 'username=alice',
+      },
+      type: 'Document',
+    });
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'nav-1',
+      request: { method: 'GET', url: 'https://app.example.com/dashboard', headers: {} },
+      redirectResponse: {
+        status: 302,
+        statusText: 'Found',
+        headers: { Location: '/dashboard' },
+        mimeType: 'text/html',
+        fromDiskCache: true,
+      },
+      type: 'Document',
+    });
+    cap.handle(1, 'Network.responseReceived', {
+      requestId: 'nav-1',
+      response: { status: 200, headers: { 'Content-Type': 'text/html' }, mimeType: 'text/html' },
+      type: 'Document',
+    });
+    cap.handle(1, 'Network.loadingFinished', { requestId: 'nav-1' });
+    await vi.waitFor(() => expect(emitted).toHaveLength(2));
+
+    const [hop1, hop2] = emitted.map(payloadOf);
+    expect(hop1).toMatchObject({ method: 'POST', url: 'https://app.example.com/login', status: 302 });
+    expect(hop1!.requestBody?.present).toBe(true);
+    expect(header(hop1!.responseHeaders, 'location')).toBe('/dashboard');
+    expect(hop1).toMatchObject({ mime: 'text/html', fromCache: true });
+
+    expect(hop2).toMatchObject({ method: 'GET', url: 'https://app.example.com/dashboard', status: 200 });
+    expect(hop2!.requestBody?.present ?? false).toBe(false);
+    expect(header(hop2!.requestHeaders, 'content-type')).toBeUndefined();
+    expect(header(hop2!.responseHeaders, 'location')).toBeUndefined();
+  });
+
+  it('emits every hop of a multi-redirect chain in order', async () => {
+    const { cap, emitted } = makeCapturer();
+    const hop = (url: string, redirectStatus?: number) =>
+      cap.handle(1, 'Network.requestWillBeSent', {
+        requestId: 'nav-2',
+        request: { method: 'GET', url, headers: {} },
+        ...(redirectStatus ? { redirectResponse: { status: redirectStatus, headers: {} } } : {}),
+      });
+    hop('https://a.example/old');
+    hop('https://a.example/new', 301);
+    hop('https://a.example/final', 302);
+    cap.handle(1, 'Network.responseReceived', { requestId: 'nav-2', response: { status: 200, headers: {} } });
+    cap.handle(1, 'Network.loadingFinished', { requestId: 'nav-2' });
+    await vi.waitFor(() => expect(emitted).toHaveLength(3));
+
+    expect(emitted.map(payloadOf).map((p) => [p.url, p.status])).toEqual([
+      ['https://a.example/old', 301],
+      ['https://a.example/new', 302],
+      ['https://a.example/final', 200],
+    ]);
+  });
+  it('keeps hop order when an earlier hop is still storing its request body', async () => {
+    let finishStore!: (id: string) => void;
+    const storeBodyAsset = vi.fn(
+      () => new Promise<string>((resolve) => (finishStore = resolve)),
+    );
+    const send = vi.fn(async () => ({ body: '{"ok":true}', base64Encoded: false }));
+    const { cap, emitted } = makeCapturer({
+      getSettings: () => ({ ...SETTINGS, captureApiSpec: true }),
+      storeBodyAsset,
+      send,
+    });
+    const json = { 'content-type': 'application/json' };
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'nav-3',
+      request: {
+        method: 'POST',
+        url: 'https://api.example.com/v1/upload',
+        headers: json,
+        postData: `{"data":"${'x'.repeat(100 * 1024)}"}`,
+      },
+      type: 'XHR',
+    });
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'nav-3',
+      request: { method: 'GET', url: 'https://api.example.com/v1/result', headers: {} },
+      redirectResponse: { status: 303, headers: { Location: '/v1/result' } },
+      type: 'XHR',
+    });
+    cap.handle(1, 'Network.responseReceived', {
+      requestId: 'nav-3',
+      response: { status: 200, headers: json, mimeType: 'application/json' },
+    });
+    cap.handle(1, 'Network.loadingFinished', { requestId: 'nav-3' });
+    await vi.waitFor(() => expect(send).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 0));
+    // The GET is done, but must not land ahead of the POST still being stored.
+    expect(emitted).toHaveLength(0);
+
+    finishStore('asset-post');
+    await vi.waitFor(() => expect(emitted).toHaveLength(2));
+    const [hop1, hop2] = emitted.map(payloadOf);
+    expect(hop1).toMatchObject({ method: 'POST', status: 303 });
+    expect(hop1!.requestBody?.assetId).toBe('asset-post');
+    expect(hop2).toMatchObject({ method: 'GET', status: 200 });
+  });
+
+  it('drops queued hops when a new recording starts before storage settles', async () => {
+    let finishStore!: (id: string) => void;
+    const storeBodyAsset = vi.fn(
+      () => new Promise<string>((resolve) => (finishStore = resolve)),
+    );
+    const { cap, emitted } = makeCapturer({
+      getSettings: () => ({ ...SETTINGS, captureApiSpec: true }),
+      storeBodyAsset,
+    });
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'nav-4',
+      request: {
+        method: 'POST',
+        url: 'https://api.example.com/v1/upload',
+        headers: { 'content-type': 'application/json' },
+        postData: `{"data":"${'x'.repeat(100 * 1024)}"}`,
+      },
+      type: 'XHR',
+    });
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'nav-4',
+      request: { method: 'GET', url: 'https://api.example.com/v1/result', headers: {} },
+      redirectResponse: { status: 303, headers: {} },
+      type: 'XHR',
+    });
+    cap.handle(1, 'Network.loadingFailed', { requestId: 'nav-4', errorText: 'net::ERR_ABORTED' });
+    expect(storeBodyAsset).toHaveBeenCalled();
+
+    cap.reset(); // next recording starts
+    finishStore('asset-old');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emitted).toHaveLength(0);
   });
 });
