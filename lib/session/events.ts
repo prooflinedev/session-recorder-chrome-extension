@@ -1,5 +1,10 @@
 import type { EventType, RawEvent, SessionEvent } from './types';
 
+/** Speech dictated into a page comment; the annotation carries its text, so it is not narration. */
+export function isDictatedSpeech(e: SessionEvent): boolean {
+  return e.type === 'voice-segment' && e.payload.dictation === true;
+}
+
 /**
  * Static importance baseline per event type. Higher = more likely to survive
  * trimming. Payload-aware adjustments happen in `scoreEvent`.

@@ -36,7 +36,12 @@ optional `at` (an explicit ms-epoch timestamp; the funnel defaults to now), and
 - `ElementDescriptor` is a best-effort description of a DOM element, built in a
   content script: `tag` (required), optional `id`, `role`, `ariaLabel`, `name`,
   `text` (visible text, capped at about 80 characters), `selector` (best-effort CSS
-  selector: id, then `[data-testid]`, then a short ancestor path), and `rect`
+  selector: id, then `[data-testid]`, then a short ancestor path), and `rect`.
+  Interactions inside open shadow roots describe the element the user actually
+  hit, not its shadow host; its `selector` is scoped to the shadow root and
+  prefixed with the host's selector, joined by ` >> ` (Playwright's chaining
+  syntax), for example `#checkout > card-field >> #number`. Closed shadow roots
+  stay opaque and describe the host.
 - `NetHeader` is `{ name, value }` (both strings)
 - `NetBody` is described under [net-request](#net-request)
 
@@ -52,6 +57,12 @@ every verbosity level.
 ---
 
 ## Interaction events
+
+Annotation owns input while the comment overlay or screenshot markup is open:
+no interaction event is recorded then. Typing and scrolling that were still
+settling when annotation began are recorded at that moment; unsettled hovers
+and selections are dropped. Capture resumes with the session's hover dwell when
+annotation closes.
 
 ### `click`
 `ClickPayload` records a pointer click on an element.
@@ -94,7 +105,7 @@ shortcut chord.
 
 ### `hover`
 
-`HoverPayload` stores `descriptor: ElementDescriptor` and `dwellMs: number`. It records a sustained pointer hover. L1 and higher drop unprotected hover events.
+`HoverPayload` stores `descriptor: ElementDescriptor` and `dwellMs: number`. It records a sustained pointer hover. A pointer that leaves the page before the dwell ends records nothing. L1 and higher drop unprotected hover events.
 
 ### `text-select`
 `TextSelectPayload` records a settled text selection (or its deselection). The
@@ -297,6 +308,7 @@ protected.
 | `transcriptionError`| `string` (optional)                 | Error message when transcription failed. |
 | `provider`          | `string` (optional)                 | Transcription provider used. |
 | `streamed`          | `boolean` (optional)                | Transcript arrived through live streaming. |
+| `dictation`         | `boolean` (optional)                | Speech captured while a page-comment composer was open. The saved annotation carries its text, so reports, summaries and `transcript.json` omit it from narration; the audio stays in the export. |
 | `anchorContext`     | `string` (optional)                 | Nearby interaction context for narration. |
 | `transcriptionGeneration` | `number` (optional)           | Local retry generation. |
 | `transcriptionTerminalFailure` | `boolean` (optional)      | Prevents automatic retry of a terminal failure. |

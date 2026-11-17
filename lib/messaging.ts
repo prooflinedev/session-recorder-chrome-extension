@@ -75,7 +75,10 @@ export type RequestMessage =
   // --- export (sidepanel -> bg or self-handled) ---
   | { kind: 'export/estimate'; sessionId: string }
   // --- offscreen lifecycle (bg <-> offscreen) ---
-  | { kind: 'audio/start'; sessionId: string; startedAt: number; transcription?: StreamTranscriptionConfig | null }
+  | { kind: 'audio/start'; sessionId: string; startedAt: number; transcription?: StreamTranscriptionConfig | null; dictating?: boolean }
+  // A comment composer opened or closed: segmented (batch) capture starts a new
+  // segment at that boundary and uses a short cadence while dictating.
+  | { kind: 'audio/dictation'; on: boolean }
   | { kind: 'audio/pause' }
   | { kind: 'audio/resume' }
   | { kind: 'audio/stop' }
@@ -96,6 +99,7 @@ export type RequestMessage =
   // --- live streaming transcription (offscreen -> bg) ---
   | { kind: 'transcript/final'; sessionId: string; tStart: number; tEnd: number; text: string; words?: { word: string; t: number }[]; provider: string }
   | { kind: 'transcript/interim'; sessionId: string; text: string; tStart?: number }
+  | { kind: 'transcript/error'; sessionId: string; error: string }
   // --- storage ---
   | { kind: 'storage/estimate' };
 
@@ -159,6 +163,7 @@ export type ResponseFor = {
   'audio/pause': { ok: boolean };
   'audio/resume': { ok: boolean };
   'audio/stop': { ok: boolean };
+  'audio/dictation': { ok: boolean };
   'video/start': { ok: boolean; error?: string };
   'video/pause': { ok: boolean };
   'video/resume': { ok: boolean; error?: string };
@@ -168,6 +173,7 @@ export type ResponseFor = {
   'video/segment': { ok: boolean };
   'transcript/final': { ok: boolean };
   'transcript/interim': { ok: boolean };
+  'transcript/error': { ok: boolean };
   'storage/estimate': { usage: number; quota: number };
 };
 
@@ -199,6 +205,8 @@ export type BroadcastMessage =
 export type ContentMessage =
   | { kind: 'content/mic'; on: boolean }
   | { kind: 'content/dictation'; id: string; segment: string; text: string; final: boolean }
+  /** Speech for this composer is awaiting transcription, or transcription failed. */
+  | { kind: 'content/dictation-status'; id: string; pending: boolean; error?: string }
   | {kind: 'content/point-annotate'; on: boolean}
   | { kind: 'content/setActive'; active: boolean; hoverDwellMs?: number }
   | {

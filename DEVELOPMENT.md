@@ -30,11 +30,13 @@ The `dev:firefox` script is a WXT development entry point, not a supported Firef
 ```sh
 pnpm compile        # Extension TypeScript
 pnpm compile:e2e    # Browser-test TypeScript
-pnpm test           # Vitest
+pnpm test:unit      # Vitest (also pnpm test outside CI)
 pnpm exec playwright install chromium
 pnpm test:e2e       # Build, then Playwright
 pnpm test:e2e:headed
 ```
+
+The required CI check runs `pnpm test`, which runs Vitest, browser-test TypeScript, the extension build and the full Playwright suite. On Linux it installs Playwright Chromium and its system dependencies, then runs headed Chromium under Xvfb. Browser failures fail the same required check. No live provider credentials are used.
 
 Run focused suites while editing, then the checks affected by the change. Playwright loads the built extension into an isolated Chromium profile and serves `demo/` on port 5319. It uses synthetic audio/video devices. Tests cover capture and export, redaction, annotation, publishing, managed connection, permissions and failure recovery; network fixtures keep automated sharing tests from creating real issues or reports.
 

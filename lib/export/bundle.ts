@@ -10,6 +10,7 @@
  * this module owns the asset->path mapping and the file layout.
  */
 
+import { isDictatedSpeech } from '@/lib/session/events';
 import type {
   Asset,
   AssetMeta,
@@ -370,7 +371,7 @@ export async function buildBundle(
   const transcript = trimmed
     .filter(
       (e): e is Extract<SessionEvent, { type: 'voice-segment' }> =>
-        e.type === 'voice-segment',
+        e.type === 'voice-segment' && !isDictatedSpeech(e),
     )
     .map((e) => ({
       t: e.payload.tStart,

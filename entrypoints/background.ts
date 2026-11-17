@@ -44,7 +44,7 @@ import type {
   TabInfo,
   VoiceSegmentPayload,
 } from '@/lib/session/types';
-import { PROTECTED_TYPES, scoreEvent } from '@/lib/session/events';
+import { PROTECTED_TYPES, isDictatedSpeech, scoreEvent } from '@/lib/session/events';
 import {
   makeDefaultSettings,
   STORAGE_KEYS,
@@ -156,6 +156,15 @@ function sessionNameFor(tab: chrome.tabs.Tab, now: number): string {
 // Orchestrator
 // ----------------------------------------------------------------------------
 
+/** The page-comment composer that receives dictated speech. */
+interface DictationTarget {
+  tabId: number;
+  id: string;
+  /** Session-relative time (ms) from which speech belongs to this composer. */
+  since: number;
+  sessionId: string;
+}
+
 class Orchestrator {
   // --- session state ---
   private current: Session | null = null;
@@ -182,7 +191,11 @@ class Orchestrator {
   private rehydrating = false;
   /** True while the mic is streaming live transcripts (vs batch segments). */
   private micStreaming = false;
-  private dictationTarget?: { tabId: number; id: string; since: number; sessionId: string };
+  private dictationTarget?: DictationTarget;
+  /** The composer that most recently stopped accepting speech, with its end time. */
+  private closedDictation?: DictationTarget & { until: number };
+  /** Batch transcription jobs (voice-segment event id) waiting for a composer's speech. */
+  private dictationJobs = new Map<string, string>();
   private pageKeyterms: string[] = [];
   private vocabularyReady: Promise<void> = Promise.resolve();
   private vocabularyCache = new Map<string, Promise<string[]>>();
@@ -626,6 +639,8 @@ class Orchestrator {
 
     this.current = null;
     this.dictationTarget = undefined;
+    this.closedDictation = undefined;
+    this.dictationJobs.clear();
     this.pageKeyterms = [];
     this.vocabularyCache.clear();
     // Keep the just-stopped session visible in AppState so the side panel lands
@@ -1020,12 +1035,12 @@ class Orchestrator {
         const tabId = sender.tab?.id;
         if (!this.current || this.paused || !this.pointing || tabId === undefined || !this.isSessionTab(tabId)) return { ok: false, micOn: this.micOn };
         const target = { tabId, id: msg.id, since: Date.now() - this.sessionStartEpoch, sessionId: this.current.id };
-        this.dictationTarget = target;
+        this.setDictationTarget(target);
         this.vocabularyReady = this.prepareVocabulary(msg.context, target).catch(() => {});
         return { ok: true, micOn: this.micOn };
       }
       case 'dictation/blur':
-        if (this.dictationTarget?.id === msg.id && this.dictationTarget.tabId === sender.tab?.id) this.dictationTarget = undefined;
+        if (this.dictationTarget?.id === msg.id && this.dictationTarget.tabId === sender.tab?.id) this.setDictationTarget(undefined);
         return { ok: true };
       case 'dictation/mic': {
         if (!this.current || !this.pointing || sender.tab?.id !== this.dictationTarget?.tabId) return { ok: false, micOn: this.micOn };
@@ -1114,6 +1129,11 @@ class Orchestrator {
         this.routeDictation(msg.sessionId, msg.text, false, msg.tStart);
         broadcast({ kind: 'transcript/live', text: msg.text, final: false });
         return { ok: true };
+      case 'transcript/error': {
+        const target = this.dictationTarget;
+        if (target && target.sessionId === msg.sessionId) void sendToTab(target.tabId, { kind: 'content/dictation-status', id: target.id, pending: false, error: msg.error });
+        return { ok: true };
+      }
 
       // --- audio/video control echoes (bg -> offscreen); harmless no-op here ---
       case 'audio/keyterms':
@@ -1121,6 +1141,7 @@ class Orchestrator {
       case 'audio/pause':
       case 'audio/resume':
       case 'audio/stop':
+      case 'audio/dictation':
       case 'video/start':
       case 'video/pause':
       case 'video/resume':
@@ -1298,6 +1319,9 @@ class Orchestrator {
     }
 
     // Batch mode: create a voice-segment and transcribe it after the fact.
+    // Segments rotate when a composer opens or closes, so each one belongs
+    // wholly to narration or to one composer's dictation.
+    const dictation = this.dictationAt(session.id, msg.tStart);
     const ev = this.recordEvent({
       type: 'voice-segment',
       payload: {
@@ -1305,9 +1329,15 @@ class Orchestrator {
         tStart: msg.tStart,
         tEnd: msg.tEnd,
         transcript: null,
+        ...(dictation ? { dictation: true } : {}),
       },
     });
-    if (ev) this.enqueueTranscription(ev, session.id);
+    if (!ev) return { ok: true };
+    if (dictation) {
+      this.dictationJobs.set(ev.id, dictation.id);
+      this.sendDictationStatus(dictation.id);
+    }
+    this.enqueueTranscription(ev, session.id);
     return { ok: true };
   }
 
@@ -1348,6 +1378,7 @@ class Orchestrator {
     const session = this.current;
     if (!session || session.id !== msg.sessionId) return { ok: false };
     this.routeDictation(msg.sessionId, msg.text, true, msg.tStart);
+    const dictation = !!this.dictationAt(msg.sessionId, msg.tStart);
     this.recordEvent({
       // Stamp the event at the moment the utterance BEGAN so it interleaves into
       // the timeline next to what the user was doing/seeing as they said it.
@@ -1360,6 +1391,7 @@ class Orchestrator {
         words: msg.words,
         streamed: true,
         provider: msg.provider,
+        ...(dictation ? { dictation: true } : {}),
       },
     });
     broadcast({ kind: 'transcript/live', text: msg.text, final: true });
@@ -1374,7 +1406,7 @@ class Orchestrator {
     await this.writer?.flush();
     const events = await getEvents(sessionId);
     const target = events.find(
-      (e) => e.type === 'voice-segment' && !e.payload.assetId,
+      (e) => e.type === 'voice-segment' && !e.payload.assetId && !e.payload.dictation,
     );
     if (!target || target.type !== 'voice-segment') return false;
     target.payload.assetId = assetId;
@@ -1410,7 +1442,7 @@ class Orchestrator {
       this.annotating = false;
     }
     this.pointing = on;
-    if (!on) this.dictationTarget = undefined;
+    if (!on) this.setDictationTarget(undefined);
     for (const tab of this.current?.tabs ?? []) await sendToTab(tab.tabId, {kind:'content/point-annotate',on});
     this.broadcastState();
     return {ok:true, pointing:on};
@@ -1499,6 +1531,36 @@ class Orchestrator {
     if (this.micOn) await this.sendToOffscreen({ kind: 'audio/keyterms', keyterms: terms });
   }
 
+  /**
+   * Make `target` the composer that receives speech (undefined: none). Batch
+   * capture starts a new segment at the boundary, so speech before and after a
+   * composer opens is never mixed into one narration segment.
+   */
+  private setDictationTarget(target: DictationTarget | undefined): void {
+    const previous = this.dictationTarget;
+    if (previous === target) return;
+    if (previous) this.closedDictation = { ...previous, until: Date.now() - this.sessionStartEpoch };
+    this.dictationTarget = target;
+    if (this.micOn && !this.micStreaming) void this.sendToOffscreen({ kind: 'audio/dictation', on: !!target }).catch(() => {});
+  }
+
+  /** The composer whose dictation window contains session time `t`, if any. */
+  private dictationAt(sessionId: string, t: number | undefined): DictationTarget | undefined {
+    if (t === undefined) return;
+    const open = this.dictationTarget;
+    if (open && open.sessionId === sessionId && t >= open.since) return open;
+    const closed = this.closedDictation;
+    if (closed && closed.sessionId === sessionId && t >= closed.since && t < closed.until) return closed;
+  }
+
+  /** Tell the open composer whether its speech is still being transcribed. */
+  private sendDictationStatus(targetId: string, error?: string): void {
+    const target = this.dictationTarget;
+    if (target?.id !== targetId) return;
+    const pending = [...this.dictationJobs.values()].includes(targetId);
+    void sendToTab(target.tabId, { kind: 'content/dictation-status', id: targetId, pending, ...(error ? { error } : {}) });
+  }
+
   private routeDictation(sessionId: string, text: string, final: boolean, tStart?: number): void {
     const target = this.dictationTarget;
     if (!target || this.paused || !this.pointing || target.sessionId !== sessionId || this.current?.id !== sessionId || tStart === undefined || tStart < target.since || !text.trim()) return;
@@ -1523,6 +1585,7 @@ class Orchestrator {
         sessionId: session.id,
         startedAt: this.sessionStartEpoch,
         transcription: config ? { ...config, keyterms: this.pageKeyterms } : null,
+        dictating: !!this.dictationTarget,
       });
       if (res && res.ok) {
         this.micOn = true;
@@ -1634,6 +1697,7 @@ class Orchestrator {
           | 'audio/pause'
           | 'audio/resume'
           | 'audio/keyterms'
+          | 'audio/dictation'
           | 'audio/stop'
           | 'video/start'
           | 'video/pause'
@@ -1739,12 +1803,17 @@ class Orchestrator {
   // Transcription queue (sequential)
   // --------------------------------------------------------------------------
 
+  /**
+   * Queue a segment for transcription. Dictation runs ahead of narration because
+   * a composer waits on it, and in arrival order so its words stay in sequence.
+   */
   private enqueueTranscription(event: SessionEvent, sessionId: string): void {
     const key = `${sessionId}/${event.id}`;
     if (this.transcribing.has(key)) return;
     this.transcribing.add(key);
     this.transTotal += 1;
-    this.transQueue.push({ sessionId, event });
+    const narration = isDictatedSpeech(event) ? this.transQueue.findIndex((job) => !isDictatedSpeech(job.event)) : -1;
+    this.transQueue.splice(narration < 0 ? this.transQueue.length : narration, 0, { sessionId, event });
     void this.drainTranscription();
   }
 
@@ -1783,6 +1852,7 @@ class Orchestrator {
     let payload = event.payload as VoiceSegmentPayload;
     // Make sure the base event is durable before we overwrite it (put by id).
     await this.writer?.flush().catch(() => {});
+    let failure: string | undefined;
 
     try {
       const config = await this.loadTranscriptionConfig();
@@ -1833,12 +1903,17 @@ class Orchestrator {
       await appendEvents([updated]);
       this.updateRecent(updated);
     } catch (e) {
-      const updated = {
-        ...event,
-        payload: transcriptionFailure(payload, e),
-      } as SessionEvent;
+      const failed = transcriptionFailure(payload, e);
+      failure = failed.transcriptionError;
+      const updated = { ...event, payload: failed } as SessionEvent;
       await appendEvents([updated]).catch(() => {});
       this.updateRecent(updated);
+    } finally {
+      const targetId = this.dictationJobs.get(event.id);
+      if (targetId) {
+        this.dictationJobs.delete(event.id);
+        this.sendDictationStatus(targetId, failure);
+      }
     }
   }
 
