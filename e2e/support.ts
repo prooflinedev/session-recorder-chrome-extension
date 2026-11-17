@@ -15,9 +15,13 @@ import {
   chromium,
   expect as pwExpect,
   type BrowserContext,
+  type Request,
+  type Route,
   type Worker,
 } from '@playwright/test';
-import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import https from 'node:https';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
@@ -26,46 +30,20 @@ import { fileURLToPath } from 'node:url';
 const dir = path.dirname(fileURLToPath(import.meta.url));
 export const EXT_PATH = path.resolve(dir, '..', '.output', 'chrome-mv3');
 
-function derLength(length: number): Buffer {
-  if (length < 128) return Buffer.from([length]);
-  const hex = length.toString(16).padStart(length > 255 ? 4 : 2, '0');
-  const bytes = Buffer.from(hex, 'hex');
-  return Buffer.concat([Buffer.from([0x80 | bytes.length]), bytes]);
-}
-
-function derTag(tag: number, body: Buffer): Buffer {
-  return Buffer.concat([Buffer.from([tag]), derLength(body.length), body]);
-}
-
-const derSeq = (...parts: Buffer[]) => derTag(0x30, Buffer.concat(parts));
-const derSet = (...parts: Buffer[]) => derTag(0x31, Buffer.concat(parts));
-const derOid = (bytes: number[]) => derTag(0x06, Buffer.from(bytes));
-const derUtf8 = (text: string) => derTag(0x0c, Buffer.from(text, 'utf8'));
-const derUtcTime = (text: string) => derTag(0x17, Buffer.from(text, 'ascii'));
-const derBitString = (body: Buffer) =>
-  derTag(0x03, Buffer.concat([Buffer.from([0x00]), body]));
-
-function createEphemeralTlsCredentials(): { key: string | Buffer; cert: string } {
-  const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', {
-    namedCurve: 'prime256v1',
-  });
-  const spki = publicKey.export({ type: 'spki', format: 'der' });
-  // ecdsa-with-SHA256 (1.2.840.10045.4.3.2) and CN=offline.test (2.5.4.3).
-  const sigAlg = derSeq(derOid([0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02]));
-  const subject = derSeq(derSet(derSeq(derOid([0x55, 0x04, 0x03]), derUtf8('offline.test'))));
-  const validity = derSeq(derUtcTime('250101000000Z'), derUtcTime('350101000000Z'));
-  const version = derTag(0xa0, Buffer.from([0x02, 0x01, 0x02]));
-  const serial = derTag(0x02, Buffer.concat([Buffer.from([0x01]), crypto.randomBytes(8)]));
-  const tbs = derSeq(version, serial, sigAlg, subject, validity, subject, spki);
-  const signature = crypto.sign('sha256', tbs, privateKey);
-  const certDer = derSeq(tbs, sigAlg, derBitString(signature));
-  const lines = certDer.toString('base64').match(/.{1,64}/g) ?? [];
-  const header = ['-----BEGIN', 'CERTIFICATE-----'].join(' ');
-  const footer = ['-----END', 'CERTIFICATE-----'].join(' ');
-  return {
-    key: privateKey.export({ type: 'pkcs8', format: 'pem' }),
-    cert: `${header}\n${lines.join('\n')}\n${footer}\n`,
-  };
+/** Disposable test certificate; OpenSSL owns its encoding, and no key is committed. */
+function createEphemeralTlsCredentials(): { key: Buffer; cert: Buffer } {
+  const directory = mkdtempSync(path.join(tmpdir(), 'recorder-e2e-tls-'));
+  const key = path.join(directory, 'key.pem');
+  const cert = path.join(directory, 'cert.pem');
+  try {
+    execFileSync('openssl', [
+      'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+      '-keyout', key, '-out', cert, '-days', '1', '-subj', '/CN=offline.test',
+    ], { stdio: 'ignore' });
+    return { key: readFileSync(key), cert: readFileSync(cert) };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 const OFFLINE_TLS = createEphemeralTlsCredentials();
@@ -178,4 +156,34 @@ export async function tabIdForUrl(
     if (!t || t.id === undefined) throw new Error(`No tab for ${p}`);
     return t.id;
   }, prefix);
+}
+
+/**
+ * Whether a routed request was made by the extension itself (one of its pages or
+ * its service worker) rather than by a website tab the extension opened, such as
+ * the Proofline approval page or a filed GitHub issue. Chromium does not always
+ * route the navigation of a tab created with `chrome.tabs.create`, so the loopback
+ * fixture also contains navigations before their route is attached.
+ */
+export function fromExtension(request: Request): boolean {
+  const worker = request.serviceWorker();
+  if (worker) return worker.url().startsWith('chrome-extension://');
+  try {
+    return request.frame().url().startsWith('chrome-extension://');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Answer a request made by a website tab without letting it reach the network,
+ * and assert that none of the extension's credentials leaked into it.
+ */
+export async function fulfillWebsiteRequest(route: Route, secrets: string[]): Promise<void> {
+  const request = route.request();
+  const sent = [request.url(), JSON.stringify(request.headers()), request.postData() ?? ''].join('\n');
+  for (const secret of secrets) pwExpect(sent).not.toContain(secret);
+  if (request.isNavigationRequest())
+    await route.fulfill({ contentType: 'text/html', body: '<p>Website fixture</p>' });
+  else await route.fulfill({ status: 404, json: { message: 'Not Found' } });
 }
