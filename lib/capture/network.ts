@@ -286,6 +286,9 @@ export class NetworkCapturer {
         const res = await this.deps.send(tabId, 'Network.getResponseBody', {
           requestId,
         });
+        // Reset can happen during the fetch. Do not persist an old body into
+        // the new recording before completeHttp gets a chance to drop it.
+        if (!this.httpChains.get(requestId)?.hops.includes(p)) return;
         const rawText = asString(res.body) ?? '';
         const base64 = res.base64Encoded === true;
         responseBody = await this.buildResponseBody(
