@@ -22,6 +22,15 @@ describe('deepgram-live', () => {
     expect(url).toContain('interim_results=true');
   });
 
+  it('sends language=multi when no language is set, so non-English speech is detected', () => {
+    const language = (config: TranscriptionConfig) =>
+      new URL(buildDeepgramLiveUrl(config)).searchParams.get('language');
+    expect(language(cfg)).toBe('multi');
+    expect(language({ ...cfg, model: undefined })).toBe('multi');
+    expect(language({ ...cfg, language: 'es' })).toBe('es');
+    expect(language({ ...cfg, model: 'enhanced' })).toBeNull();
+  });
+
   it('passes the api key as a subprotocol', () => {
     expect(deepgramSubprotocols('abc')).toEqual(['token', 'abc']);
   });

@@ -422,6 +422,18 @@ describe('renderReport', () => {
     expect(md).toContain('(00:05–00:33 · 28s)');
   });
 
+  it('leaves dictated speech to the annotation it produced', () => {
+    const input = buildSession();
+    const events: SessionEvent[] = [
+      ev({ t: 5000, type: 'voice-segment', payload: { tStart: 5000, tEnd: 8000, transcript: 'Before the comment.' } }),
+      ev({ t: 8200, type: 'voice-segment', payload: { tStart: 8200, tEnd: 11000, transcript: 'The total is wrong.', dictation: true } }),
+      ev({ t: 11200, type: 'voice-segment', payload: { tStart: 11200, tEnd: 14000, transcript: 'After the comment.' } }),
+    ];
+    const md = renderReport({ ...input, events, assetPath: () => undefined });
+    expect(md).toContain('Before the comment. After the comment.');
+    expect(md).not.toContain('The total is wrong.');
+  });
+
   it('keeps a lone voice segment as a single anchored line', () => {
     const input = buildSession();
     const events: SessionEvent[] = [

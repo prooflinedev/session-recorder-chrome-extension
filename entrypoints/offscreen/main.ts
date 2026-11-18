@@ -32,6 +32,10 @@ import {
 
 const MIME_PREFERRED = 'audio/webm;codecs=opus';
 const SEGMENT_MS = 30_000;
+/** Managed transcription cuts short segments so narration appears promptly. */
+const MANAGED_SEGMENT_MS = 5_000;
+/** Cadence while a comment composer waits for dictated text. */
+const DICTATION_SEGMENT_MS = 3_000;
 const LEVEL_INTERVAL_MS = 100; // ~10 posts/sec
 
 type RecState = 'idle' | 'recording' | 'paused';
@@ -58,6 +62,9 @@ let segStart = 0;
 let state: RecState = 'idle';
 let stopReason: StopReason | null = null;
 let segmentTimer: ReturnType<typeof setInterval> | null = null;
+/** Segment cadence for narration; dictation uses DICTATION_SEGMENT_MS. */
+let narrationSegmentMs = SEGMENT_MS;
+let dictating = false;
 let levelTimer: ReturnType<typeof setInterval> | null = null;
 
 // --- live streaming transcription (Deepgram) ---
@@ -149,7 +156,26 @@ async function handleStop(): Promise<void> {
 /** Resolves the pending full-stop once its final segment has been delivered. */
 let stopFlushResolve: (() => void) | null = null;
 
-/** Rotate to a fresh segment on the 30s cadence. */
+/** Restart the batch rotation timer at the cadence the current mode needs. */
+function scheduleRotation(): void {
+  if (segmentTimer !== null) clearInterval(segmentTimer);
+  segmentTimer = setInterval(rotateSegment, dictating ? DICTATION_SEGMENT_MS : narrationSegmentMs);
+}
+
+/**
+ * A comment composer opened or closed. In batch mode, end the current segment
+ * at this boundary so dictated speech and narration land in separate segments,
+ * then switch cadence. Streaming transcripts are already split by utterance.
+ */
+function handleDictation(on: boolean): void {
+  if (dictating === on) return;
+  dictating = on;
+  if (streaming || state === 'idle' || segmentTimer === null) return;
+  rotateSegment();
+  scheduleRotation();
+}
+
+/** Rotate to a fresh segment on the current cadence. */
 function rotateSegment(): void {
   if (state !== 'recording') return;
   if (!recorder || recorder.state !== 'recording') return;
@@ -335,7 +361,10 @@ async function startStreaming(
       if (pendingKeyterms && isEleven && !flushingStream) void refreshElevenVocabulary();
     };
     sock.onerror = () => {
-      /* keep recording audio; transcripts just stop */
+      // Keep recording audio; the open composer shows that dictation stopped.
+      // A socket retired by a vocabulary refresh no longer carries dictation.
+      if (sock !== streamSocket) return;
+      void sendMessage({ kind: 'transcript/error', sessionId, error: 'Live transcription disconnected.' }).catch(() => {});
     };
 
     streamSocket = sock;
@@ -424,6 +453,7 @@ async function handleStart(
   id: string,
   startedAt: number,
   transcription?: StreamTranscriptionConfig | null,
+  dictation = false,
 ): Promise<{ ok: boolean; error?: string; streaming?: boolean }> {
   // A start while already active replaces the prior recording cleanly.
   if (state !== 'idle') teardown();
@@ -465,8 +495,10 @@ async function handleStart(
   }
 
   startRecorder();
+  dictating = dictation;
   if (!streaming) {
-    segmentTimer = setInterval(rotateSegment, transcription?.managed ? 5000 : SEGMENT_MS);
+    narrationSegmentMs = transcription?.managed ? MANAGED_SEGMENT_MS : SEGMENT_MS;
+    scheduleRotation();
   }
   return { ok: true, streaming };
 }
@@ -541,11 +573,15 @@ chrome.runtime.onMessage.addListener((raw, _sender, sendResponse) => {
       return false;
     case 'audio/start': {
       const m = raw as Extract<RequestMessage, { kind: 'audio/start' }>;
-      void handleStart(m.sessionId, m.startedAt, m.transcription).then((res) =>
+      void handleStart(m.sessionId, m.startedAt, m.transcription, m.dictating === true).then((res) =>
         sendResponse(res),
       );
       return true; // async response
     }
+    case 'audio/dictation':
+      handleDictation((raw as Extract<RequestMessage, { kind: 'audio/dictation' }>).on);
+      sendResponse({ ok: true });
+      return false;
     case 'audio/pause':
       handlePause();
       sendResponse({ ok: true });

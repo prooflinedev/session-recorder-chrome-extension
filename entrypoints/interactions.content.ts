@@ -56,13 +56,17 @@ export default defineContentScript({
     w.__srInteractions = true;
 
     let active = false;
-    // Paused while the annotation editor is open, so drawing does not get
-    // recorded as page interactions.
+    // Annotation owns input while the markup editor (`annotating`) or the
+    // comment overlay (`pointing`) is open: no page event is captured and no
+    // capture timer starts, so nothing fires after the annotation closes.
     let annotating = false;
     let pointing = false;
+    const suspended = (): boolean => annotating || pointing;
 
     // Pending per-element input debounce timers.
     const inputTimers = new Map<Element, ReturnType<typeof setTimeout>>();
+    // Fields whose value a flush already posted, with no input event since.
+    let flushedInputs = new WeakSet<Element>();
     // Active scroll runs keyed by their scroll target (document or element).
     const scrollRuns = new Map<EventTarget, ScrollRun>();
 
@@ -77,7 +81,7 @@ export default defineContentScript({
     }
 
     function post<T extends EventType>(type: T, payload: EventPayloadMap[T]): void {
-      if (annotating || pointing) return; // no interaction capture while annotating
+      if (suspended()) return;
       const event: RawEvent<T> = { type, at: Date.now(), payload };
       void safeSend(event);
     }
@@ -138,14 +142,38 @@ export default defineContentScript({
       return { container: 'window', pos: { x: window.scrollX, y: window.scrollY } };
     }
 
+    function postInput(el: Element): void {
+      inputTimers.delete(el);
+      const sensitive = isSensitiveInput(el);
+      post('input', {
+        descriptor: buildDescriptor(el),
+        value: sensitive ? REDACTED : readValue(el),
+        redacted: sensitive,
+        inputType: inputTypeOf(el),
+      });
+    }
+
+    // The click or key being captured may submit the field, and apps often
+    // clear it in their own handler, which runs after these capture-phase
+    // listeners but before the debounce would fire. Record the value now.
+    function flushPendingInputs(): void {
+      for (const [el, timer] of inputTimers) {
+        clearTimeout(timer);
+        postInput(el);
+        flushedInputs.add(el);
+      }
+    }
+
     // -- capture handlers ----------------------------------------------------
 
     const onClick = (e: MouseEvent): void => {
+      if (suspended()) return;
       const target = e.target;
       if (!(target instanceof Element)) return;
       // Clicks land on the annotation overlay (retargeted to its host) while the
       // user is drawing — those are recorder chrome, not page interactions.
       if (isAnnotationOverlay(target)) return;
+      flushPendingInputs();
       post('click', {
         descriptor: buildDescriptor(target),
         modifiers: modifiersOf(e),
@@ -154,26 +182,30 @@ export default defineContentScript({
     };
 
     const onInput = (e: Event): void => {
+      if (suspended()) return;
       const target = e.target;
       if (!(target instanceof Element)) return;
       if (isAnnotationOverlay(target)) return;
       const el = target;
+      // Leaving a field (Tab, click elsewhere) flushes it and then fires
+      // `change` with the same value; that value is already recorded.
+      if (e.type === 'change' && flushedInputs.has(el)) {
+        flushedInputs.delete(el);
+        return;
+      }
+      flushedInputs.delete(el);
       const existing = inputTimers.get(el);
       if (existing) clearTimeout(existing);
-      const timer = setTimeout(() => {
-        inputTimers.delete(el);
-        const sensitive = isSensitiveInput(el);
-        post('input', {
-          descriptor: buildDescriptor(el),
-          value: sensitive ? REDACTED : readValue(el),
-          redacted: sensitive,
-          inputType: inputTypeOf(el),
-        });
-      }, INPUT_DEBOUNCE_MS);
+      const timer = setTimeout(() => postInput(el), INPUT_DEBOUNCE_MS);
       inputTimers.set(el, timer);
     };
 
+    function postScroll(run: ScrollRun): void {
+      post('scroll', { from: run.from, to: run.to, container: run.container });
+    }
+
     const onScroll = (e: Event): void => {
+      if (suspended()) return;
       const target: EventTarget = e.target ?? document;
       const { container, pos } = scrollInfoOf(target);
       let run = scrollRuns.get(target);
@@ -187,19 +219,16 @@ export default defineContentScript({
       const captured = run;
       run.timer = setTimeout(() => {
         scrollRuns.delete(target);
-        post('scroll', {
-          from: captured.from,
-          to: captured.to,
-          container: captured.container,
-        });
+        postScroll(captured);
       }, SCROLL_IDLE_MS);
     };
 
     const onKeyDown = (e: KeyboardEvent): void => {
-      if (MODIFIER_KEYS.has(e.key)) return;
+      if (suspended() || MODIFIER_KEYS.has(e.key)) return;
       if (isAnnotationOverlay(e.target)) return; // typing an annotation label
       const chord = e.ctrlKey || e.metaKey || e.altKey;
       if (!chord && !NAMED_KEYS.has(e.key)) return;
+      flushPendingInputs();
       const focused = document.activeElement;
       post('key', {
         key: keyString(e),
@@ -225,8 +254,13 @@ export default defineContentScript({
       return t.closest(INTERACTIVE);
     }
 
+    function cancelHover(): void {
+      if (hoverTimer) clearTimeout(hoverTimer);
+      hoverTimer = null;
+    }
+
     const onMouseMove = (e: MouseEvent): void => {
-      if (hoverDwellMs <= 0) return;
+      if (hoverDwellMs <= 0 || suspended()) return;
       if (hoverTimer) clearTimeout(hoverTimer);
       const target = e.target;
       hoverTimer = setTimeout(() => {
@@ -240,6 +274,12 @@ export default defineContentScript({
           dwellMs: hoverDwellMs,
         });
       }, hoverDwellMs);
+    };
+
+    // The pointer left the page (to the side panel, toolbar or another window)
+    // before it settled: passing over an element on the way out is not a hover.
+    const onMouseOut = (e: MouseEvent): void => {
+      if (e.relatedTarget === null) cancelHover();
     };
 
     // -- text selection (debounced selectionchange) ---------------------------
@@ -260,6 +300,7 @@ export default defineContentScript({
     }
 
     const onSelectionChange = (): void => {
+      if (suspended()) return;
       if (selectionTimer) clearTimeout(selectionTimer);
       // Debounce: selectionchange fires continuously during a drag; only the
       // settled selection is worth an event.
@@ -302,6 +343,8 @@ export default defineContentScript({
       document.addEventListener('scroll', onScroll, true);
       document.addEventListener('keydown', onKeyDown, true);
       document.addEventListener('mousemove', onMouseMove, true);
+      document.addEventListener('mouseout', onMouseOut, true);
+      window.addEventListener('blur', cancelHover);
       // selectionchange only fires on the document; no capture flag needed.
       document.addEventListener('selectionchange', onSelectionChange);
     }
@@ -313,19 +356,46 @@ export default defineContentScript({
       document.removeEventListener('scroll', onScroll, true);
       document.removeEventListener('keydown', onKeyDown, true);
       document.removeEventListener('mousemove', onMouseMove, true);
+      document.removeEventListener('mouseout', onMouseOut, true);
+      window.removeEventListener('blur', cancelHover);
       document.removeEventListener('selectionchange', onSelectionChange);
       if (selectionTimer) clearTimeout(selectionTimer);
       selectionTimer = null;
       lastSelectionText = null;
       for (const t of inputTimers.values()) clearTimeout(t);
       inputTimers.clear();
+      flushedInputs = new WeakSet();
       for (const run of scrollRuns.values()) {
         if (run.timer) clearTimeout(run.timer);
       }
       scrollRuns.clear();
-      if (hoverTimer) clearTimeout(hoverTimer);
-      hoverTimer = null;
+      cancelHover();
       lastHoverEl = null;
+    }
+
+    /**
+     * Hand input to or back from annotation. Entering records the page activity
+     * the user completed before it (pending typing and scroll runs) and drops
+     * unsettled hovers and selections. Leaving starts hover tracking afresh with
+     * the configured dwell.
+     */
+    function setSuspended(nextAnnotating: boolean, nextPointing: boolean): void {
+      const was = suspended();
+      const next = nextAnnotating || nextPointing;
+      if (!was && next) {
+        flushPendingInputs();
+        for (const run of scrollRuns.values()) {
+          if (run.timer) clearTimeout(run.timer);
+          postScroll(run);
+        }
+        scrollRuns.clear();
+        cancelHover();
+        if (selectionTimer) clearTimeout(selectionTimer);
+        selectionTimer = null;
+      }
+      if (was && !next) lastHoverEl = null;
+      annotating = nextAnnotating;
+      pointing = nextPointing;
     }
 
     function setActive(next: boolean, dwell?: number): void {
@@ -333,7 +403,7 @@ export default defineContentScript({
       // Resuming active capture also lifts any annotation pause. The background
       // sends setActive(true) after an annotation exits (rather than
       // content/annotate{on:false}, which would race the next editor).
-      if (next) annotating = false;
+      if (next) setSuspended(false, pointing);
       if (next === active) return;
       active = next;
       if (active) attach();
@@ -344,21 +414,12 @@ export default defineContentScript({
 
     onContentMessage((msg) => {
       if (msg.kind === 'content/point-annotate') {
-        pointing = msg.on;
+        setSuspended(annotating, msg.on);
       } else if (msg.kind === 'content/setActive') {
-        if (!msg.active) pointing = false;
+        if (!msg.active) setSuspended(annotating, false);
         setActive(msg.active, msg.hoverDwellMs);
       } else if (msg.kind === 'content/annotate') {
-        // Pause capture while the annotation editor is open.
-        annotating = msg.on;
-        if (annotating && hoverTimer) {
-          clearTimeout(hoverTimer);
-          hoverTimer = null;
-        }
-        if (annotating && selectionTimer) {
-          clearTimeout(selectionTimer);
-          selectionTimer = null;
-        }
+        setSuspended(msg.on, pointing);
       }
     });
 
@@ -366,8 +427,7 @@ export default defineContentScript({
       try {
         const reply = await sendMessage({ kind: 'content/hello' });
         setActive(reply.active);
-        pointing = reply.pointing;
-        annotating = reply.annotating;
+        setSuspended(reply.annotating, reply.pointing);
       } catch {
         /* background not ready — stays dormant until a setActive arrives */
       }

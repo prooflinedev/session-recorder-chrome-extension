@@ -416,6 +416,12 @@ export interface VoiceSegmentPayload {
   provider?: string;
   /** True when produced live by a streaming recognizer (vs post-hoc batch). */
   streamed?: boolean;
+  /**
+   * Speech captured while a page-comment composer accepted dictation. The
+   * annotation the user saved carries its text, so reports and summaries do not
+   * repeat it as narration. The audio and transcript stay with the recording.
+   */
+  dictation?: boolean;
   /** Best-effort descriptor of what the user was doing/looking at while speaking. */
   anchorContext?: string;
 }

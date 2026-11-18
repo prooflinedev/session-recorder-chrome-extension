@@ -6,10 +6,13 @@ import { describe, it, expect } from 'vitest';
 import { unzipSync } from 'fflate';
 
 import { SessionBuilder } from '@/lib/fixtures/session-builder';
+import { ConsoleCapturer } from '@/lib/capture/console';
+import { PROTECTED_TYPES, scoreEvent } from '@/lib/session/events';
 import { makeDefaultSettings } from '@/lib/session/settings';
+import { summaryEvidence } from '@/lib/sharing/summary';
 import { buildBundle, estimateForLevels } from './bundle';
 import { zipFiles } from './zip';
-import type { VerbosityLevel } from '@/lib/session/types';
+import type { RawEvent, SessionEvent, VerbosityLevel } from '@/lib/session/types';
 
 function richSession() {
   const b = new SessionBuilder({ name: 'Checkout bug repro' })
@@ -37,6 +40,63 @@ function richSession() {
 }
 
 describe('export pipeline (integration)', () => {
+  it('redacts browser diagnostic URLs before they reach storage, exports or summaries', async () => {
+    const settings = makeDefaultSettings();
+    settings.customRedaction.urlParamPatterns = ['ticket'];
+    const fixture = new SessionBuilder({ settings }).build();
+    const events: SessionEvent[] = [];
+    const capture = new ConsoleCapturer((raw: RawEvent) => {
+      events.push({
+        ...raw,
+        id: `evt_${events.length}`,
+        sessionId: fixture.session.id,
+        t: events.length * 100,
+        importance: scoreEvent(raw),
+        protected: PROTECTED_TYPES.has(raw.type),
+      } as SessionEvent);
+    }, () => settings);
+    const url = 'https://api.example.test/data?token=secret-token&ticket=private-ticket&page=2';
+    const stackTrace = {
+      callFrames: [{ functionName: 'load', url, lineNumber: 5, columnNumber: 9 }],
+    };
+    capture.handle(1, 'Log.entryAdded', {
+      entry: { level: 'error', text: `Access to fetch at '${url}' blocked by CORS policy`, stackTrace },
+    });
+    capture.handle(1, 'Log.entryAdded', {
+      entry: { level: 'warning', text: 'Failed to load resource', url, lineNumber: 7, args: [{ value: url }] },
+    });
+    capture.handle(1, 'Runtime.consoleAPICalled', {
+      type: 'warning', args: [{ value: { requestUrl: url } }], stackTrace,
+    });
+    capture.handle(1, 'Runtime.exceptionThrown', {
+      exceptionDetails: { exception: { description: `Error: Request failed at ${url}` }, stackTrace },
+    });
+    capture.handle(1, 'Runtime.exceptionThrown', {
+      exceptionDetails: { exception: { description: `Error: Request failed\n    at load (${url})` } },
+    });
+    capture.reset();
+
+    const expectRedacted = (text: string) => {
+      expect(text).not.toContain('secret-token');
+      expect(text).not.toContain('private-ticket');
+      expect(text).toContain('token=«redacted»&ticket=«redacted»&page=2');
+    };
+    expect(events).toHaveLength(5);
+    // The callback is the background's storage boundary, before any exporter.
+    expectRedacted(JSON.stringify(events));
+    expect(JSON.stringify(events)).toContain('blocked by CORS policy');
+    expect(events[0]!.payload).toMatchObject({
+      stack: '    at load (https://api.example.test/data?token=«redacted»&ticket=«redacted»&page=2:5:9)',
+    });
+    expectRedacted(summaryEvidence(fixture.session, events, []));
+    for (const level of ['L0', 'L1', 'L2', 'L3'] as VerbosityLevel[]) {
+      const files = await buildBundle({ ...fixture, events, level });
+      for (const file of ['report.md', 'session.json']) {
+        expectRedacted(files.find((entry) => entry.path === file)!.text!);
+      }
+    }
+  });
+
   it('produces a readable, shrinking report across all levels and a valid zip', async () => {
     const { session, events, assets } = richSession();
     const levels: VerbosityLevel[] = ['L0', 'L1', 'L2', 'L3'];
