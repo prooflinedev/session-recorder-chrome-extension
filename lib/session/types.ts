@@ -308,6 +308,12 @@ export interface NetRequestPayload {
   initiator?: string;
   failed?: boolean;
   failureReason?: string;
+  /**
+   * True when the request had not finished when recording stopped. Whatever
+   * had arrived (status, headers, request body) is kept; the event is
+   * stamped at the request's start time.
+   */
+  pending?: true;
   fromCache?: boolean;
   mime?: string;
   // websocket

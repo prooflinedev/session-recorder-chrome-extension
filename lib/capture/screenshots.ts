@@ -129,8 +129,9 @@ export class ScreenshotScheduler {
       ) {
         fire = true;
       } else if (e.type === 'net-request') {
+        // A pending request is flushed at stop: not a moment to capture now.
         const status = e.payload.status;
-        if (typeof status === 'number' && status >= 400) fire = true;
+        if (typeof status === 'number' && status >= 400 && !e.payload.pending) fire = true;
       }
       if (!fire) return;
 

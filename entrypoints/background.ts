@@ -617,16 +617,19 @@ class Orchestrator {
       await this.closeOffscreen().catch(() => {});
     }
 
-    // Emit any still-open websockets (e.g. a chat socket) WITH their accumulated
-    // frames before we detach — otherwise the conversation is lost.
-    this.network.flushOpen();
+    for (const t of this.dbg.attachedTabs()) {
+      await this.dbg.detach(t).catch(() => {});
+    }
+
+    // Detached, so no CDP event can arrive any more. Emit everything still
+    // open — websockets WITH their accumulated frames (e.g. a chat socket) and
+    // unfinished HTTP requests as pending — before the final write, otherwise
+    // they are lost.
+    await this.network.flushOpen().catch(() => {});
 
     await this.writer?.flush().catch(() => {});
     this.writer?.dispose();
 
-    for (const t of this.dbg.attachedTabs()) {
-      await this.dbg.detach(t).catch(() => {});
-    }
     this.multitab.stop();
     this.unregisterNavListeners();
     this.stopHeartbeat();
