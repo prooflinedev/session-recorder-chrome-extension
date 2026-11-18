@@ -105,6 +105,46 @@ describe('buildHar', () => {
     expect(entry.response.content.size).toBe(5000);
     expect(entry.response.content.comment).toMatch(/cut short/);
   });
+
+  it('flags a request unfinished at stop as pending', () => {
+    const { session, events } = new SessionBuilder()
+      .net('GET', 'https://api.example.com/hang')
+      .net('GET', 'https://api.example.com/stream', { status: 500 })
+      .net('GET', 'https://api.example.com/done')
+      .build();
+    const nets = events.flatMap((e) => (e.type === 'net-request' ? [e.payload] : []));
+    for (const p of nets.slice(0, 2)) {
+      p.pending = true;
+      delete p.timing!.durationMs;
+      delete p.responseBody;
+    }
+    delete nets[0]!.status;
+    delete nets[0]!.statusText;
+    const [hang, stream, done] = (buildHar(session, events) as any).log.entries;
+
+    expect(hang.response.status).toBe(0);
+    expect(hang._pending).toBe(true);
+    expect(hang.comment).toMatch(/^Pending: the request had not finished/);
+    expect(hang.time).toBe(0);
+    expect(hang.startedDateTime).toBe(new Date(nets[0]!.timing!.startedAt).toISOString());
+    expect(stream.response.status).toBe(500);
+    expect(stream._pending).toBe(true);
+    expect(done._pending).toBeUndefined();
+    expect(done.comment).toBeUndefined();
+  });
+
+  it('keeps the collapsed note alongside the pending note', () => {
+    const { session, events } = new SessionBuilder()
+      .net('GET', 'https://api.example.com/poll')
+      .build();
+    const p = firstRequest(events);
+    p.pending = true;
+    p.collapsed = { count: 3, statuses: [0, 200], note: '3 more requests collapsed' };
+    const [entry] = (buildHar(session, events) as any).log.entries;
+
+    expect(entry.comment).toMatch(/^Shown once for 3 similar requests/);
+    expect(entry.comment).toMatch(/Pending: the request had not finished/);
+  });
 });
 
 describe('network.har in the export bundle', () => {

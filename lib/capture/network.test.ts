@@ -115,15 +115,344 @@ describe('NetworkCapturer WebSockets', () => {
     expect(JSON.parse(text)).toEqual({ token: '«redacted»', n: 1 });
   });
 
-  it('flushOpen leaves in-flight normal requests untouched', () => {
+  it('flushOpen emits an open socket and an in-flight request once each', () => {
     const { cap, emitted } = makeCapturer();
+    cap.handle(1, 'Network.webSocketCreated', { requestId: 'ws-9', url: 'wss://x/live' });
+    cap.handle(1, 'Network.webSocketFrameSent', {
+      requestId: 'ws-9',
+      response: { opcode: 1, payloadData: 'ping' },
+    });
     cap.handle(1, 'Network.requestWillBeSent', {
       requestId: 'req-1',
       request: { method: 'GET', url: 'https://x/data', headers: {} },
       type: 'XHR',
     });
-    cap.flushOpen();
+    void cap.flushOpen();
+    cap.handle(1, 'Network.webSocketClosed', { requestId: 'ws-9' });
+
+    expect(emitted).toHaveLength(2);
+    const [ws, http] = emitted.map(payloadOf);
+    expect(ws).toMatchObject({ requestId: 'ws-9', websocket: true });
+    expect(ws!.pending).toBeUndefined();
+    expect(ws!.wsFrames).toHaveLength(1);
+    expect(http).toMatchObject({ requestId: 'req-1', pending: true });
+  });
+});
+
+describe('NetworkCapturer pending requests on stop', () => {
+  const WALL = 1_700_000_000.5; // CDP wallTime, seconds
+  const STARTED = 1_700_000_000_500; // the same moment in ms
+
+  function header(headers: { name: string; value: string }[], name: string): string | undefined {
+    return headers.find((h) => h.name.toLowerCase() === name)?.value;
+  }
+
+  it('emits a request with no response as pending, stamped at its start time', async () => {
+    const { cap, emitted } = makeCapturer();
+    cap.handle(7, 'Network.requestWillBeSent', {
+      requestId: 'hang',
+      request: {
+        method: 'POST',
+        url: 'https://api.example.com/v1/orders?token=s3cret',
+        headers: { 'Content-Type': 'application/json' },
+        postData: '{"cart":"c1"}',
+      },
+      type: 'Fetch',
+      wallTime: WALL,
+      timestamp: 100,
+    });
     expect(emitted).toHaveLength(0);
+
+    await cap.flushOpen();
+
+    expect(emitted).toHaveLength(1);
+    const raw = emitted[0]!;
+    expect(raw.tabId).toBe(7);
+    expect(raw.at).toBe(STARTED);
+    const p = payloadOf(raw);
+    expect(p).toMatchObject({ method: 'POST', resourceType: 'Fetch', pending: true });
+    expect(p.url).not.toContain('s3cret');
+    expect(p.requestBody?.text).toBe('{"cart":"c1"}');
+    expect(header(p.requestHeaders, 'content-type')).toBe('application/json');
+    expect(p.failed).toBeUndefined();
+    expect(p.status).toBeUndefined();
+    expect(p.responseBody).toBeUndefined();
+    expect(p.timing).toEqual({ startedAt: STARTED });
+  });
+
+  it('keeps the status and headers of a response whose body never finished', async () => {
+    const { cap, emitted } = makeCapturer();
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'stream',
+      request: { method: 'GET', url: 'https://api.example.com/export', headers: {} },
+      wallTime: WALL,
+    });
+    cap.handle(1, 'Network.responseReceived', {
+      requestId: 'stream',
+      hasExtraInfo: true,
+      response: {
+        status: 500,
+        statusText: 'Internal Server Error',
+        headers: { 'Content-Type': 'text/csv' },
+        mimeType: 'text/csv',
+      },
+    });
+    cap.handle(1, 'Network.requestWillBeSentExtraInfo', {
+      requestId: 'stream',
+      headers: { 'Accept-Language': 'en-GB' },
+    });
+    cap.handle(1, 'Network.responseReceivedExtraInfo', {
+      requestId: 'stream',
+      statusCode: 500,
+      headers: { 'X-Trace': 't-1' },
+    });
+
+    await cap.flushOpen();
+
+    expect(emitted).toHaveLength(1);
+    const p = payloadOf(emitted[0]!);
+    expect(p).toMatchObject({
+      status: 500,
+      statusText: 'Internal Server Error',
+      mime: 'text/csv',
+      pending: true,
+    });
+    expect(header(p.responseHeaders, 'content-type')).toBe('text/csv');
+    expect(header(p.responseHeaders, 'x-trace')).toBe('t-1');
+    expect(header(p.requestHeaders, 'accept-language')).toBe('en-GB');
+  });
+
+  it('keeps ExtraInfo status and headers that arrived before responseReceived', async () => {
+    const { cap, emitted } = makeCapturer();
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'early-extra',
+      request: { method: 'GET', url: 'https://api.example.com/slow', headers: {} },
+    });
+    cap.handle(1, 'Network.responseReceivedExtraInfo', {
+      requestId: 'early-extra',
+      statusCode: 503,
+      headers: { 'Retry-After': '5' },
+    });
+
+    await cap.flushOpen();
+
+    const p = payloadOf(emitted[0]!);
+    expect(p).toMatchObject({ status: 503, pending: true });
+    expect(header(p.responseHeaders, 'retry-after')).toBe('5');
+  });
+
+  it('emits a finished request whose body fetch is still running, without a body', async () => {
+    let finishBody!: (r: Record<string, unknown>) => void;
+    const send = vi.fn(
+      () => new Promise<Record<string, unknown>>((resolve) => (finishBody = resolve)),
+    );
+    const { cap, emitted } = makeCapturer({ send });
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'body',
+      request: { method: 'GET', url: 'https://api.example.com/big', headers: {} },
+      timestamp: 10,
+    });
+    cap.handle(1, 'Network.responseReceived', {
+      requestId: 'body',
+      response: { status: 200, headers: {}, mimeType: 'application/json' },
+    });
+    cap.handle(1, 'Network.loadingFinished', { requestId: 'body', timestamp: 10.25 });
+    expect(send).toHaveBeenCalledTimes(1);
+
+    await cap.flushOpen();
+    expect(emitted).toHaveLength(1);
+    const p = payloadOf(emitted[0]!);
+    expect(p).toMatchObject({ status: 200, responseBody: { present: false } });
+    expect(p.pending).toBeUndefined();
+    expect(p.timing?.durationMs).toBe(250);
+    expect(emitted[0]!.at).toBeUndefined();
+
+    finishBody({ body: '{"rows":[]}', base64Encoded: false });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emitted).toHaveLength(1);
+  });
+
+  it('ignores late CDP events for a flushed request', async () => {
+    const send = vi.fn(async () => ({ body: 'late', base64Encoded: false }));
+    const { cap, emitted } = makeCapturer({ send });
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'late',
+      request: { method: 'GET', url: 'https://api.example.com/late', headers: {} },
+    });
+    await cap.flushOpen();
+    expect(emitted).toHaveLength(1);
+
+    cap.handle(1, 'Network.responseReceived', {
+      requestId: 'late',
+      response: { status: 200, headers: {} },
+    });
+    cap.handle(1, 'Network.responseReceivedExtraInfo', {
+      requestId: 'late',
+      statusCode: 200,
+      headers: {},
+    });
+    cap.handle(1, 'Network.loadingFinished', { requestId: 'late' });
+    cap.handle(1, 'Network.loadingFailed', { requestId: 'late', errorText: 'net::ERR_ABORTED' });
+    await new Promise((r) => setTimeout(r, 0));
+    await cap.flushOpen();
+
+    expect(send).not.toHaveBeenCalled();
+    expect(emitted).toHaveLength(1);
+  });
+
+  it('emits a redirect chain in hop order: the waiting 302, then the pending hop', async () => {
+    const { cap, emitted } = makeCapturer();
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'chain',
+      request: { method: 'POST', url: 'https://app.example/login', headers: {}, postData: 'u=a' },
+      wallTime: WALL,
+    });
+    cap.handle(1, 'Network.requestWillBeSentExtraInfo', {
+      requestId: 'chain',
+      headers: { 'X-Hop': 'first' },
+    });
+    // The 302 hop expects a response ExtraInfo that never arrives: it stays queued.
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'chain',
+      request: { method: 'GET', url: 'https://app.example/home', headers: {} },
+      redirectHasExtraInfo: true,
+      redirectResponse: { status: 302, headers: { Location: '/home' } },
+      wallTime: WALL + 1,
+    });
+    expect(emitted).toHaveLength(0);
+
+    await cap.flushOpen();
+
+    expect(emitted).toHaveLength(2);
+    const [hop1, hop2] = emitted.map(payloadOf);
+    expect(hop1).toMatchObject({ url: 'https://app.example/login', status: 302 });
+    expect(hop1!.pending).toBeUndefined();
+    expect(hop1!.requestBody?.text).toBe('u=a');
+    expect(header(hop1!.requestHeaders, 'x-hop')).toBe('first');
+    expect(header(hop1!.responseHeaders, 'location')).toBe('/home');
+    expect(emitted[0]!.at).toBeUndefined();
+
+    expect(hop2).toMatchObject({ url: 'https://app.example/home', pending: true });
+    expect(hop2!.status).toBeUndefined();
+    expect(emitted[1]!.at).toBe(STARTED + 1000);
+  });
+
+  it('drops ExtraInfo-only fragments that never saw a request', async () => {
+    const { cap, emitted } = makeCapturer();
+    cap.handle(1, 'Network.requestWillBeSentExtraInfo', {
+      requestId: 'orphan',
+      headers: { Cookie: 'a=b' },
+    });
+    cap.handle(1, 'Network.responseReceivedExtraInfo', {
+      requestId: 'orphan',
+      statusCode: 200,
+      headers: {},
+    });
+    await cap.flushOpen();
+    expect(emitted).toHaveLength(0);
+  });
+
+  it('flushes concurrent requests across tabs with their own tab and state', async () => {
+    const send = vi.fn(async () => ({ body: 'ok', base64Encoded: false }));
+    const { cap, emitted } = makeCapturer({ send });
+    const start = (tabId: number, requestId: string, path: string) =>
+      cap.handle(tabId, 'Network.requestWillBeSent', {
+        requestId,
+        request: { method: 'GET', url: `https://app.example${path}`, headers: {} },
+      });
+    start(1, 't1-a', '/a');
+    start(2, 't2-a', '/b');
+    start(1, 't1-b', '/c');
+    start(2, 't2-b', '/d');
+    cap.handle(1, 'Network.responseReceived', {
+      requestId: 't1-b',
+      response: { status: 200, headers: {} },
+    });
+    // One request on each tab completes normally before stop.
+    cap.handle(2, 'Network.responseReceived', {
+      requestId: 't2-b',
+      response: { status: 204, headers: {} },
+    });
+    cap.handle(2, 'Network.loadingFinished', { requestId: 't2-b' });
+    await vi.waitFor(() => expect(emitted).toHaveLength(1));
+
+    await cap.flushOpen();
+
+    expect(emitted).toHaveLength(4);
+    const rows = emitted.map((raw) => {
+      const p = payloadOf(raw);
+      return [raw.tabId, p.requestId, p.status, p.pending];
+    });
+    expect(rows).toEqual([
+      [2, 't2-b', 204, undefined],
+      [1, 't1-a', undefined, true],
+      [2, 't2-a', undefined, true],
+      [1, 't1-b', 200, true],
+    ]);
+  });
+
+  it('clamps a pending event to the session start', async () => {
+    const { cap, emitted } = makeCapturer({ sessionStart: () => STARTED + 5000 });
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'early',
+      request: { method: 'GET', url: 'https://app.example/early', headers: {} },
+      wallTime: WALL,
+    });
+    await cap.flushOpen();
+    expect(emitted[0]!.at).toBe(STARTED + 5000);
+  });
+
+  it('settles only after a pending request body has been stored', async () => {
+    let finishStore!: (id: string) => void;
+    const storeBodyAsset = vi.fn(
+      () => new Promise<string>((resolve) => (finishStore = resolve)),
+    );
+    const { cap, emitted } = makeCapturer({
+      getSettings: () => ({ ...SETTINGS, captureApiSpec: true }),
+      storeBodyAsset,
+    });
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'upload',
+      request: {
+        method: 'POST',
+        url: 'https://api.example.com/v1/upload',
+        headers: { 'content-type': 'application/json' },
+        postData: `{"data":"${'x'.repeat(100 * 1024)}"}`,
+      },
+      type: 'XHR',
+    });
+
+    let settled = false;
+    const done = cap.flushOpen().then(() => (settled = true));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(settled).toBe(false);
+    expect(emitted).toHaveLength(0);
+
+    finishStore('asset-upload');
+    await done;
+    expect(emitted).toHaveLength(1);
+    expect(payloadOf(emitted[0]!)).toMatchObject({
+      pending: true,
+      requestBody: { assetId: 'asset-upload' },
+    });
+  });
+
+  it('accepts a reused requestId after the next recording starts', async () => {
+    const { cap, emitted } = makeCapturer();
+    const start = () =>
+      cap.handle(1, 'Network.requestWillBeSent', {
+        requestId: 'reused',
+        request: { method: 'GET', url: 'https://app.example/x', headers: {} },
+      });
+    start();
+    await cap.flushOpen();
+    cap.reset();
+    start();
+    cap.handle(1, 'Network.loadingFailed', { requestId: 'reused', errorText: 'net::ERR_ABORTED' });
+
+    expect(emitted).toHaveLength(2);
+    expect(payloadOf(emitted[1]!)).toMatchObject({ failed: true });
+    expect(payloadOf(emitted[1]!).pending).toBeUndefined();
   });
 });
 

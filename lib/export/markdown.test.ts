@@ -304,6 +304,39 @@ describe('renderReport', () => {
     expect(md).toContain('## Appendix: Network Index');
   });
 
+  it('marks requests unfinished at stop as PENDING, keeping any status', () => {
+    const input = buildSession();
+    const pending = (requestId: string, url: string, status?: number): SessionEvent =>
+      ev({
+        t: 3500,
+        tabId: 1,
+        type: 'net-request',
+        payload: {
+          requestId,
+          method: 'GET',
+          url,
+          ...(status !== undefined ? { status } : {}),
+          requestHeaders: [],
+          responseHeaders: [],
+          pending: true,
+        },
+      });
+    input.events.push(
+      pending('hang', 'https://api.example.com/v1/hang'),
+      pending('stream', 'https://api.example.com/v1/export', 500),
+    );
+    const md = renderReport(input);
+
+    expect(md).toContain('[00:03] 🌐 PENDING GET /v1/hang');
+    expect(md).toContain('[00:03] 🌐 500 PENDING GET /v1/export');
+    expect(md).toContain('> Pending: the request had not finished when recording stopped.');
+    expect(md).toContain('- [00:03] PENDING GET https://api.example.com/v1/hang');
+    expect(md).toContain('- [00:03] 500 PENDING GET https://api.example.com/v1/export');
+    // Finished requests are unchanged.
+    expect(md).toContain('500 POST /v1/orders');
+    expect(md).not.toContain('PENDING POST');
+  });
+
   it('links included screenshots and annotations', () => {
     const md = renderReport(buildSession());
     expect(md).toContain('![error dialog visible](screenshots/001-0004.jpg)');
