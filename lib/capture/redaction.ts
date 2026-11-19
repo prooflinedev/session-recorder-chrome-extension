@@ -132,10 +132,45 @@ function looksLikeForm(text: string): boolean {
   return /^[^=&#\s]+=[^&#\s]*(?:&[^=&#\s]+=[^&#\s]*)*$/.test(text);
 }
 
+/** The `)]}'` anti-hijacking prefix some servers put before a JSON reply. */
+const XSSI_PREFIX = /^\s*\)\]\}',?\s*/;
+
 /** True if `text` plausibly looks like a JSON object or array. */
 function looksLikeJson(text: string): boolean {
-  const t = text.trimStart();
+  const t = text.replace(XSSI_PREFIX, '').trimStart();
   return t.startsWith('{') || t.startsWith('[');
+}
+
+/**
+ * Redact JSON that doesn't parse as a whole: a reply behind the `)]}'` prefix,
+ * or newline-delimited JSON (one value per line). The prefix is kept, and lines
+ * that still don't parse are left as they are.
+ */
+function redactLooseJson(
+  text: string,
+  matcher: (key: string) => boolean,
+): { text: string; redacted: boolean } {
+  const prefix = XSSI_PREFIX.exec(text)?.[0] ?? '';
+  const rest = text.slice(prefix.length);
+  const chunks = prefix && isJson(rest) ? [rest] : rest.split('\n');
+  let redacted = false;
+  const out = chunks.map((chunk) => {
+    if (!isJson(chunk)) return chunk;
+    const r = redactJsonValue(JSON.parse(chunk), matcher);
+    if (!r.redacted) return chunk;
+    redacted = true;
+    return chunks.length === 1 ? JSON.stringify(r.value, null, 2) : JSON.stringify(r.value);
+  });
+  return redacted ? { text: prefix + out.join('\n'), redacted: true } : { text, redacted: false };
+}
+
+function isJson(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Redact matching keys' values in a form-urlencoded body, preserving structure. */
@@ -163,7 +198,8 @@ function redactForm(
  *   mask values under matching keys, re-stringify pretty (2-space).
  * - form-urlencoded (mime includes `x-www-form-urlencoded`, or `k=v&k=v` shape):
  *   mask matching keys' values in place.
- * - anything else, or unparseable JSON: return the text unchanged.
+ * - JSON that doesn't parse whole: strip a `)]}'` prefix or go line by line.
+ * - anything else: return the text unchanged.
  * Never throws. `redacted` is true iff a replacement actually happened.
  */
 export function redactBody(
@@ -186,7 +222,7 @@ export function redactBody(
     try {
       parsed = JSON.parse(text);
     } catch {
-      return { text, redacted: false };
+      return redactLooseJson(text, matcher);
     }
     const r = redactJsonValue(parsed, matcher);
     if (!r.redacted) return { text, redacted: false };
@@ -228,4 +264,19 @@ export function redactUrl(url: string, rules: RedactionRules): string {
   });
 
   return changed ? `${head}?${parts.join('&')}${hash}` : url;
+}
+
+/** Apply the same URL rules to web/socket URLs embedded in browser diagnostics. */
+export function redactUrlsInText(text: string, rules: RedactionRules): string {
+  const redactText = (value: string) =>
+    value.replace(/\b(?:https?|wss?):\/\/[^\s"'<>`]+/gi, (url) => redactUrl(url, rules));
+
+  return text.split('\n').map((line) => {
+    // V8's text stack frames append coordinates outside the URL. Only split
+    // that suffix in a stack frame: colons and parentheses elsewhere can be
+    // part of a sensitive query value and must be redacted with that value.
+    const frame = /^([ \t]*at (?:[^\r\n]* \()?)(https?:\/\/[^\r\n]+)(:\d+:\d+\)?)(\r?)$/.exec(line);
+    if (!frame) return redactText(line);
+    return `${redactText(frame[1]!)}${redactUrl(frame[2]!, rules)}${frame[3]}${frame[4]}`;
+  }).join('\n');
 }

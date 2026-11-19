@@ -12,6 +12,7 @@ import {
   redactBody,
   redactHeaders,
   redactUrl,
+  redactUrlsInText,
 } from './redaction';
 
 const EMPTY_RULES: RedactionRules = {
@@ -65,6 +66,40 @@ describe('constants', () => {
     for (const k of ['username', 'email', 'count', 'color']) {
       expect(DEFAULT_KEY_PATTERN.test(k)).toBe(false);
     }
+  });
+});
+
+describe('redactUrlsInText', () => {
+  it('redacts each URL in diagnostic text using default and custom rules', () => {
+    const input = 'Fetch at "https://api.test/data?token=secret&page=2" failed; retry wss://api.test/socket?ticket=private&mode=live';
+    expect(redactUrlsInText(input, rules({ urlParamPatterns: ['ticket'] }))).toBe(
+      `Fetch at "https://api.test/data?token=${REDACTED}&page=2" failed; retry wss://api.test/socket?ticket=${REDACTED}&mode=live`,
+    );
+  });
+
+  it('preserves ordinary diagnostics and non-sensitive URL parameters', () => {
+    const input = 'Load failed at https://example.test/app.js?page=2#section';
+    expect(redactUrlsInText(input, EMPTY_RULES)).toBe(input);
+  });
+
+  it('preserves text stack coordinates while redacting the whole query value', () => {
+    const input = [
+      '    at load (https://api.test/app.js?token=secret):123:456:5:9)',
+      '    at https://api.test/app.js?ticket=private:12:34',
+      '    at next (https://api.test/app.js?page=2:7:8)\r',
+    ].join('\n');
+    expect(redactUrlsInText(input, rules({ urlParamPatterns: ['ticket'] }))).toBe([
+      `    at load (https://api.test/app.js?token=${REDACTED}:5:9)`,
+      `    at https://api.test/app.js?ticket=${REDACTED}:12:34`,
+      '    at next (https://api.test/app.js?page=2:7:8)\r',
+    ].join('\n'));
+  });
+
+  it('does not treat punctuation in an ordinary URL value as a stack location', () => {
+    expect(redactUrlsInText(
+      'Request failed at https://api.test/app.js?token=secret):123:456',
+      EMPTY_RULES,
+    )).toBe(`Request failed at https://api.test/app.js?token=${REDACTED}`);
   });
 });
 
@@ -188,6 +223,27 @@ describe('redactBody — JSON', () => {
     const { text, redacted } = redactBody(input, 'application/json', EMPTY_RULES);
     expect(redacted).toBe(false);
     expect(text).toBe(input);
+  });
+
+  it("redacts JSON behind a )]}' prefix and keeps the prefix", () => {
+    const input = `)]}'\n{"token":"SECRET","ok":1}`;
+    const { text, redacted } = redactBody(input, 'application/json', EMPTY_RULES);
+    expect(redacted).toBe(true);
+    expect(text.startsWith(")]}'\n")).toBe(true);
+    expect(text).not.toContain('SECRET');
+    expect(JSON.parse(text.slice(5))).toEqual({ token: REDACTED, ok: 1 });
+  });
+
+  it('redacts newline-delimited JSON line by line', () => {
+    const input = '{"token":"A1","i":1}\n{"i":2}\n{"password":"B2"}\n';
+    const { text, redacted } = redactBody(input, 'application/x-ndjson', EMPTY_RULES);
+    expect(redacted).toBe(true);
+    expect(text).not.toMatch(/A1|B2/);
+    expect(text.split('\n').filter(Boolean).map((l) => JSON.parse(l))).toEqual([
+      { token: REDACTED, i: 1 },
+      { i: 2 },
+      { password: REDACTED },
+    ]);
   });
 
   it('handles JSON arrays at the top level', () => {

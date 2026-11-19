@@ -1,15 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { RawEvent } from '@/lib/session/types';
+import type { CaptureSettings, RawEvent } from '@/lib/session/types';
+import { makeDefaultSettings } from '@/lib/session/settings';
 import { ConsoleCapturer } from './console';
 
 describe('ConsoleCapturer', () => {
   let emitted: RawEvent[];
   let cap: ConsoleCapturer;
+  let settings: CaptureSettings;
 
   beforeEach(() => {
     vi.useFakeTimers();
     emitted = [];
-    cap = new ConsoleCapturer((raw) => emitted.push(raw));
+    settings = makeDefaultSettings();
+    cap = new ConsoleCapturer((raw) => emitted.push(raw), () => settings);
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -110,6 +113,22 @@ describe('ConsoleCapturer', () => {
     expect(emitted[1]!.type).toBe('error');
   });
 
+  it.each([true, false])('preserves fallback exception stack locations with redaction %s', (enabled) => {
+    settings.redactionEnabled = enabled;
+    const stack = '    at load (https://api.test/app.js?token=secret:5:9)';
+    cap.handle(2, 'Runtime.exceptionThrown', {
+      exceptionDetails: {
+        exception: { type: 'object', subtype: 'error', description: `TypeError: boom\n${stack}` },
+      },
+    });
+    expect(emitted).toHaveLength(1);
+    const payload = emitted[0]!.payload as import('@/lib/session/types').ErrorPayload;
+    expect(payload.message).toBe('TypeError: boom');
+    expect(payload.stack).toBe(enabled
+      ? '    at load (https://api.test/app.js?token=«redacted»:5:9)'
+      : stack);
+  });
+
   it('Log.entryAdded error -> error origin log', () => {
     cap.handle(3, 'Log.entryAdded', {
       entry: { level: 'error', text: 'CSP violation', url: 'https://x', lineNumber: 1 },
@@ -147,5 +166,22 @@ describe('ConsoleCapturer', () => {
     cap.reset();
     vi.advanceTimersByTime(1000);
     expect(emitted).toHaveLength(0);
+  });
+
+  it('honors the current recording redaction switch', () => {
+    const url = 'https://api.example.test/data?token=secret';
+    settings.redactionEnabled = false;
+    consoleApi(1, 'warning', [{ value: url }], url);
+    vi.advanceTimersByTime(1000);
+    expect(JSON.stringify(emitted)).toContain('token=secret');
+
+    emitted.length = 0;
+    settings.redactionEnabled = true;
+    consoleApi(1, 'warning', [{ value: url }], url);
+    vi.advanceTimersByTime(1000);
+    expect(JSON.stringify(emitted)).not.toContain('token=secret');
+    expect(JSON.stringify(emitted)).toContain('token=«redacted»');
+    expect((emitted[0]!.payload as import('@/lib/session/types').ConsolePayload).source)
+      .toBe('https://api.example.test/data?token=«redacted»:12');
   });
 });

@@ -10,6 +10,7 @@
  * this module owns the asset->path mapping and the file layout.
  */
 
+import { isDictatedSpeech } from '@/lib/session/events';
 import type {
   Asset,
   AssetMeta,
@@ -22,6 +23,7 @@ import { applyLevel } from './trimmer';
 import type { TrimContext } from './trimmer';
 import { renderManifest, renderReport } from './markdown';
 import { apiBodyAssetIds, buildOpenApiSpec } from './openapi';
+import { buildHar } from './har';
 import { estimateTokens } from './tokens';
 
 export interface ExportFile {
@@ -370,7 +372,7 @@ export async function buildBundle(
   const transcript = trimmed
     .filter(
       (e): e is Extract<SessionEvent, { type: 'voice-segment' }> =>
-        e.type === 'voice-segment',
+        e.type === 'voice-segment' && !isDictatedSpeech(e),
     )
     .map((e) => ({
       t: e.payload.tStart,
@@ -385,6 +387,8 @@ export async function buildBundle(
     { path: 'transcript.json', text: JSON.stringify(transcript, null, 2) },
   ];
   if (openapiFile) files.push(openapiFile);
+  const har = buildHar(session, trimmed);
+  if (har) files.push({ path: 'network.har', text: JSON.stringify(har, null, 2) });
 
   // 4) Every surviving (deduped) asset as raw bytes, written once.
   for (const [path, bytes] of bytesByPath) {

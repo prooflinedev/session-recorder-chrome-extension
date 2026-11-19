@@ -34,6 +34,8 @@ Content scripts capture interactions, uploaded files and annotations. They send 
 
 Voice events retain retry generation and request identity locally. Export removes internal transcription-request metadata. Annotation dictation uses the recording microphone; toggling its mic control affects that microphone, not a separate recording channel.
 
+While a comment composer is open, speech belongs to it rather than to narration. The background routes interim and final transcripts to that composer only, and marks their voice segments `dictation`. Segmented (batch) capture starts a new segment when a composer opens or closes and cuts 3-second segments while one is open; dictation segments go to the front of the transcription queue. The composer shows when its speech is still being transcribed and when transcription failed, and keeps the text already entered. A transcript that arrives after its composer closed reaches no other comment.
+
 ## Export
 
 [`lib/export/trimmer.ts`](../lib/export/trimmer.ts) applies deterministic cumulative levels to cloned events. It uses protected signals and error-linked request IDs to preserve relevant evidence. It does not call an AI provider.

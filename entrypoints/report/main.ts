@@ -17,6 +17,7 @@ import {
   collapseRepeatedRequests,
   dropStaticAssets,
 } from '@/lib/export/trimmer';
+import { isDictatedSpeech } from '@/lib/session/events';
 import type { TrimContext } from '@/lib/export/trimmer';
 import { buildBundle } from '@/lib/export/bundle';
 import { zipFiles } from '@/lib/export/zip';
@@ -156,7 +157,8 @@ function render(): void {
     assetsById: new Map(assetsMeta.map((m) => [m.id, m])),
     settings: session.settings,
   };
-  const trimmed = trimForLevel(events, level, ctx);
+  // Dictated speech already appears as the annotation it produced.
+  const trimmed = trimForLevel(events, level, ctx).filter((e) => !isDictatedSpeech(e));
 
   const root = el('div');
 
