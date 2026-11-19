@@ -541,6 +541,11 @@ class Orchestrator {
     const url = tab?.url || tab?.pendingUrl || urlHint || '';
     if (!/^https?:\/\//i.test(url)) return;
 
+    // Stop leaves recording/paused before its first await and clears `current`
+    // at the end. An adoption resuming after that must not attach: Stop has
+    // already taken its detach snapshot and would never detach this tab.
+    if (this.isEnding(session)) return;
+
     try {
       const now = Date.now();
       const info: TabInfo = {
@@ -563,6 +568,19 @@ class Orchestrator {
         info.attachedAt = Date.now();
       } catch (e) {
         degradedReason = errMessage(e);
+      }
+
+      // Stop may have begun while the attach was in flight; its snapshot missed
+      // this tab, so undo the attach here. Check the manager rather than
+      // `info.attached`: attach() is a no-op for an already-attached tab, and
+      // rolls itself back when enabling the capture domains fails.
+      // DebuggerManager.detach() never rejects. It drops the tab from its set
+      // first and ignores Chrome's error, which for an extension-owned attach
+      // can only mean the target is already gone (tab closed or detached), so
+      // nothing stays attached either way.
+      if (this.isEnding(session)) {
+        if (this.dbg.isAttached(tabId)) await this.dbg.detach(tabId);
+        return;
       }
 
       session.tabs.push(info);
@@ -594,6 +612,20 @@ class Orchestrator {
         payload: { kind: 'warning', text: `Failed to adopt tab ${tabId}: ${errMessage(e)}` },
       });
     }
+  }
+
+  /**
+   * True once `session` is no longer live: not current any more, or past
+   * recording/paused. Stop moves through 'stopping' and then 'stopped', and
+   * awaits the final session write before clearing `current`, so checking
+   * 'stopping' alone would miss that window. A method, not an inline check, so
+   * the status is re-read after each await instead of staying narrowed.
+   */
+  private isEnding(session: Session): boolean {
+    return (
+      this.current !== session ||
+      (session.status !== 'recording' && session.status !== 'paused')
+    );
   }
 
   private async stop(): Promise<{ ok: boolean }> {

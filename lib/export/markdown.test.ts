@@ -327,9 +327,12 @@ describe('renderReport', () => {
     );
     const md = renderReport(input);
 
-    expect(md).toContain('[00:03] 🌐 PENDING GET /v1/hang');
-    expect(md).toContain('[00:03] 🌐 500 PENDING GET /v1/export');
-    expect(md).toContain('> Pending: the request had not finished when recording stopped.');
+    // The note sits directly under each pending entry, with or without a status.
+    const note = '> Pending: the request had not finished when recording stopped.';
+    expect(md).toContain(`[00:03] 🌐 PENDING GET /v1/hang\n${note}`);
+    expect(md).toContain(`[00:03] 🌐 500 PENDING GET /v1/export\n${note}`);
+    // Once per pending request in the timeline; the Network Index has no notes.
+    expect(md.split(note).length - 1).toBe(2);
     expect(md).toContain('- [00:03] PENDING GET https://api.example.com/v1/hang');
     expect(md).toContain('- [00:03] 500 PENDING GET https://api.example.com/v1/export');
     // Finished requests are unchanged.

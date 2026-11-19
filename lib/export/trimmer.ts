@@ -185,7 +185,8 @@ function summarizeBody(body: NetBody): void {
  * Group net-requests by `method + normalized-path`. The first request in each
  * group is kept verbatim; subsequent normal ones are replaced by a single
  * `net-request` carrying `payload.collapsed`. Anomalous requests (status>=400 /
- * failed) always stay as their own events.
+ * failed) and pending requests (unfinished at stop) always stay as their own
+ * events, so a pending request is never dropped or used as the marker.
  */
 export function collapseRepeatedRequests(): Transform {
   return (events) => {
@@ -213,7 +214,12 @@ export function collapseRepeatedRequests(): Transform {
       if (firstIndex === undefined) continue;
       const collapsible = rest.filter((i) => {
         const e = events[i];
-        return e !== undefined && isNetRequest(e) && !isAnomalous(e.payload);
+        return (
+          e !== undefined &&
+          isNetRequest(e) &&
+          !isAnomalous(e.payload) &&
+          e.payload.pending !== true
+        );
       });
       if (collapsible.length === 0) continue;
       const statusSet = new Set<number>();
