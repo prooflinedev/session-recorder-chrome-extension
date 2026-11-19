@@ -139,9 +139,9 @@ function labelTexts(el: Element): string[] {
 }
 
 /**
- * True when an element is likely to hold a secret: `type=password`, or any of
- * its name/id/autocomplete/placeholder/aria-label attributes or associated
- * label text matching the sensitive patterns.
+ * True when the element itself looks like it holds a secret: `type=password`,
+ * or any of its name/id/autocomplete/placeholder/aria-label attributes or
+ * associated label text matching the sensitive patterns.
  */
 function hasSensitiveAttributes(el: Element): boolean {
   const type = (el.getAttribute('type') ?? '').toLowerCase();
@@ -155,10 +155,9 @@ function hasSensitiveAttributes(el: Element): boolean {
 }
 
 /**
- * True when an element is likely to hold a secret: `type=password`, or any of
- * its name/id/autocomplete/placeholder attributes matching the sensitive pattern.
+ * True when an element is likely to hold a secret (see `hasSensitiveAttributes`).
  * A field inside a web component also counts when an enclosing shadow host
- * carries those attributes (`<secure-input type="password">` wrapping a bare
+ * carries those markers (`<secure-input type="password">` wrapping a bare
  * `<input>`).
  */
 export function isSensitiveInput(el: Element): boolean {
