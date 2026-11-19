@@ -245,6 +245,17 @@
   </section>
 
   <section>
+    <h2>Web components <span class="tag">shadow DOM</span></h2>
+    <p class="hint">
+      These fields and the button live inside open shadow roots, as in Lit,
+      Shoelace or Material Web apps. Events should name the inner
+      <code>input</code>/<code>button</code>, with a <code>host &gt;&gt; inner</code>
+      selector, and the nested password field must still be redacted.
+    </p>
+    <demo-signup id="wc-signup"></demo-signup>
+  </section>
+
+  <section>
     <h2>File upload <span class="tag">file-captured</span></h2>
     <p class="hint">
       Choosing a file triggers the file-capture content script. Small files are
@@ -401,6 +412,36 @@
       row.textContent = 'Scrollable row ' + i + ' of 60';
       scroller.appendChild(row);
     }
+
+    // Web components: a signup card whose controls live in shadow roots, with a
+    // nested password component.
+    customElements.define(
+      'demo-password-field',
+      class extends HTMLElement {
+        constructor() {
+          super();
+          this.attachShadow({ mode: 'open' }).innerHTML =
+            '<label>Password <input type="password" placeholder="••••••••" /></label>';
+        }
+      },
+    );
+    customElements.define(
+      'demo-signup',
+      class extends HTMLElement {
+        constructor() {
+          super();
+          var root = this.attachShadow({ mode: 'open' });
+          root.innerHTML =
+            '<style>:host{display:grid;gap:.5rem;max-width:22rem}label{display:grid;gap:.25rem}</style>' +
+            '<label>Team name <input name="team" placeholder="acme" /></label>' +
+            '<demo-password-field></demo-password-field>' +
+            '<button type="button" class="create">Create team</button>';
+          root.querySelector('button').addEventListener('click', function () {
+            log('web component: Create team clicked');
+          });
+        }
+      },
+    );
 
     log('demo page ready — start a recording, then drive the buttons.');
   })();

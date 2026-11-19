@@ -54,6 +54,7 @@ Listeners (capture phase, `all_frames: true`):
 - `input` and `change`: debounce 800 ms per element. Redact password fields and sensitive-named fields to `«redacted»`, but always keep the field's label, name, and placeholder.
 - `scroll`: coalesce, recording only after 300 ms of idle, as `{from, to, container}`
 - `keydown`: capture only Enter, Escape, Tab, and modifier-chords
+- Web components: events from inside open shadow roots reach `document` retargeted to the shadow host, so the script resolves the real element with `composedPath()` (and the focused element through `shadowRoot.activeElement`). Their selectors chain the host and inner selectors with ` >> `, and a field counts as sensitive when it or an enclosing shadow host matches the sensitive-field rules. `change` and `scroll` do not cross shadow boundaries; `input` does, and covers the same edits.
 - SPA routes: wrap `history.pushState` and `replaceState`, and listen to `popstate`, emitting a `spa-route` event with the URL and title
 
 Then:

@@ -8,6 +8,8 @@
 
 import type { ElementDescriptor, Rect } from '@/lib/session/types';
 
+import { shadowHosts } from './composed';
+
 // ----------------------------------------------------------------------------
 // Constants
 // ----------------------------------------------------------------------------
@@ -28,6 +30,12 @@ const HEADING_SELECTOR = 'h1,h2,h3,h4,h5,h6,[role="heading"],legend';
 /** Containers that commonly carry a labelling heading for their contents. */
 const LABELLED_CONTAINER_SELECTOR =
   'dialog,form,fieldset,section,article,aside,[role="dialog"],[role="region"],[role="group"]';
+
+/**
+ * Joins a shadow host's selector to a selector inside its open shadow root.
+ * CSS has no shadow-piercing combinator; this is Playwright's chaining syntax.
+ */
+const SHADOW_SEPARATOR = ' >> ';
 
 /** Max ancestors to include in a synthesized selector path. */
 const MAX_SELECTOR_DEPTH = 4;
@@ -131,11 +139,11 @@ function labelTexts(el: Element): string[] {
 }
 
 /**
- * True when an element is likely to hold a secret: `type=password`, or any of
- * its name/id/autocomplete/placeholder/aria-label attributes or associated
- * label text matching the sensitive patterns.
+ * True when the element itself looks like it holds a secret: `type=password`,
+ * or any of its name/id/autocomplete/placeholder/aria-label attributes or
+ * associated label text matching the sensitive patterns.
  */
-export function isSensitiveInput(el: Element): boolean {
+function hasSensitiveAttributes(el: Element): boolean {
   const type = (el.getAttribute('type') ?? '').toLowerCase();
   if (type === 'password') return true;
 
@@ -144,6 +152,16 @@ export function isSensitiveInput(el: Element): boolean {
     if (value && isSensitiveHint(value)) return true;
   }
   return labelTexts(el).some(isSensitiveHint);
+}
+
+/**
+ * True when an element is likely to hold a secret (see `hasSensitiveAttributes`).
+ * A field inside a web component also counts when an enclosing shadow host
+ * carries those markers (`<secure-input type="password">` wrapping a bare
+ * `<input>`).
+ */
+export function isSensitiveInput(el: Element): boolean {
+  return hasSensitiveAttributes(el) || shadowHosts(el).some(hasSensitiveAttributes);
 }
 
 // ----------------------------------------------------------------------------
@@ -180,7 +198,8 @@ function segmentFor(el: Element, preferClasses: boolean): string {
     if (classes) return `${tag}${classes}`;
   }
   // Disambiguate by position when there is more than one same-tag sibling.
-  const parent = el.parentElement;
+  // Top-level children of a shadow root have no parentElement.
+  const parent = el.parentElement ?? (el.parentNode as ParentNode | null);
   if (parent) {
     let sameTag = 0;
     for (const child of Array.from(parent.children)) {
@@ -198,8 +217,17 @@ function segmentFor(el: Element, preferClasses: boolean): string {
  *   2. `[data-testid="…"]`
  *   3. a short `tag.class` / `:nth-of-type` ancestor path (max depth ~4),
  *      anchored on an ancestor id when one is found along the way.
+ * Inside an open shadow root, the selector is scoped to that root and prefixed
+ * with its host's selector: `#checkout > card-field >> #number`.
  */
 export function bestSelector(el: Element): string {
+  const own = selectorInRoot(el);
+  const host = shadowHosts(el)[0];
+  return host ? `${bestSelector(host)}${SHADOW_SEPARATOR}${own}` : own;
+}
+
+/** `bestSelector` within `el`'s own document or shadow root. */
+function selectorInRoot(el: Element): string {
   if (el.id) return `#${cssEscape(el.id)}`;
 
   const testId = el.getAttribute('data-testid');
