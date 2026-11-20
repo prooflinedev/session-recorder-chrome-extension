@@ -6,9 +6,9 @@
  * each line where it happened, keep the last one, and record how long the
  * repeated failure lasted.
  *
- * Console capture needs the extension's debugger. Where it cannot attach (the
- * test browser may already hold the tab), the recorder degrades and says so;
- * this test then has nothing to check and skips with that reason.
+ * Console capture needs the extension's debugger. When the test browser
+ * already holds the tab, the recorder degrades and says so; this test then has
+ * nothing to check and skips with that reason. Any other attach failure fails.
  */
 import { test, expect, dispatch, tabIdForUrl } from './support';
 
@@ -65,10 +65,14 @@ test('places console lines at their real time and keeps the last one at stop', a
     kind: 'events/get',
     sessionId,
   });
-  const degraded = events.some(
+  const degraded = events.find(
     (e) => e.type === 'session-note' && /Deep capture unavailable/.test(e.payload?.text ?? ''),
   );
-  test.skip(degraded, 'deep capture is unavailable in this browser, so no console is recorded');
+  // Only the test browser holding the tab is an expected reason to skip; any
+  // other attach failure is a regression and must fail here.
+  const heldByHarness = /another debugger is already attached/i.test(degraded?.payload.text ?? '');
+  test.skip(heldByHarness, 'the test browser holds the tab, so no console is recorded');
+  expect(degraded?.payload.text, 'deep capture attached').toBeUndefined();
 
   const consoleText = (text: string) =>
     events.find((e) => e.type === 'console' && e.payload.text === text);
