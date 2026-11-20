@@ -11,7 +11,7 @@
  * the report, and changing the level in the side panel re-renders it too.
  */
 import { getSession, getEvents, getAssets } from '@/lib/storage';
-import { formatClock } from '@/lib/export/markdown';
+import { formatClock, repeatLabel } from '@/lib/export/markdown';
 import {
   applyLevel,
   collapseRepeatedRequests,
@@ -287,7 +287,8 @@ function eventNode(e: SessionEvent, mediaUrls: Map<string, string>): HTMLElement
     case 'console': {
       const p = e.payload;
       row.className = 'r-row' + (p.level === 'error' ? ' r-err' : ' r-muted');
-      row.append(clockOf(e), tag(p.level === 'error' ? 'error' : 'log'), el('span', 'r-txt', p.text));
+      const rep = repeatLabel(e.t, p.repeat, p.repeatSpanMs);
+      row.append(clockOf(e), tag(p.level === 'error' ? 'error' : 'log'), el('span', 'r-txt', p.text + rep));
       return row;
     }
     case 'error': {
