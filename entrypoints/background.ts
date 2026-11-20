@@ -44,7 +44,7 @@ import type {
   TabInfo,
   VoiceSegmentPayload,
 } from '@/lib/session/types';
-import { PROTECTED_TYPES, isDictatedSpeech, scoreEvent } from '@/lib/session/events';
+import { PROTECTED_TYPES, isDictatedSpeech, placeEvent, scoreEvent } from '@/lib/session/events';
 import {
   makeDefaultSettings,
   STORAGE_KEYS,
@@ -305,16 +305,15 @@ class Orchestrator {
     // While paused, drop capture events but keep the user's explicit signals.
     if (this.paused && !ALLOWED_WHILE_PAUSED.has(type)) return undefined;
 
-    const at = raw.at ?? Date.now();
+    // Sources stamp when something happened; replayed messages go to the start.
+    const { t, payload } = placeEvent(raw, raw.at ?? Date.now(), this.sessionStartEpoch);
     const event = {
       id: newId('evt'),
       sessionId: session.id,
-      // Sources stamp when something happened. Attaching replays messages the
-      // page logged before the recording began; they belong at its start.
-      t: Math.max(0, at - this.sessionStartEpoch),
+      t,
       tabId: raw.tabId,
       type,
-      payload: raw.payload,
+      payload,
       importance: scoreEvent(raw),
       protected: PROTECTED_TYPES.has(type),
     } as SessionEvent;
