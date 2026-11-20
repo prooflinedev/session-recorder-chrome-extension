@@ -150,6 +150,21 @@ describe('ConsoleCapturer', () => {
     expect(emitted[0]!.payload).toMatchObject({ repeat: 3, repeatSpanMs: 2_000 });
   });
 
+  it('starts a run at its earliest occurrence when that arrives late', () => {
+    vi.setSystemTime(5_000);
+    for (const timestamp of [3_000, 1_000, 4_000]) {
+      cap.handle(1, 'Runtime.consoleAPICalled', {
+        type: 'error',
+        args: [{ type: 'string', value: 'sync failed: 401' }],
+        timestamp,
+      });
+    }
+    cap.flush();
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]!.at).toBe(1_000);
+    expect(emitted[0]!.payload).toMatchObject({ repeat: 3, repeatSpanMs: 3_000 });
+  });
+
   it('leaves a single message without a span', () => {
     consoleApi(1, 'log', [{ type: 'string', value: 'once' }]);
     cap.flush();
