@@ -168,6 +168,14 @@ describe('summary providers', () => {
     expect(evidence).not.toContain('at handler');
     expect(evidence.length).toBeLessThan(SUMMARY_INPUT_LIMIT);
   });
+  it('tells the model when repeated console errors stopped', () => {
+    const builder = new SessionBuilder().consoleLog('error', 'sync failed: 401');
+    const data = builder.build();
+    const event = data.events.find((e) => e.type === 'console')!;
+    Object.assign(event.payload, { repeat: 15, repeatSpanMs: 125_000 });
+    const evidence = summaryEvidence(data.session, data.events, []);
+    expect(evidence).toMatch(/sync failed: 401 \(repeated 15 times until 02:0\d\)/);
+  });
   it('generates a short session name with the same annotation-first context', async () => {
     const fetcher = vi.fn().mockResolvedValue(Response.json({ choices: [{ message: { content: '{"title":"Finishing recipes: help and empty states"}' } }] }));
     vi.stubGlobal('fetch', fetcher);
