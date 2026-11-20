@@ -258,6 +258,7 @@ describe('ConsoleCapturer', () => {
     expect(emitted).toHaveLength(1);
     expect((emitted[0]!.payload as any).repeat).toBe(2);
     // The quiet-window timer was cleared, so nothing is emitted twice.
+    expect(vi.getTimerCount()).toBe(0);
     vi.advanceTimersByTime(5000);
     expect(emitted).toHaveLength(1);
   });
