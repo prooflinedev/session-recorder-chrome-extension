@@ -117,6 +117,30 @@ describe('ConsoleCapturer', () => {
     expect(p.repeat).toBe(3);
   });
 
+  it('records how long a run of repeats lasted, keeping the first time', () => {
+    vi.setSystemTime(1_000);
+    // A poll fails every 700 ms, inside the 1 s quiet window each time.
+    for (let i = 0; i < 5; i++) {
+      if (i > 0) vi.advanceTimersByTime(700);
+      cap.handle(1, 'Runtime.consoleAPICalled', {
+        type: 'error',
+        args: [{ type: 'string', value: 'sync failed: 401' }],
+        timestamp: Date.now(),
+      });
+    }
+    expect(emitted).toHaveLength(0);
+    vi.advanceTimersByTime(1_000);
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]!.at).toBe(1_000);
+    expect(emitted[0]!.payload).toMatchObject({ repeat: 5, repeatSpanMs: 2_800 });
+  });
+
+  it('leaves a single message without a span', () => {
+    consoleApi(1, 'log', [{ type: 'string', value: 'once' }]);
+    cap.flush();
+    expect((emitted[0]!.payload as any).repeatSpanMs).toBeUndefined();
+  });
+
   it('flushes pending when a different message arrives', () => {
     consoleApi(1, 'log', [{ type: 'string', value: 'a' }]);
     consoleApi(1, 'log', [{ type: 'string', value: 'b' }]);

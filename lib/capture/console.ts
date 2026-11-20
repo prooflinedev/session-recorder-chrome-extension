@@ -212,9 +212,11 @@ export class ConsoleCapturer {
     const key = `${payload.level}\u0000${payload.text}`;
 
     if (this.pending && this.pending.key === key) {
-      // Duplicate within the quiet window: bump repeat, extend the window.
-      const prev = this.pending.raw.payload.repeat ?? 1;
-      this.pending.raw.payload.repeat = prev + 1;
+      // Duplicate within the quiet window: bump repeat, extend the window, and
+      // remember how long the run has lasted (the event keeps its first time).
+      const held = this.pending.raw;
+      held.payload.repeat = (held.payload.repeat ?? 1) + 1;
+      held.payload.repeatSpanMs = Math.max(0, at - (held.at ?? at));
       this.arm();
       return;
     }
