@@ -14,7 +14,9 @@
  *
  * Every event carries `at`, the time the page produced it (CDP's own
  * timestamp), so holding a message for coalescing never moves it in the
- * timeline. Interaction events are stamped the same way, in the page.
+ * timeline. Interaction events are stamped the same way, in the page. When the
+ * CDP timestamp is missing, invalid, or in the future, `at` is the time the
+ * message was handled instead.
  */
 
 import type {

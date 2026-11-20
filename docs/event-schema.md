@@ -36,6 +36,12 @@ back, such as console coalescing or a response-body fetch, therefore never moves
 it in the timeline. Messages Chrome replays from before the recording began are
 placed at `t = 0`.
 
+Two cases fall back to the time the source handled the event. A console or error
+event whose CDP timestamp is missing, invalid, or in the future is stamped with
+the current time. A request that never got a duration (no `loadingFinished` or
+`loadingFailed`, as with WebSockets or requests still open at stop) is stamped
+when it is emitted.
+
 ### Shared value objects
 
 - `Rect` is `{ x, y, w, h }` (numbers)
