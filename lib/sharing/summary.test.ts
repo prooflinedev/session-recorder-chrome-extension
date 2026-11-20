@@ -168,6 +168,42 @@ describe('summary providers', () => {
     expect(evidence).not.toContain('at handler');
     expect(evidence.length).toBeLessThan(SUMMARY_INPUT_LIMIT);
   });
+  it('tells the model when repeated console errors stopped', () => {
+    const builder = new SessionBuilder().consoleLog('error', 'sync failed: 401');
+    const data = builder.build();
+    const event = data.events.find((e) => e.type === 'console')!;
+    Object.assign(event.payload, { repeat: 15, repeatSpanMs: 125_000 });
+    const evidence = summaryEvidence(data.session, data.events, []);
+    expect(evidence).toMatch(/sync failed: 401 \(repeated 15 times until 02:0\d\)/);
+  });
+  it('ends a grouped diagnostic at the latest end of its events', () => {
+    // Interleaved, so trimming keeps all four events apart.
+    const data = new SessionBuilder()
+      .consoleLog('error', 'sync failed: 401')
+      .consoleLog('error', 'socket closed')
+      .consoleLog('error', 'sync failed: 401')
+      .consoleLog('error', 'socket closed')
+      .build();
+    const [sync1, socket1, sync2, socket2] = data.events.filter((e) => e.type === 'console');
+    Object.assign(sync1!, { t: 1_000 });
+    Object.assign(sync1!.payload, { repeat: 2 });
+    Object.assign(socket1!, { t: 2_000 });
+    Object.assign(socket1!.payload, { repeat: 2, repeatSpanMs: 125_000 });
+    Object.assign(sync2!, { t: 65_000 });
+    Object.assign(socket2!, { t: 70_000 });
+    const evidence = summaryEvidence(data.session, data.events, []);
+    // A later event extends the group; an earlier, longer run is not cut short.
+    expect(evidence).toContain('sync failed: 401 (repeated 3 times until 01:05)');
+    expect(evidence).toContain('socket closed (repeated 3 times until 02:07)');
+  });
+  it('ends a short repeated diagnostic that crosses into the next displayed second', () => {
+    const data = new SessionBuilder().consoleLog('error', 'sync failed: 401').build();
+    const event = data.events.find((e) => e.type === 'console')!;
+    Object.assign(event, { t: 900 });
+    Object.assign(event.payload, { repeat: 2, repeatSpanMs: 200 });
+    const evidence = summaryEvidence(data.session, data.events, []);
+    expect(evidence).toContain('sync failed: 401 (repeated 2 times until 00:01)');
+  });
   it('generates a short session name with the same annotation-first context', async () => {
     const fetcher = vi.fn().mockResolvedValue(Response.json({ choices: [{ message: { content: '{"title":"Finishing recipes: help and empty states"}' } }] }));
     vi.stubGlobal('fetch', fetcher);

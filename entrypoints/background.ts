@@ -44,7 +44,7 @@ import type {
   TabInfo,
   VoiceSegmentPayload,
 } from '@/lib/session/types';
-import { PROTECTED_TYPES, isDictatedSpeech, scoreEvent } from '@/lib/session/events';
+import { PROTECTED_TYPES, isDictatedSpeech, placeEvent, scoreEvent } from '@/lib/session/events';
 import {
   makeDefaultSettings,
   STORAGE_KEYS,
@@ -305,14 +305,15 @@ class Orchestrator {
     // While paused, drop capture events but keep the user's explicit signals.
     if (this.paused && !ALLOWED_WHILE_PAUSED.has(type)) return undefined;
 
-    const at = raw.at ?? Date.now();
+    // Sources stamp when something happened; replayed messages go to the start.
+    const { t, payload } = placeEvent(raw, raw.at ?? Date.now(), this.sessionStartEpoch);
     const event = {
       id: newId('evt'),
       sessionId: session.id,
-      t: at - this.sessionStartEpoch,
+      t,
       tabId: raw.tabId,
       type,
-      payload: raw.payload,
+      payload,
       importance: scoreEvent(raw),
       protected: PROTECTED_TYPES.has(type),
     } as SessionEvent;
@@ -620,6 +621,9 @@ class Orchestrator {
     // Emit any still-open websockets (e.g. a chat socket) WITH their accumulated
     // frames before we detach — otherwise the conversation is lost.
     this.network.flushOpen();
+    // The console message held for coalescing is often the error the user
+    // stopped to report; its timer would fire after the session is gone.
+    this.console.flush();
 
     await this.writer?.flush().catch(() => {});
     this.writer?.dispose();
@@ -682,6 +686,8 @@ class Orchestrator {
   private async pause(): Promise<{ ok: boolean }> {
     const session = this.current;
     if (!session) return { ok: false };
+    // Record the held console message while capture is still on.
+    this.console.flush();
     this.paused = true;
     await this.setPointing(false);
     session.status = 'paused';

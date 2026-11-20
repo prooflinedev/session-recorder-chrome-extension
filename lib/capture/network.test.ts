@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   CaptureSettings,
   NetRequestPayload,
@@ -649,5 +649,67 @@ describe('NetworkCapturer redirects', () => {
     finishStore('asset-old');
     await new Promise((r) => setTimeout(r, 0));
     expect(emitted).toHaveLength(0);
+  });
+});
+
+describe('NetworkCapturer event time', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('stamps a request at the time it finished, not when its body arrived', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(20_000);
+    let release!: (v: Record<string, unknown>) => void;
+    const { cap, emitted } = makeCapturer({
+      send: vi.fn(() => new Promise<Record<string, unknown>>((r) => (release = r))),
+    });
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'pay',
+      request: { method: 'POST', url: 'https://x/api/pay', headers: {} },
+      wallTime: 10, // 10_000 ms epoch
+      timestamp: 500,
+      type: 'Fetch',
+    });
+    cap.handle(1, 'Network.responseReceived', {
+      requestId: 'pay',
+      response: { status: 500, headers: {}, mimeType: 'application/json' },
+    });
+    cap.handle(1, 'Network.loadingFinished', { requestId: 'pay', timestamp: 500.25 });
+    // The body fetch returns much later than the request finished.
+    vi.setSystemTime(21_000);
+    release({ body: '{"detail":"declined"}', base64Encoded: false });
+    await vi.runAllTimersAsync();
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]!.at).toBe(10_250);
+  });
+
+  it('stamps a failed request when it failed', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(40_000);
+    const { cap, emitted } = makeCapturer();
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'slow',
+      request: { method: 'GET', url: 'https://x/slow', headers: {} },
+      wallTime: 30,
+      timestamp: 100,
+      type: 'XHR',
+    });
+    cap.handle(1, 'Network.loadingFailed', {
+      requestId: 'slow',
+      timestamp: 102,
+      errorText: 'net::ERR_TIMED_OUT',
+    });
+    const p = payloadOf(emitted[0]!);
+    expect(p.timing).toEqual({ startedAt: 30_000, durationMs: 2_000 });
+    expect(emitted[0]!.at).toBe(32_000);
+  });
+
+  it('leaves a WebSocket, which has no duration, at its emit time', () => {
+    const { cap, emitted } = makeCapturer();
+    cap.handle(1, 'Network.webSocketCreated', { requestId: 'ws', url: 'wss://x/live' });
+    cap.flushOpen();
+    expect(emitted[0]!.at).toBeUndefined();
   });
 });

@@ -404,32 +404,40 @@ export function dropTextSelections(): Transform {
     events.filter((e) => e.type !== 'text-select').map(cloneEvent);
 }
 
-/** Merge consecutive identical console events, summing their `repeat` counts. */
+/**
+ * Merge consecutive identical console events, summing their `repeat` counts
+ * and stretching `repeatSpanMs` to cover every merged occurrence.
+ */
 export function dedupConsole(): Transform {
   return (events) => {
     const out: SessionEvent[] = [];
     let pending: Extract<SessionEvent, { type: 'console' }> | null = null;
     let count = 0;
+    let lastAt = 0;
     const flush = () => {
       if (!pending) return;
       if (count > 1) pending.payload.repeat = count;
+      if (lastAt > pending.t) pending.payload.repeatSpanMs = lastAt - pending.t;
       out.push(pending);
       pending = null;
       count = 0;
     };
     for (const e of events) {
       if (e.type === 'console' && !isProtected(e)) {
+        const runEnd = e.t + (e.payload.repeatSpanMs ?? 0);
         if (
           pending &&
           pending.payload.level === e.payload.level &&
           pending.payload.text === e.payload.text
         ) {
           count += e.payload.repeat ?? 1;
+          lastAt = Math.max(lastAt, runEnd);
           continue;
         }
         flush();
         pending = cloneEvent(e) as Extract<SessionEvent, { type: 'console' }>;
         count = e.payload.repeat ?? 1;
+        lastAt = runEnd;
       } else {
         flush();
         out.push(cloneEvent(e));

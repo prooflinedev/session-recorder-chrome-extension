@@ -15,6 +15,7 @@ import type {
 import {
   applyLevel,
   collapseRepeatedRequests,
+  dedupConsole,
   type TrimContext,
 } from './trimmer';
 
@@ -235,5 +236,59 @@ describe('trimmer', () => {
       expect(marker.payload.collapsed.count).toBeGreaterThan(0);
       expect(Array.isArray(marker.payload.collapsed.statuses)).toBe(true);
     }
+  });
+});
+
+describe('dedupConsole', () => {
+  const { ctx } = buildFixture();
+  const consoleEvent = (
+    t: number,
+    text: string,
+    extra: { repeat?: number; repeatSpanMs?: number } = {},
+  ): SessionEvent =>
+    ({
+      id: `evt-${t}`,
+      sessionId: 's',
+      t,
+      type: 'console',
+      payload: { level: 'error', text, ...extra },
+      importance: 10,
+      protected: false,
+    }) as SessionEvent;
+
+  it('merges runs into one event spanning all of them', () => {
+    // The capturer flushed one run of 3 (spanning 400 ms), then two singles.
+    const out = dedupConsole()([
+      consoleEvent(1_000, 'sync failed', { repeat: 3, repeatSpanMs: 400 }),
+      consoleEvent(2_500, 'sync failed'),
+      consoleEvent(3_800, 'sync failed'),
+    ], ctx);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.t).toBe(1_000);
+    expect(out[0]!.payload).toMatchObject({ repeat: 5, repeatSpanMs: 2_800 });
+  });
+
+  it('keeps the span of a run that ends a merge', () => {
+    const out = dedupConsole()([
+      consoleEvent(1_000, 'x'),
+      consoleEvent(2_000, 'x', { repeat: 4, repeatSpanMs: 1_500 }),
+    ], ctx);
+    expect(out[0]!.payload).toMatchObject({ repeat: 5, repeatSpanMs: 2_500 });
+  });
+
+  it('keeps an earlier run that ends after the event that follows it', () => {
+    const out = dedupConsole()([
+      consoleEvent(1_000, 'x', { repeat: 6, repeatSpanMs: 4_000 }),
+      consoleEvent(2_000, 'x'),
+    ], ctx);
+    expect(out[0]!.payload).toMatchObject({ repeat: 7, repeatSpanMs: 4_000 });
+  });
+
+  it('does not invent a span for a lone event', () => {
+    const out = dedupConsole()([consoleEvent(1_000, 'a'), consoleEvent(1_200, 'b')], ctx);
+    expect(out.map((e) => (e.payload as { repeatSpanMs?: number }).repeatSpanMs)).toEqual([
+      undefined,
+      undefined,
+    ]);
   });
 });

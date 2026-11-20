@@ -319,6 +319,9 @@ export class NetworkCapturer {
     const p = this.pending.get(requestId);
     if (!p) return;
     this.pending.delete(requestId);
+    if (p.timing && p.startMonotonic !== undefined && typeof params.timestamp === 'number') {
+      p.timing.durationMs = Math.max(0, Math.round((params.timestamp - p.startMonotonic) * 1000));
+    }
     const failureReason = asString(params.errorText);
     this.completeHttp(tabId, p, { failed: true, failureReason });
   }
@@ -678,7 +681,7 @@ export class NetworkCapturer {
 
   private finishEmit(tabId: number, payload: NetRequestPayload): void {
     try {
-      this.deps.emit({ type: 'net-request', tabId, payload });
+      this.deps.emit({ type: 'net-request', tabId, payload, at: finishedAt(payload) });
     } catch {
       /* funnel errors must not propagate back into the CDP listener */
     }
@@ -697,6 +700,18 @@ export class NetworkCapturer {
 // ----------------------------------------------------------------------------
 // Helpers
 // ----------------------------------------------------------------------------
+
+/**
+ * When the request finished, in epoch ms: its wall-clock start plus its CDP
+ * duration. The body fetch and redirect ordering can delay the emit, and the
+ * timeline must not show a response after the console line that read it.
+ * Without a duration (WebSockets, cut-off requests) the emit time stands.
+ */
+function finishedAt(payload: NetRequestPayload): number | undefined {
+  const timing = payload.timing;
+  if (!timing || timing.durationMs === undefined) return undefined;
+  return Math.min(timing.startedAt + timing.durationMs, Date.now());
+}
 
 function asString(v: unknown): string | undefined {
   return typeof v === 'string' ? v : undefined;

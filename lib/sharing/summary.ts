@@ -57,16 +57,18 @@ export function summaryEvidence(
 }
 
 function compactDiagnostics(events: SessionEvent[]): string {
-  const groups = new Map<string, { t: number; message: string; count: number }>();
+  const groups = new Map<string, { t: number; last: number; message: string; count: number }>();
   for (const event of events) {
     let message: string;
     let count = 1;
+    let last = event.t;
     if (event.type === 'error') {
       message = event.payload.message;
       count = event.payload.repeat ?? 1;
     } else if (event.type === 'console' && ['error', 'warn', 'warning'].includes(event.payload.level)) {
       message = event.payload.text;
       count = event.payload.repeat ?? 1;
+      last += event.payload.repeatSpanMs ?? 0;
     } else if (event.type === 'net-request' && (event.payload.failed || (event.payload.status ?? 0) >= 400)) {
       let url = event.payload.url;
       try { const parsed = new URL(url); url = `${parsed.origin}${parsed.pathname}`; } catch { url = '[invalid URL]'; }
@@ -75,12 +77,16 @@ function compactDiagnostics(events: SessionEvent[]): string {
     // CSP messages often differ only in a generated script hash.
     message = message.replace(/sha(?:256|384|512)-[A-Za-z0-9+/=_-]+/g, '[script hash]').replace(/\s+/g, ' ').trim();
     const existing = groups.get(message);
-    if (existing) existing.count += count;
-    else groups.set(message, { t: event.t, message, count });
+    if (existing) {
+      existing.count += count;
+      existing.last = Math.max(existing.last, last);
+    } else groups.set(message, { t: event.t, last, message, count });
   }
   const rows = [...groups.values()];
   const selected = rows.length > 12 ? [...rows.slice(0, 6), ...rows.slice(-6)] : rows;
-  const lines = selected.map(({ t, message, count }) => `[${formatClock(t)}] ${message.slice(0, 350)}${message.length > 350 ? '…' : ''}${count > 1 ? ` (repeated ${count} times)` : ''}`);
+  const repeated = (t: number, last: number, count: number) =>
+    count <= 1 ? '' : formatClock(last) === formatClock(t) ? ` (repeated ${count} times)` : ` (repeated ${count} times until ${formatClock(last)})`;
+  const lines = selected.map(({ t, last, message, count }) => `[${formatClock(t)}] ${message.slice(0, 350)}${message.length > 350 ? '…' : ''}${repeated(t, last, count)}`);
   if (rows.length > selected.length) lines.push(`[${rows.length - selected.length} additional diagnostic groups omitted; full details are in the report.]`);
   return lines.join('\n') || 'None recorded.';
 }

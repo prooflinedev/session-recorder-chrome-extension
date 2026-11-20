@@ -92,6 +92,29 @@ export function scoreEvent(raw: RawEvent): number {
   return score;
 }
 
+/**
+ * Place an event on the session timeline. Attaching replays messages the page
+ * logged before the recording began; they belong at its start. A replayed
+ * repeated run keeps the time its last occurrence actually had.
+ */
+export function placeEvent(
+  raw: RawEvent,
+  at: number,
+  sessionStartEpoch: number,
+): { t: number; payload: RawEvent['payload'] } {
+  const offset = at - sessionStartEpoch;
+  if (offset >= 0) return { t: offset, payload: raw.payload };
+  if (raw.type === 'console') {
+    const p = raw.payload as import('./types').ConsolePayload;
+    if (p.repeatSpanMs !== undefined) {
+      const { repeatSpanMs, ...rest } = p;
+      const end = offset + repeatSpanMs;
+      return { t: 0, payload: end > 0 ? { ...rest, repeatSpanMs: end } : rest };
+    }
+  }
+  return { t: 0, payload: raw.payload };
+}
+
 /** Whether a fully-materialized event is protected from trimming. */
 export function isProtected(e: SessionEvent): boolean {
   if (e.protected) return true;

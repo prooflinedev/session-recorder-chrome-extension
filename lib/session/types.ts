@@ -325,6 +325,8 @@ export interface ConsolePayload {
   args?: string[];
   /** Consecutive-duplicate collapse count. */
   repeat?: number;
+  /** Ms from the first to the last collapsed occurrence; the event's `t` is the first. */
+  repeatSpanMs?: number;
   stack?: string;
   source?: string; // url:line
 }
