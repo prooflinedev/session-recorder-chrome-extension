@@ -196,6 +196,14 @@ describe('summary providers', () => {
     expect(evidence).toContain('sync failed: 401 (repeated 3 times until 01:05)');
     expect(evidence).toContain('socket closed (repeated 3 times until 02:07)');
   });
+  it('ends a short repeated diagnostic that crosses into the next displayed second', () => {
+    const data = new SessionBuilder().consoleLog('error', 'sync failed: 401').build();
+    const event = data.events.find((e) => e.type === 'console')!;
+    Object.assign(event, { t: 900 });
+    Object.assign(event.payload, { repeat: 2, repeatSpanMs: 200 });
+    const evidence = summaryEvidence(data.session, data.events, []);
+    expect(evidence).toContain('sync failed: 401 (repeated 2 times until 00:01)');
+  });
   it('generates a short session name with the same annotation-first context', async () => {
     const fetcher = vi.fn().mockResolvedValue(Response.json({ choices: [{ message: { content: '{"title":"Finishing recipes: help and empty states"}' } }] }));
     vi.stubGlobal('fetch', fetcher);
