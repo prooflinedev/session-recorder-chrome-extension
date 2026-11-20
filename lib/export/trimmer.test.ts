@@ -276,6 +276,14 @@ describe('dedupConsole', () => {
     expect(out[0]!.payload).toMatchObject({ repeat: 5, repeatSpanMs: 2_500 });
   });
 
+  it('keeps an earlier run that ends after the event that follows it', () => {
+    const out = dedupConsole()([
+      consoleEvent(1_000, 'x', { repeat: 6, repeatSpanMs: 4_000 }),
+      consoleEvent(2_000, 'x'),
+    ], ctx);
+    expect(out[0]!.payload).toMatchObject({ repeat: 7, repeatSpanMs: 4_000 });
+  });
+
   it('does not invent a span for a lone event', () => {
     const out = dedupConsole()([consoleEvent(1_000, 'a'), consoleEvent(1_200, 'b')], ctx);
     expect(out.map((e) => (e.payload as { repeatSpanMs?: number }).repeatSpanMs)).toEqual([
