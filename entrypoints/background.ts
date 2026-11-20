@@ -309,7 +309,9 @@ class Orchestrator {
     const event = {
       id: newId('evt'),
       sessionId: session.id,
-      t: at - this.sessionStartEpoch,
+      // Sources stamp when something happened. Attaching replays messages the
+      // page logged before the recording began; they belong at its start.
+      t: Math.max(0, at - this.sessionStartEpoch),
       tabId: raw.tabId,
       type,
       payload: raw.payload,
