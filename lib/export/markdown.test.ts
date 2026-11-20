@@ -17,7 +17,7 @@ import type {
 } from '@/lib/session/types';
 import { makeDefaultSettings } from '@/lib/session/settings';
 import { scoreEvent } from '@/lib/session/events';
-import { formatClock, renderManifest, renderReport } from './markdown';
+import { formatClock, renderManifest, renderReport, repeatLabel } from './markdown';
 import type { RenderInput } from './markdown';
 
 const SESSION_ID = 'sess_test';
@@ -251,7 +251,38 @@ describe('formatClock', () => {
   });
 });
 
+describe('repeatLabel', () => {
+  it('is empty for a single occurrence', () => {
+    expect(repeatLabel(1_000)).toBe('');
+    expect(repeatLabel(1_000, 1, 500)).toBe('');
+  });
+
+  it('shows only the count when the run stays within one second', () => {
+    expect(repeatLabel(1_000, 3)).toBe(' (×3)');
+    expect(repeatLabel(1_000, 3, 900)).toBe(' (×3)');
+  });
+
+  it('shows when a longer run ended', () => {
+    expect(repeatLabel(1_000, 15, 2_800)).toBe(' (×15 until 00:03)');
+  });
+});
+
 describe('renderReport', () => {
+  it('shows when a repeated console message stopped, in the timeline and the dump', () => {
+    const input = buildSession();
+    input.events.push(
+      ev({
+        t: 61_000,
+        tabId: 1,
+        type: 'console',
+        payload: { level: 'error', text: 'sync failed: 401', repeat: 15, repeatSpanMs: 9_000 },
+      }),
+    );
+    const md = renderReport(input);
+    expect(md).toContain('[01:01] console.error (×15 until 01:10)');
+    expect(md).toContain('[01:01] error (×15 until 01:10): sync failed: 401');
+  });
+
   it('renders a full report without throwing', () => {
     const input = buildSession();
     expect(() => renderReport(input)).not.toThrow();

@@ -40,6 +40,16 @@ export interface RenderInput {
 // ----------------------------------------------------------------------------
 
 /** Format milliseconds-from-start as `mm:ss`, or `h:mm:ss` past an hour. */
+/**
+ * ` (×N)` for a collapsed run, ` (×N until MM:SS)` when it ended in a later
+ * second than it began, '' for a single occurrence.
+ */
+export function repeatLabel(t: number, repeat?: number, repeatSpanMs?: number): string {
+  if (!repeat || repeat <= 1) return '';
+  const until = repeatSpanMs ? formatClock(t + repeatSpanMs) : undefined;
+  return until && until !== formatClock(t) ? ` (×${repeat} until ${until})` : ` (×${repeat})`;
+}
+
 export function formatClock(ms: number): string {
   const totalSec = Math.max(0, Math.floor(ms / 1000));
   const seconds = totalSec % 60;
@@ -343,7 +353,7 @@ function renderEvent(
     // --- console / error ---------------------------------------------------
     case 'console': {
       const p = e.payload;
-      const repeat = p.repeat && p.repeat > 1 ? ` (×${p.repeat})` : '';
+      const repeat = repeatLabel(e.t, p.repeat, p.repeatSpanMs);
       const src = p.source ? ` @ ${p.source}` : '';
       lines.push(`${clock} console.${p.level}${repeat}${src}`);
       lines.push('```');
@@ -623,8 +633,7 @@ function renderAppendices(
       if (e.type === 'error') {
         lines.push(`${stamp} ERROR (${e.payload.origin}) ${oneLine(e.payload.message)}`);
       } else {
-        const repeat =
-          e.payload.repeat && e.payload.repeat > 1 ? ` (×${e.payload.repeat})` : '';
+        const repeat = repeatLabel(e.t, e.payload.repeat, e.payload.repeatSpanMs);
         lines.push(`${stamp} ${e.payload.level}${repeat}: ${oneLine(e.payload.text)}`);
       }
     }
