@@ -257,13 +257,17 @@ describe('repeatLabel', () => {
     expect(repeatLabel(1_000, 1, 500)).toBe('');
   });
 
-  it('shows only the count when the run stays within one second', () => {
+  it('shows only the count when the run stays within one displayed second', () => {
     expect(repeatLabel(1_000, 3)).toBe(' (×3)');
     expect(repeatLabel(1_000, 3, 900)).toBe(' (×3)');
   });
 
   it('shows when a longer run ended', () => {
     expect(repeatLabel(1_000, 15, 2_800)).toBe(' (×15 until 00:03)');
+  });
+
+  it('shows the end of a short run that crosses into the next displayed second', () => {
+    expect(repeatLabel(1_900, 3, 200)).toBe(' (×3 until 00:02)');
   });
 });
 
