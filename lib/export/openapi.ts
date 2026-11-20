@@ -191,12 +191,18 @@ function mergedSchema(schemas: Schema[]): Schema | undefined {
   }
 }
 
+function canonicalMime(mime: string | undefined): string | undefined {
+  if (!mime) return undefined;
+  const normalized = mime.split(';', 1)[0]?.trim().toLowerCase();
+  return normalized || undefined;
+}
+
 // ----------------------------------------------------------------------------
 // Spec assembly
 // ----------------------------------------------------------------------------
 
 interface ResponseAcc {
-  schemas: Schema[];
+  schemasByMime: Map<string, Schema[]>;
   mimes: Set<string>;
   sawBody: boolean;
 }
@@ -206,7 +212,7 @@ interface OperationAcc {
   path: string;
   pathParams: string[];
   queryParams: Set<string>;
-  requestSchemas: Schema[];
+  requestSchemasByMime: Map<string, Schema[]>;
   requestMimes: Set<string>;
   sawRequestBody: boolean;
   responses: Map<string, ResponseAcc>;
@@ -256,7 +262,7 @@ export function buildOpenApiSpec(
         path,
         pathParams: params,
         queryParams: new Set(),
-        requestSchemas: [],
+        requestSchemasByMime: new Map(),
         requestMimes: new Set(),
         sawRequestBody: false,
         responses: new Map(),
@@ -277,9 +283,15 @@ export function buildOpenApiSpec(
     // Request body.
     if (p.requestBody?.present === true) {
       op.sawRequestBody = true;
-      if (p.requestBody.mime) op.requestMimes.add(p.requestBody.mime);
+      const mime =
+        canonicalMime(p.requestBody.mime) ?? 'application/json';
+      op.requestMimes.add(mime);
       const parsed = parseJsonSample(bodyTextOf(p.requestBody, resolveBody));
-      if (parsed) op.requestSchemas.push(createSchema(parsed.value));
+      if (parsed) {
+        const schemas = op.requestSchemasByMime.get(mime) ?? [];
+        schemas.push(createSchema(parsed.value));
+        op.requestSchemasByMime.set(mime, schemas);
+      }
     }
 
     // Response, keyed by status.
@@ -287,15 +299,20 @@ export function buildOpenApiSpec(
       const statusKey = String(p.status);
       let res = op.responses.get(statusKey);
       if (!res) {
-        res = { schemas: [], mimes: new Set(), sawBody: false };
+        res = { schemasByMime: new Map(), mimes: new Set(), sawBody: false };
         op.responses.set(statusKey, res);
       }
       if (p.responseBody?.present === true) {
         res.sawBody = true;
-        const mime = p.responseBody.mime ?? p.mime;
-        if (mime) res.mimes.add(mime);
+        const mime =
+          canonicalMime(p.responseBody.mime ?? p.mime) ?? 'application/json';
+        res.mimes.add(mime);
         const parsed = parseJsonSample(bodyTextOf(p.responseBody, resolveBody));
-        if (parsed) res.schemas.push(createSchema(parsed.value));
+        if (parsed) {
+          const schemas = res.schemasByMime.get(mime) ?? [];
+          schemas.push(createSchema(parsed.value));
+          res.schemasByMime.set(mime, schemas);
+        }
       }
     }
   }
@@ -330,10 +347,17 @@ export function buildOpenApiSpec(
     if (parameters.length > 0) operation.parameters = parameters;
 
     if (op.sawRequestBody) {
-      const mime = [...op.requestMimes][0] ?? 'application/json';
-      const schema = mergedSchema(op.requestSchemas);
+      const mimes =
+        op.requestMimes.size > 0
+          ? [...op.requestMimes].sort()
+          : ['application/json'];
+      const content: Record<string, unknown> = {};
+      for (const mime of mimes) {
+        const schema = mergedSchema(op.requestSchemasByMime.get(mime) ?? []);
+        content[mime] = schema ? { schema } : {};
+      }
       operation.requestBody = {
-        content: { [mime]: schema ? { schema } : {} },
+        content,
       };
     }
 
@@ -345,9 +369,14 @@ export function buildOpenApiSpec(
         description: `Observed ${status} response`,
       };
       if (res.sawBody) {
-        const mime = [...res.mimes][0] ?? 'application/json';
-        const schema = mergedSchema(res.schemas);
-        entry.content = { [mime]: schema ? { schema } : {} };
+        const mimes =
+          res.mimes.size > 0 ? [...res.mimes].sort() : ['application/json'];
+        const content: Record<string, unknown> = {};
+        for (const mime of mimes) {
+          const schema = mergedSchema(res.schemasByMime.get(mime) ?? []);
+          content[mime] = schema ? { schema } : {};
+        }
+        entry.content = content;
       }
       responses[status] = entry;
     }

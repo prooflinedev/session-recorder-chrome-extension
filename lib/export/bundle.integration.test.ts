@@ -177,6 +177,36 @@ describe('export pipeline OpenAPI compilation (captureApiSpec)', () => {
     }
   });
 
+  it('exports every observed response content type into openapi.json', async () => {
+    const settings = { ...makeDefaultSettings(), captureApiSpec: true };
+    const { session, events, assets } = new SessionBuilder({
+      name: 'Multi-format API',
+      settings,
+    })
+      .net('GET', 'https://api.example.com/users', {
+        status: 200,
+        mime: 'application/json',
+        resBody: '{"users":[]}',
+      })
+      .net('GET', 'https://api.example.com/users', {
+        status: 200,
+        mime: 'application/vnd.api+json',
+        resBody: '{"data":[]}',
+      })
+      .build();
+
+    const files = await buildBundle({ session, events, assets, level: 'L0' });
+    const spec = JSON.parse(
+      files.find((f) => f.path === 'openapi.json')!.text!,
+    ) as Record<string, any>;
+    const content = spec.paths['/users'].get.responses['200'].content;
+
+    expect(Object.keys(content).sort()).toEqual([
+      'application/json',
+      'application/vnd.api+json',
+    ]);
+  });
+
   it('resolves full stored bodies from net-body assets when inline text is truncated', async () => {
     const { session, events, assets } = apiSpecSession();
     const full = '{"id":1,"name":"Ada","email":"ada@example.com"}';

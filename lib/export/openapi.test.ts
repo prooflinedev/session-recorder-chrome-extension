@@ -143,6 +143,206 @@ describe('buildOpenApiSpec', () => {
     ).toEqual(['error']);
   });
 
+  it('preserves multiple response content types and their isolated schemas', () => {
+    const events = netEvents((b) =>
+      b
+        .net('GET', 'https://api.example.com/users', {
+          status: 200,
+          mime: 'application/json',
+          resBody: '{"users":[]}',
+        })
+        .net('GET', 'https://api.example.com/users', {
+          status: 200,
+          mime: 'application/vnd.api+json',
+          resBody: '{"data":[]}',
+        }),
+    );
+
+    const { spec } = buildOpenApiSpec(events, noAssets)!;
+    const content = opAt(spec, '/users', 'get').responses['200'].content;
+
+    expect(Object.keys(content).sort()).toEqual([
+      'application/json',
+      'application/vnd.api+json',
+    ]);
+    expect(Object.keys(content['application/json'].schema.properties)).toEqual(['users']);
+    expect(Object.keys(content['application/vnd.api+json'].schema.properties)).toEqual(['data']);
+  });
+
+  it('does not let response event order choose the preserved content types', () => {
+    const eventsAB = netEvents((b) =>
+      b
+        .net('GET', 'https://api.example.com/users', {
+          status: 200,
+          mime: 'application/json',
+          resBody: '{"users":[]}',
+        })
+        .net('GET', 'https://api.example.com/users', {
+          status: 200,
+          mime: 'application/vnd.api+json',
+          resBody: '{"data":[]}',
+        }),
+    );
+    const eventsBA = netEvents((b) =>
+      b
+        .net('GET', 'https://api.example.com/users', {
+          status: 200,
+          mime: 'application/vnd.api+json',
+          resBody: '{"data":[]}',
+        })
+        .net('GET', 'https://api.example.com/users', {
+          status: 200,
+          mime: 'application/json',
+          resBody: '{"users":[]}',
+        }),
+    );
+
+    const specAB = buildOpenApiSpec(eventsAB, noAssets)!.spec;
+    const specBA = buildOpenApiSpec(eventsBA, noAssets)!.spec;
+
+    expect(opAt(specAB, '/users', 'get').responses['200'].content).toEqual(
+      opAt(specBA, '/users', 'get').responses['200'].content,
+    );
+  });
+
+  it('preserves multiple request content types and isolates their schemas', () => {
+    const events = netEvents((b) =>
+      b
+        .net('POST', 'https://api.example.com/users', {
+          status: 200,
+          reqBody: '{"name":"Ada"}',
+        })
+        .net('POST', 'https://api.example.com/users', {
+          status: 200,
+          reqBody: '{"data":{"name":"Ada"}}',
+        }),
+    );
+    const payloads = events
+      .filter((e): e is Extract<SessionEvent, { type: 'net-request' }> =>
+        e.type === 'net-request',
+      )
+      .map((e) => e.payload);
+    payloads[0]!.requestBody!.mime = 'application/json';
+    payloads[1]!.requestBody!.mime = 'application/vnd.api+json';
+
+    const { spec } = buildOpenApiSpec(events, noAssets)!;
+    const content = opAt(spec, '/users', 'post').requestBody.content;
+
+    expect(Object.keys(content).sort()).toEqual([
+      'application/json',
+      'application/vnd.api+json',
+    ]);
+    expect(Object.keys(content['application/json'].schema.properties)).toEqual(['name']);
+    expect(Object.keys(content['application/vnd.api+json'].schema.properties)).toEqual([
+      'data',
+    ]);
+  });
+
+  it('does not infer request MIME from response MIME', () => {
+    const events = netEvents((b) =>
+      b.net('POST', 'https://api.example.com/export', {
+        status: 200,
+        mime: 'text/csv',
+        reqBody: '{"limit":10}',
+        resBody: 'id\n1',
+      }),
+    );
+
+    const payload = netPayload(events);
+    delete payload.requestBody!.mime;
+    payload.requestHeaders = payload.requestHeaders.filter(
+      (h) => h.name.toLowerCase() !== 'content-type',
+    );
+
+    const { spec } = buildOpenApiSpec(events, noAssets)!;
+    const content = opAt(spec, '/export', 'post').requestBody.content;
+
+    expect(content).not.toHaveProperty('text/csv');
+    expect(content).toHaveProperty('application/json');
+  });
+
+  it('normalizes MIME parameters and case to one response content key', () => {
+    const events = netEvents((b) =>
+      b
+        .net('GET', 'https://api.example.com/users', {
+          status: 200,
+          mime: 'application/json',
+          resBody: '{"id":1}',
+        })
+        .net('GET', 'https://api.example.com/users', {
+          status: 200,
+          mime: 'application/json',
+          resBody: '{"name":"Ada"}',
+        }),
+    );
+    const payloads = events
+      .filter((e): e is Extract<SessionEvent, { type: 'net-request' }> =>
+        e.type === 'net-request',
+      )
+      .map((e) => e.payload);
+    payloads[0]!.responseBody!.mime = 'Application/JSON; charset=utf-8';
+    payloads[1]!.responseBody!.mime = 'application/json';
+
+    const { spec } = buildOpenApiSpec(events, noAssets)!;
+    const content = opAt(spec, '/users', 'get').responses['200'].content;
+
+    expect(Object.keys(content)).toEqual(['application/json']);
+    expect(Object.keys(content['application/json'].schema.properties).sort()).toEqual([
+      'id',
+      'name',
+    ]);
+  });
+
+  it('preserves a valid MIME schema when another MIME has malformed JSON', () => {
+    const events = netEvents((b) =>
+      b
+        .net('GET', 'https://api.example.com/users', {
+          status: 200,
+          mime: 'application/json',
+          resBody: '{"users":[]}',
+        })
+        .net('GET', 'https://api.example.com/users', {
+          status: 200,
+          mime: 'application/vnd.api+json',
+          resBody: '{"broken":',
+        }),
+    );
+
+    const { spec } = buildOpenApiSpec(events, noAssets)!;
+    const content = opAt(spec, '/users', 'get').responses['200'].content;
+
+    expect(Object.keys(content).sort()).toEqual([
+      'application/json',
+      'application/vnd.api+json',
+    ]);
+    expect(Object.keys(content['application/json'].schema.properties)).toEqual(['users']);
+    expect(content['application/vnd.api+json']).toEqual({});
+  });
+
+  it('keeps formats isolated across different HTTP status entries', () => {
+    const events = netEvents((b) =>
+      b
+        .net('GET', 'https://api.example.com/users', {
+          status: 200,
+          mime: 'application/json',
+          resBody: '{"users":[]}',
+        })
+        .net('GET', 'https://api.example.com/users', {
+          status: 400,
+          mime: 'application/vnd.api+json',
+          resBody: '{"data":[]}',
+        }),
+    );
+
+    const { spec } = buildOpenApiSpec(events, noAssets)!;
+    const responses = opAt(spec, '/users', 'get').responses;
+
+    expect(Object.keys(responses['200'].content)).toEqual(['application/json']);
+    expect(Object.keys(responses['400'].content)).toEqual([
+      'application/vnd.api+json',
+    ]);
+  });
+
   it('merges schemas across samples: shared fields required, extras optional', () => {
     const events = netEvents((b) =>
       b
