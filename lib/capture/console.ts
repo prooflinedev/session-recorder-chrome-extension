@@ -216,7 +216,11 @@ export class ConsoleCapturer {
       // remember how long the run has lasted (the event keeps its first time).
       const held = this.pending.raw;
       held.payload.repeat = (held.payload.repeat ?? 1) + 1;
-      held.payload.repeatSpanMs = Math.max(0, at - (held.at ?? at));
+      // Occurrence times need not arrive in order; never shrink a known span.
+      held.payload.repeatSpanMs = Math.max(
+        held.payload.repeatSpanMs ?? 0,
+        at - (held.at ?? at),
+      );
       this.arm();
       return;
     }

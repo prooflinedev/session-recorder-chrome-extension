@@ -135,6 +135,21 @@ describe('ConsoleCapturer', () => {
     expect(emitted[0]!.payload).toMatchObject({ repeat: 5, repeatSpanMs: 2_800 });
   });
 
+  it('keeps the longest span when duplicates arrive out of order', () => {
+    vi.setSystemTime(5_000);
+    for (const timestamp of [1_000, 3_000, 2_000]) {
+      cap.handle(1, 'Runtime.consoleAPICalled', {
+        type: 'error',
+        args: [{ type: 'string', value: 'sync failed: 401' }],
+        timestamp,
+      });
+    }
+    cap.flush();
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]!.at).toBe(1_000);
+    expect(emitted[0]!.payload).toMatchObject({ repeat: 3, repeatSpanMs: 2_000 });
+  });
+
   it('leaves a single message without a span', () => {
     consoleApi(1, 'log', [{ type: 'string', value: 'once' }]);
     cap.flush();
