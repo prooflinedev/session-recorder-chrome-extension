@@ -279,15 +279,15 @@ export class ConsoleCapturer {
 // ----------------------------------------------------------------------------
 
 /**
- * When the page produced a CDP console/log/exception event, in epoch ms.
- * CDP's `Runtime.Timestamp` comes from the browser, not page JavaScript, so a
- * page that fakes `Date` cannot skew it. Missing or invalid values, and any
- * value in the future, fall back to now.
+ * When the page produced a CDP console/log/exception event, in whole epoch ms
+ * like every other event. CDP's `Runtime.Timestamp` comes from the browser,
+ * not page JavaScript, so a page that fakes `Date` cannot skew it. Missing or
+ * invalid values, and any value in the future, fall back to now.
  */
 function occurredAt(timestamp: unknown): number {
   const now = Date.now();
   return typeof timestamp === 'number' && Number.isFinite(timestamp) && timestamp > 0
-    ? Math.min(timestamp, now)
+    ? Math.min(Math.round(timestamp), now)
     : now;
 }
 

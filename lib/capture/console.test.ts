@@ -63,6 +63,15 @@ describe('ConsoleCapturer', () => {
     expect(emitted.map((e) => e.at)).toEqual([4_200, 4_300]);
   });
 
+  it('rounds CDP sub-millisecond time to whole ms', () => {
+    vi.setSystemTime(5_000);
+    cap.handle(1, 'Runtime.exceptionThrown', {
+      timestamp: 4_321.687,
+      exceptionDetails: { text: 'boom' },
+    });
+    expect(emitted[0]!.at).toBe(4_322);
+  });
+
   it('falls back to now for a missing, invalid or future timestamp', () => {
     vi.setSystemTime(7_000);
     for (const timestamp of [undefined, Number.NaN, -1, '6000', 8_000]) {
