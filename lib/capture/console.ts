@@ -11,6 +11,10 @@
  * coalesced into a single pending event whose `payload.repeat` is bumped, rather
  * than emitting a duplicate. The pending event flushes when a different message
  * arrives or after 1000ms of quiet.
+ *
+ * Every event carries `at`, the time the page produced it (CDP's own
+ * timestamp), so holding a message for coalescing never moves it in the
+ * timeline. Interaction events are stamped the same way, in the page.
  */
 
 import type {
@@ -111,7 +115,7 @@ export class ConsoleCapturer {
     if (argStrings.length > 0) payload.args = argStrings;
     if (source !== undefined) payload.source = source;
 
-    this.pushConsole(tabId, payload);
+    this.pushConsole(tabId, payload, occurredAt(params['timestamp']));
   }
 
   // --------------------------------------------------------------------------
@@ -152,7 +156,7 @@ export class ConsoleCapturer {
 
     // Preserve ordering: flush any pending console before the error.
     this.flush();
-    this.emit(this.raw('error', tabId, payload));
+    this.emit(this.raw('error', tabId, payload, occurredAt(params['timestamp'])));
   }
 
   // --------------------------------------------------------------------------
@@ -170,6 +174,7 @@ export class ConsoleCapturer {
     const lineNumber =
       typeof entry['lineNumber'] === 'number' ? (entry['lineNumber'] as number) : undefined;
     const stackTrace = entry['stackTrace'] as StackTraceLike | undefined;
+    const at = occurredAt(entry['timestamp']);
 
     const args = Array.isArray(entry['args'])
       ? (entry['args'] as RemoteObjectLike[]).map((arg) => this.redactText(stringifyRemoteObject(arg)))
@@ -188,14 +193,14 @@ export class ConsoleCapturer {
       const stack = formatStack(stackTrace, (url) => this.redactUrl(url));
       if (stack !== undefined) payload.stack = capText(stack);
       this.flush();
-      this.emit(this.raw('error', tabId, payload));
+      this.emit(this.raw('error', tabId, payload, at));
       return;
     }
 
     const payload: ConsolePayload = { level: mapLogLevel(level), text };
     if (args.length > 0) payload.args = args;
     if (source !== undefined) payload.source = source;
-    this.pushConsole(tabId, payload);
+    this.pushConsole(tabId, payload, at);
   }
 
   // --------------------------------------------------------------------------
@@ -203,7 +208,7 @@ export class ConsoleCapturer {
   // --------------------------------------------------------------------------
 
   /** Buffer a console event, coalescing consecutive duplicates. */
-  private pushConsole(tabId: number, payload: ConsolePayload): void {
+  private pushConsole(tabId: number, payload: ConsolePayload, at: number): void {
     const key = `${payload.level}\u0000${payload.text}`;
 
     if (this.pending && this.pending.key === key) {
@@ -216,7 +221,7 @@ export class ConsoleCapturer {
 
     // Different message: flush the previous one, then start a new pending.
     this.flush();
-    this.pending = { key, raw: this.raw('console', tabId, payload) };
+    this.pending = { key, raw: this.raw('console', tabId, payload, at) };
     this.arm();
   }
 
@@ -246,8 +251,9 @@ export class ConsoleCapturer {
     type: T,
     tabId: number,
     payload: RawEvent<T>['payload'],
+    at: number,
   ): RawEvent<T> {
-    return { type, tabId, payload };
+    return { type, tabId, payload, at };
   }
 
   private redactText(text: string): string {
@@ -268,6 +274,19 @@ export class ConsoleCapturer {
 // ----------------------------------------------------------------------------
 // Helpers (pure)
 // ----------------------------------------------------------------------------
+
+/**
+ * When the page produced a CDP console/log/exception event, in epoch ms.
+ * CDP's `Runtime.Timestamp` comes from the browser, not page JavaScript, so a
+ * page that fakes `Date` cannot skew it. Missing or invalid values, and any
+ * value in the future, fall back to now.
+ */
+function occurredAt(timestamp: unknown): number {
+  const now = Date.now();
+  return typeof timestamp === 'number' && Number.isFinite(timestamp) && timestamp > 0
+    ? Math.min(timestamp, now)
+    : now;
+}
 
 /** Map a `Runtime.consoleAPICalled` type to a `ConsoleLevel`. */
 function mapConsoleType(type: unknown): ConsoleLevel {

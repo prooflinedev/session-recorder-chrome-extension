@@ -33,6 +33,47 @@ describe('ConsoleCapturer', () => {
         : undefined,
     });
 
+  it('stamps a held console message with the time the page logged it', () => {
+    vi.setSystemTime(10_000);
+    cap.handle(1, 'Runtime.consoleAPICalled', {
+      type: 'error',
+      args: [{ type: 'string', value: 'payment rejected' }],
+      timestamp: 9_990,
+    });
+    // Released 400 ms later by the next, different message.
+    vi.setSystemTime(10_400);
+    cap.handle(1, 'Runtime.consoleAPICalled', {
+      type: 'log',
+      args: [{ type: 'string', value: 'next' }],
+      timestamp: 10_400,
+    });
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]!.at).toBe(9_990);
+  });
+
+  it('stamps exceptions and log entries with their CDP time', () => {
+    vi.setSystemTime(5_000);
+    cap.handle(1, 'Runtime.exceptionThrown', {
+      timestamp: 4_200,
+      exceptionDetails: { exception: { type: 'object', description: 'TypeError: x' } },
+    });
+    cap.handle(1, 'Log.entryAdded', {
+      entry: { level: 'error', text: 'Failed to load resource', timestamp: 4_300 },
+    });
+    expect(emitted.map((e) => e.at)).toEqual([4_200, 4_300]);
+  });
+
+  it('falls back to now for a missing, invalid or future timestamp', () => {
+    vi.setSystemTime(7_000);
+    for (const timestamp of [undefined, Number.NaN, -1, '6000', 8_000]) {
+      cap.handle(1, 'Runtime.exceptionThrown', {
+        timestamp,
+        exceptionDetails: { text: 'boom' },
+      });
+    }
+    expect(emitted.map((e) => e.at)).toEqual([7_000, 7_000, 7_000, 7_000, 7_000]);
+  });
+
   it('maps warning -> warn and stringifies args, extracts source', () => {
     consoleApi(1, 'warning', [{ type: 'string', value: 'hi' }, { type: 'number', value: 3 }], 'https://x/app.js', 40);
     vi.advanceTimersByTime(1000);
