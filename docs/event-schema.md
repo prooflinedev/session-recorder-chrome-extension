@@ -29,6 +29,13 @@ A `RawEvent` is what a capture source emits before the background funnel stamps
 optional `at` (an explicit ms-epoch timestamp; the funnel defaults to now), and
 `payload`.
 
+`at` is when the thing happened, not when the funnel received it. Interactions
+are stamped in the page, console and error events with CDP's own timestamp, and
+HTTP requests at their start plus their duration. A source that holds an event
+back, such as console coalescing or a response-body fetch, therefore never moves
+it in the timeline. Messages Chrome replays from before the recording began are
+placed at `t = 0`.
+
 ### Shared value objects
 
 - `Rect` is `{ x, y, w, h }` (numbers)
@@ -225,6 +232,7 @@ bodies before emit.
 | `text`  | `string`              | Stringified, space-joined args, capped at about 2 KB. |
 | `args`  | `string[]` (optional) | Individual stringified arguments. |
 | `repeat`| `number` (optional)   | Count of collapsed consecutive duplicates (same level and text within 1000 ms). |
+| `repeatSpanMs` | `number` (optional) | Milliseconds from the first collapsed occurrence (the event's `t`) to the last. The trimmer extends it when it merges runs; reports print it as `(×N until mm:ss)`. |
 | `stack` | `string` (optional)   | Stack trace, when present. |
 | `source`| `string` (optional)   | Origin as `url:line`, from the first stack frame. |
 
