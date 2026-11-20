@@ -63,6 +63,17 @@ describe('ConsoleCapturer', () => {
     expect(emitted.map((e) => e.at)).toEqual([4_200, 4_300]);
   });
 
+  it('stamps a held non-error log entry with its CDP time', () => {
+    vi.setSystemTime(5_000);
+    cap.handle(1, 'Log.entryAdded', {
+      entry: { level: 'warning', text: 'Deprecated API used', timestamp: 4_400 },
+    });
+    cap.flush();
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]!.type).toBe('console');
+    expect(emitted[0]!.at).toBe(4_400);
+  });
+
   it('rounds CDP sub-millisecond time to whole ms', () => {
     vi.setSystemTime(5_000);
     cap.handle(1, 'Runtime.exceptionThrown', {
