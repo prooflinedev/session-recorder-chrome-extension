@@ -622,6 +622,9 @@ class Orchestrator {
     // Emit any still-open websockets (e.g. a chat socket) WITH their accumulated
     // frames before we detach — otherwise the conversation is lost.
     this.network.flushOpen();
+    // The console message held for coalescing is often the error the user
+    // stopped to report; its timer would fire after the session is gone.
+    this.console.flush();
 
     await this.writer?.flush().catch(() => {});
     this.writer?.dispose();
@@ -684,6 +687,8 @@ class Orchestrator {
   private async pause(): Promise<{ ok: boolean }> {
     const session = this.current;
     if (!session) return { ok: false };
+    // Record the held console message while capture is still on.
+    this.console.flush();
     this.paused = true;
     await this.setPointing(false);
     session.status = 'paused';

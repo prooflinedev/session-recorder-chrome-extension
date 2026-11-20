@@ -234,8 +234,11 @@ export class ConsoleCapturer {
     }, COALESCE_MS);
   }
 
-  /** Emit the pending console event (if any) and clear the timer. */
-  private flush(): void {
+  /**
+   * Emit the pending console event (if any) and clear the timer. The session
+   * calls this before it stops or pauses, so the last message is never lost.
+   */
+  flush(): void {
     if (this.timer !== null) {
       clearTimeout(this.timer);
       this.timer = null;

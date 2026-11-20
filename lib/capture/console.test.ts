@@ -202,6 +202,18 @@ describe('ConsoleCapturer', () => {
     expect(p.text.endsWith('…')).toBe(true);
   });
 
+  it('flush emits the held message at once, with its repeat count', () => {
+    consoleApi(1, 'error', [{ type: 'string', value: 'retry failed' }]);
+    consoleApi(1, 'error', [{ type: 'string', value: 'retry failed' }]);
+    expect(emitted).toHaveLength(0);
+    cap.flush();
+    expect(emitted).toHaveLength(1);
+    expect((emitted[0]!.payload as any).repeat).toBe(2);
+    // The quiet-window timer was cleared, so nothing is emitted twice.
+    vi.advanceTimersByTime(5000);
+    expect(emitted).toHaveLength(1);
+  });
+
   it('reset clears pending without emitting', () => {
     consoleApi(1, 'log', [{ type: 'string', value: 'gone' }]);
     cap.reset();
