@@ -10,6 +10,9 @@
  * which is exactly what we assert.
  */
 import { unzipSync } from 'fflate';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { test, expect, extUrl, dispatch, tabIdForUrl } from './support';
 
 type StartRes = { ok: boolean; session?: { id: string; name: string }; error?: string };
@@ -294,4 +297,68 @@ test('never records secrets typed into key, code, PIN and phrase fields', async 
     expect(ev.payload?.value).toBe('«redacted»');
   }
   expect(JSON.stringify(events)).not.toContain('leak-');
+});
+
+test('keeps the JSON body of gzip and brotli responses', async ({
+  context,
+  background,
+}) => {
+  // Most production servers compress. Network.getResponseBody hands the body
+  // back already decoded, so it must be recorded as text, not a binary marker.
+  const json = JSON.stringify({ error: 'card_declined', token: 'tok-compressed' });
+  const server = createServer((req, res) => {
+    const encoding = { '/api/gzip': 'gzip', '/api/br': 'br' }[req.url ?? ''];
+    if (!encoding) {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end('<!doctype html><title>Compressing fixture</title>');
+      return;
+    }
+    res.writeHead(200, {
+      'content-type': 'application/json',
+      'content-encoding': encoding,
+    });
+    res.end(encoding === 'gzip' ? gzipSync(json) : brotliCompressSync(json));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const page = await context.newPage();
+    await page.goto(origin);
+    const tabId = await tabIdForUrl(background, origin);
+    const started = await dispatch<StartRes>(background, {
+      kind: 'session/start',
+      tabId,
+    });
+    expect(started.ok).toBe(true);
+    await page.waitForTimeout(800);
+    await page.evaluate(async () => {
+      for (const path of ['/api/gzip', '/api/br']) await (await fetch(path)).text();
+    });
+    await page.waitForTimeout(1000);
+    await dispatch(background, { kind: 'session/stop' });
+
+    const { events } = await dispatch<EventsRes>(background, {
+      kind: 'events/get',
+      sessionId: started.session!.id,
+    });
+    test.skip(
+      events.some((e) => /Deep capture unavailable/.test(e.payload?.text ?? '')),
+      'chrome.debugger could not attach, so this run has no network capture',
+    );
+    for (const path of ['/api/gzip', '/api/br']) {
+      const request = events.find(
+        (e) => e.type === 'net-request' && e.payload?.url === origin + path,
+      );
+      expect(request, path).toBeDefined();
+      const text: string = request?.payload?.responseBody?.text ?? '';
+      expect(text, path).not.toContain('binary body');
+      expect(JSON.parse(text)).toEqual({
+        error: 'card_declined',
+        token: '«redacted»',
+      });
+    }
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
 });

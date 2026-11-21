@@ -502,11 +502,13 @@ export class NetworkCapturer {
     settings: CaptureSettings,
     apiSpec: boolean,
   ): Promise<NetBody> {
-    // Binary / compressed textual bodies (gzip analytics beacons, protobuf, …)
+    // Binary textual bodies (protobuf, event streams, …)
     // would otherwise be inlined as pages of mojibake. Replace them with a short
     // human marker BEFORE redaction/truncation. base64 bodies are already binary
     // and handled by the base64 path below.
-    if (!base64 && isProbablyBinary(rawText, headers)) {
+    // Network.getResponseBody returns the body after Chrome has undone any
+    // Content-Encoding, so that header says nothing about this text.
+    if (!base64 && isProbablyBinary(rawText, headers, { decoded: true })) {
       return binaryBodyMarker(rawText, mime, getHeader(headers, 'content-encoding'));
     }
 
@@ -740,7 +742,8 @@ const BINARY_CONTENT_TYPES = /octet-stream|protobuf|grpc|event-stream/i;
 
 /**
  * Heuristic: is this textual body actually binary/compressed and thus useless
- * (and huge) to inline? True when a content-encoding marks it compressed, the
+ * (and huge) to inline? True when a content-encoding marks it compressed
+ * (skipped when `decoded`: Chrome has already undone the encoding), the
  * content-type is a known binary/stream type, or the text has a high ratio of
  * characters that never occur in genuine text.
  *
@@ -756,8 +759,9 @@ const BINARY_CONTENT_TYPES = /octet-stream|protobuf|grpc|event-stream/i;
 function isProbablyBinary(
   text: string,
   headers: Record<string, string>,
+  { decoded = false }: { decoded?: boolean } = {},
 ): boolean {
-  const enc = getHeader(headers, 'content-encoding');
+  const enc = decoded ? undefined : getHeader(headers, 'content-encoding');
   if (enc && BINARY_CONTENT_ENCODINGS.test(enc)) return true;
   const ct = getHeader(headers, 'content-type');
   if (ct && BINARY_CONTENT_TYPES.test(ct)) return true;
