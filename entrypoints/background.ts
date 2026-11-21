@@ -139,6 +139,11 @@ async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
   return res.blob();
 }
 
+/** A capture start that found its session ended before it finished. */
+function captureEnded(what: string): Error {
+  return new Error(`Recording ended before ${what} started.`);
+}
+
 /** Name a session after the page it started on: the tab title, else its host. */
 function sessionNameFor(tab: chrome.tabs.Tab, now: number): string {
   const title = (tab.title ?? '').replace(/\s+/g, ' ').trim();
@@ -187,6 +192,10 @@ class Orchestrator {
   private lastError: string | undefined;
   /** The most recently stopped session, kept in state until dismissed/replaced. */
   private lastStopped: Session | null = null;
+  /** A start() that hasn't assigned `current` yet; Stop cancels it. */
+  private pendingStart: { cancelled: boolean } | null = null;
+  /** The running stop() and its session, shared by concurrent Stop calls. */
+  private stopping: { session: Session; run: Promise<{ ok: boolean }> } | null = null;
   /** Synchronous guard so concurrent rehydrate() calls don't double-run. */
   private rehydrating = false;
   /** True while the mic is streaming live transcripts (vs batch segments). */
@@ -367,19 +376,38 @@ class Orchestrator {
     if (this.current) {
       return { ok: false, error: 'A session is already recording.' };
     }
+    if (this.pendingStart) {
+      return { ok: false, error: 'A session is already starting.' };
+    }
 
-    const defaults = await this.loadDefaultSettings();
-    const settings: CaptureSettings = {
-      ...makeDefaultSettings(),
-      ...defaults,
-      ...(settingsOverride ?? {}),
-    };
-
+    // Until `current` is assigned below, Stop has no session to stop; it
+    // cancels this pending start instead.
+    const pending = { cancelled: false };
+    this.pendingStart = pending;
+    let settings: CaptureSettings;
     let tab: chrome.tabs.Tab;
     try {
-      tab = await chrome.tabs.get(tabId);
-    } catch (e) {
-      return { ok: false, error: `Cannot access tab ${tabId}: ${errMessage(e)}` };
+      const defaults = await this.loadDefaultSettings();
+      settings = {
+        ...makeDefaultSettings(),
+        ...defaults,
+        ...(settingsOverride ?? {}),
+      };
+      try {
+        tab = await chrome.tabs.get(tabId);
+      } catch (e) {
+        return { ok: false, error: `Cannot access tab ${tabId}: ${errMessage(e)}` };
+      }
+    } finally {
+      this.pendingStart = null;
+    }
+    // Nothing below awaits before `current` is assigned.
+    if (pending.cancelled) {
+      return { ok: false, error: 'Recording was stopped before it started.' };
+    }
+    // rehydrate() may have recovered a live session meanwhile.
+    if (this.current) {
+      return { ok: false, error: 'A session is already recording.' };
     }
 
     const now = Date.now();
@@ -423,6 +451,11 @@ class Orchestrator {
 
     await createSession(session);
 
+    // From here on Stop can run during any await. Once it has, startup must
+    // not attach, listen, activate the tab or record anything more: each
+    // check below sits right before the next step, with no await between.
+    if (this.isEnding(session)) return { ok: true, session };
+
     // Attach the debugger for deep capture (network / console / screenshots).
     // A failure here (DevTools open on the tab, another debugger such as an
     // automation harness already attached, or a restricted page) does NOT abort
@@ -432,12 +465,22 @@ class Orchestrator {
     // session-note so the report is honest about it.
     let degradedReason: string | undefined;
     try {
-      await this.dbg.attach(tabId);
+      await this.dbg.attach(tabId, session.id);
       primary.attached = true;
       primary.attachedAt = Date.now();
     } catch (e) {
-      degradedReason = errMessage(e);
-      this.lastError = degradedReason;
+      // Stop released the attach before it finished: that's the user ending
+      // the session, not deep capture being unavailable, so report nothing.
+      if (!this.isEnding(session)) {
+        degradedReason = errMessage(e);
+        this.lastError = degradedReason;
+      }
+    }
+    if (this.isEnding(session)) {
+      // Normally Stop's detachAll() already released it; owner-scoped, so a
+      // newer session's attachment is never touched.
+      await this.dbg.detach(tabId, session.id);
+      return { ok: true, session };
     }
 
     this.multitab.start();
@@ -445,8 +488,11 @@ class Orchestrator {
     this.startHeartbeat();
 
     await this.ensureContentScripts(tabId);
+    if (this.isEnding(session)) return { ok: true, session };
     await sendToTab(tabId, { kind: 'content/setActive', active: true, hoverDwellMs: session.settings.hoverDwellMs });
+    if (this.isEnding(session)) return { ok: true, session };
     await this.persistSession();
+    if (this.isEnding(session)) return { ok: true, session };
     this.broadcastState();
 
     // Always begin with a screenshot of the starting page, regardless of the
@@ -454,6 +500,7 @@ class Orchestrator {
     // unavailable (no debugger attached).
     if (!degradedReason) {
       await this.screenshots.capture(tabId, 'nav', 'Session start');
+      if (this.isEnding(session)) return { ok: true, session };
     }
 
     if (degradedReason) {
@@ -471,13 +518,17 @@ class Orchestrator {
     // the panel: sequential (video, then mic) so the two never race offscreen
     // setup, state broadcasts stay authoritative, and it works even if the
     // panel goes away mid-start. Failures warn, never fail the session.
-    void this.startOptionalCaptures();
+    void this.startOptionalCaptures(session);
 
     return { ok: true, session };
   }
 
-  /** Turn on video and/or mic per the persisted from-start switches. */
-  private async startOptionalCaptures(): Promise<void> {
+  /**
+   * Turn on video and/or mic per the persisted from-start switches, for
+   * `session` only: if it has ended by the time a step runs (even if a newer
+   * session is current), nothing more is started or reported.
+   */
+  private async startOptionalCaptures(session: Session): Promise<void> {
     let prefs: Record<string, unknown> = {};
     try {
       prefs = await chrome.storage.local.get([
@@ -487,10 +538,11 @@ class Orchestrator {
     } catch {
       return;
     }
-    if (prefs[STORAGE_KEYS.videoFromStart] === true && this.current) {
+    if (prefs[STORAGE_KEYS.videoFromStart] === true && !this.isEnding(session)) {
       try {
         await this.setVideo(true);
       } catch (e) {
+        if (this.isEnding(session)) return;
         this.recordEvent({
           type: 'session-note',
           payload: {
@@ -500,10 +552,11 @@ class Orchestrator {
         });
       }
     }
-    if (prefs[STORAGE_KEYS.micFromStart] === true && this.current && !this.micOn) {
+    if (prefs[STORAGE_KEYS.micFromStart] === true && !this.isEnding(session) && !this.micOn) {
       try {
         await this.setMic(true);
       } catch (e) {
+        if (this.isEnding(session)) return;
         this.recordEvent({
           type: 'session-note',
           payload: {
@@ -542,8 +595,9 @@ class Orchestrator {
     if (!/^https?:\/\//i.test(url)) return;
 
     // Stop leaves recording/paused before its first await and clears `current`
-    // at the end. An adoption resuming after that must not attach: Stop has
-    // already taken its detach snapshot and would never detach this tab.
+    // at the end. An adoption resuming after that must not attach. From here
+    // to `attach()` is synchronous, so an attach that starts is registered to
+    // this session before Stop's `detachAll()` can run, and Stop detaches it.
     if (this.isEnding(session)) return;
 
     try {
@@ -563,31 +617,33 @@ class Orchestrator {
       // tab — interactions and navigation still record via content scripts.
       let degradedReason: string | undefined;
       try {
-        await this.dbg.attach(tabId);
+        await this.dbg.attach(tabId, session.id);
         info.attached = true;
         info.attachedAt = Date.now();
       } catch (e) {
         degradedReason = errMessage(e);
       }
 
-      // Stop may have begun while the attach was in flight; its snapshot missed
-      // this tab, so undo the attach here. Check the manager rather than
-      // `info.attached`: attach() is a no-op for an already-attached tab, and
-      // rolls itself back when enabling the capture domains fails.
-      // DebuggerManager.detach() never rejects. It drops the tab from its set
-      // first and ignores Chrome's error, which for an extension-owned attach
-      // can only mean the target is already gone (tab closed or detached), so
-      // nothing stays attached either way.
+      // If the session ended while the attach was in flight, release this
+      // session's attachment and stop. Normally Stop's detachAll() has already
+      // done it; detach() is scoped to this owner, so if a newer session has
+      // since attached the tab it does nothing and that attachment is kept.
       if (this.isEnding(session)) {
-        if (this.dbg.isAttached(tabId)) await this.dbg.detach(tabId);
+        await this.dbg.detach(tabId, session.id);
         return;
       }
 
       session.tabs.push(info);
 
+      // Each await below can outlive the session, and a newer one may then be
+      // current. Re-check before every step that touches the tab's content
+      // script or records into the current session.
       await this.ensureContentScripts(tabId);
+      if (this.isEnding(session)) return;
       await sendToTab(tabId, { kind: 'content/setActive', active: true, hoverDwellMs: session.settings.hoverDwellMs });
+      if (this.isEnding(session)) return;
       if (this.pointing) await sendToTab(tabId, {kind:'content/point-annotate',on:true});
+      if (this.isEnding(session)) return;
       this.recordEvent({
         type: 'tab-opened',
         tabId,
@@ -606,6 +662,8 @@ class Orchestrator {
       await this.persistSession();
       this.broadcastState();
     } catch (e) {
+      // Report only into the session that tried to adopt, never a newer one.
+      if (this.isEnding(session)) return;
       this.recordEvent({
         type: 'session-note',
         tabId,
@@ -628,10 +686,30 @@ class Orchestrator {
     );
   }
 
-  private async stop(): Promise<{ ok: boolean }> {
+  private stop(): Promise<{ ok: boolean }> {
     const session = this.current;
-    if (!session) return { ok: false };
+    if (!session) {
+      // A start() still before its session exists: cancel it.
+      if (this.pendingStart) {
+        this.pendingStart.cancelled = true;
+        return Promise.resolve({ ok: true });
+      }
+      return Promise.resolve({ ok: false });
+    }
+    // Already stopping this session: share that run rather than tearing down
+    // (detaching, writing 'stopped', opening the report) a second time.
+    if (this.stopping?.session === session) return this.stopping.run;
+    const run = this.stopSession(session);
+    const entry = { session, run };
+    this.stopping = entry;
+    const clear = () => {
+      if (this.stopping === entry) this.stopping = null;
+    };
+    run.then(clear, clear);
+    return run;
+  }
 
+  private async stopSession(session: Session): Promise<{ ok: boolean }> {
     session.status = 'stopping';
     this.broadcastState();
 
@@ -649,9 +727,9 @@ class Orchestrator {
       await this.closeOffscreen().catch(() => {});
     }
 
-    for (const t of this.dbg.attachedTabs()) {
-      await this.dbg.detach(t).catch(() => {});
-    }
+    // Detach every tab this session owns, waiting for attaches still in flight
+    // (such as a tab being adopted right now), so none outlives the session.
+    await this.dbg.detachAll(session.id);
 
     // Detached, so no CDP event can arrive any more. Emit everything still
     // open — websockets WITH their accumulated frames (e.g. a chat socket) and
@@ -716,9 +794,11 @@ class Orchestrator {
 
   private async pause(): Promise<{ ok: boolean }> {
     const session = this.current;
-    if (!session) return { ok: false };
+    // While stopping, writing 'paused' would make the session look live again.
+    if (!session || this.isEnding(session)) return { ok: false };
     this.paused = true;
     await this.setPointing(false);
+    if (this.isEnding(session)) return { ok: false };
     session.status = 'paused';
     // The offscreen doc may still be recording even when the flags are off
     // (rehydrate() resets them after a SW restart); pause/resume no-op when
@@ -734,7 +814,8 @@ class Orchestrator {
 
   private async resume(): Promise<{ ok: boolean }> {
     const session = this.current;
-    if (!session) return { ok: false };
+    // While stopping, writing 'recording' would revive a stopped session.
+    if (!session || this.isEnding(session)) return { ok: false };
     this.paused = false;
     session.status = 'recording';
     if (this.micOn) void this.sendToOffscreen({ kind: 'audio/resume' });
@@ -1615,11 +1696,16 @@ class Orchestrator {
       if (!(await this.isMicGranted())) {
         await this.requestMicPermission();
       }
+      if (this.isEnding(session)) throw captureEnded('microphone');
       await this.ensureOffscreen();
       // Hand the transcription config to the offscreen doc so it can stream live
       // (Deepgram). Await the getUserMedia result: only claim the mic is on if
       // recording actually started.
       const config = await this.loadTranscriptionConfig();
+      if (this.isEnding(session)) {
+        await this.abandonOffscreenStart(session);
+        throw captureEnded('microphone');
+      }
       const res = await this.sendToOffscreen({
         kind: 'audio/start',
         sessionId: session.id,
@@ -1627,6 +1713,13 @@ class Orchestrator {
         transcription: config ? { ...config, keyterms: this.pageKeyterms } : null,
         dictating: !!this.dictationTarget,
       });
+      if (this.isEnding(session)) {
+        // Stop may have checked the offscreen document before this recorder
+        // started, so it would never stop it.
+        if (res && res.ok) await this.abandonOffscreenStart(session, 'audio/stop');
+        else await this.abandonOffscreenStart(session);
+        throw captureEnded('microphone');
+      }
       if (res && res.ok) {
         this.micOn = true;
         this.micStreaming = res.streaming === true;
@@ -1667,7 +1760,12 @@ class Orchestrator {
       const tabId = await this.activeSessionTabId();
       if (tabId < 0) throw new Error('No session tab to capture.');
       const streamId = await this.getTabStreamId(tabId);
+      if (this.isEnding(session)) throw captureEnded('video capture');
       await this.ensureOffscreen();
+      if (this.isEnding(session)) {
+        await this.abandonOffscreenStart(session);
+        throw captureEnded('video capture');
+      }
       const res = await this.sendToOffscreen({
         kind: 'video/start',
         sessionId: session.id,
@@ -1677,6 +1775,13 @@ class Orchestrator {
         // video-only when the tab has no capturable audio.
         audio: true,
       });
+      if (this.isEnding(session)) {
+        // Stop may have checked the offscreen document before this recorder
+        // started, so it would never stop it.
+        if (res && res.ok) await this.abandonOffscreenStart(session, 'video/stop');
+        else await this.abandonOffscreenStart(session);
+        throw captureEnded('video capture');
+      }
       if (res && res.ok) {
         this.videoOn = true;
         this.lastError = undefined;
@@ -1822,6 +1927,21 @@ class Orchestrator {
         this.offscreenCreating = null;
       });
     return this.offscreenCreating;
+  }
+
+  /**
+   * A mic/video start for `session` found it ended part-way: stop the recorder
+   * it started (if any) and close the offscreen document if nothing else is
+   * recording. Skipped once a newer session is current, since the shared
+   * document is then that session's.
+   */
+  private async abandonOffscreenStart(
+    session: Session,
+    stopKind?: 'audio/stop' | 'video/stop',
+  ): Promise<void> {
+    if (this.current !== session && this.current !== null) return;
+    if (stopKind) await this.sendToOffscreen({ kind: stopKind });
+    if (!this.micOn && !this.videoOn) await this.closeOffscreen().catch(() => {});
   }
 
   private async closeOffscreen(): Promise<void> {
@@ -2077,6 +2197,9 @@ class Orchestrator {
         (s) => s.status === 'recording' || s.status === 'paused',
       );
       if (!live) return;
+      // A Start that finished while storage was being read owns the recorder
+      // now. (One still pending re-checks `current` and is refused instead.)
+      if (this.current) return;
 
       this.current = live;
       this.sessionStartEpoch = live.startedAt;
@@ -2100,20 +2223,27 @@ class Orchestrator {
         live.tabs.find((t) => t.role === 'primary') ?? live.tabs[0];
       this.lastActiveSessionTab = primary?.tabId;
 
-      // Best-effort re-attach to any surviving tab.
+      // Best-effort re-attach to any surviving tab. A Stop can run during any
+      // of these awaits; after it has, nothing more is attached or activated
+      // (Stop's detachAll() has already taken the tabs it will release).
       for (const t of live.tabs) {
+        if (this.isEnding(live)) return;
         try {
           await chrome.tabs.get(t.tabId);
-          await this.dbg.attach(t.tabId);
+          if (this.isEnding(live)) return;
+          await this.dbg.attach(t.tabId, live.id);
           t.attached = true;
           t.attachedAt = Date.now();
           delete t.detachedAt;
+          if (this.isEnding(live)) return;
           await this.ensureContentScripts(t.tabId);
+          if (this.isEnding(live)) return;
           await sendToTab(t.tabId, { kind: 'content/setActive', active: true, hoverDwellMs: live.settings.hoverDwellMs });
         } catch {
           t.attached = false;
         }
       }
+      if (this.isEnding(live)) return;
 
       this.multitab.start();
       this.registerNavListeners();
