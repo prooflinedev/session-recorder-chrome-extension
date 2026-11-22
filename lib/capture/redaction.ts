@@ -275,9 +275,12 @@ export function redactBody(
 }
 
 /**
- * Redact a `user:password@` password and matching query-param VALUES in a URL
- * while preserving the rest of its structure (scheme/host/path/hash/param
- * order/encoding). Works on absolute and relative URLs.
+ * Redact matching query-param VALUES in a URL while preserving the rest of its
+ * structure (scheme/host/path/hash/param order/encoding); this works on
+ * absolute and relative URLs. The `user:password@` password is masked only in
+ * `scheme://` URLs, read the way browsers read http(s) and ws(s) URLs (`\`
+ * ends the authority): callers pass request URLs and the http(s)/ws(s) URLs
+ * that redactUrlsInText finds.
  */
 export function redactUrl(rawUrl: string, rules: RedactionRules): string {
   const matcher = buildUrlMatcher(rules);
@@ -313,11 +316,11 @@ export function redactUrl(rawUrl: string, rules: RedactionRules): string {
 export function redactUrlsInText(text: string, rules: RedactionRules): string {
   // A URL right after ' is quoted, so the next ' closes it. Anywhere else an
   // apostrophe can be part of a password or a query value and stays in the URL,
-  // unless only punctuation and then the next URL follow it ('https://...,
-  // ',https://...).
+  // unless another URL starts after it before the next space ('https://...,
+  // ',https://...); there it ends the URL, as every apostrophe used to.
   const redactText = (value: string) =>
     value.replace(
-      /(?<=')(?:https?|wss?):\/\/[^\s"'<>`]+|\b(?:https?|wss?):\/\/(?:[^\s"'<>`]|'(?![^\w\s"'<>`]*(?:https?|wss?):\/\/))+/gi,
+      /(?<=')(?:https?|wss?):\/\/[^\s"'<>`]+|\b(?:https?|wss?):\/\/(?:[^\s"'<>`]|'(?![^\s"<>`]*(?:https?|wss?):\/\/))+/gi,
       (url) => redactUrl(url, rules),
     );
 

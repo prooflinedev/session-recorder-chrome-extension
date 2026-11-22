@@ -503,6 +503,12 @@ describe('default rules for cloud signed URLs, API keys and URL passwords', () =
     ).toBe(`GET https://a.test/?page=1',https://b.test/?token=${REDACTED} done`);
   });
 
+  it("starts a new URL after ' whenever another URL follows before a space", () => {
+    expect(
+      redactUrlsInText("GET https://a.test/p#top'_,https://b.test/?token=S done", EMPTY_RULES),
+    ).toBe(`GET https://a.test/p#top'_,https://b.test/?token=${REDACTED} done`);
+  });
+
   it('does not mistake a backslash path with @ for a password', () => {
     // Browsers read \ as / in http(s) and ws(s) URLs, so 8443\team is port + path.
     const url = 'https://example.com:8443\\team@docs';
