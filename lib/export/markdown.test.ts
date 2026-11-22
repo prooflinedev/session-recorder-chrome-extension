@@ -484,3 +484,62 @@ describe('renderManifest', () => {
     expect(md).toContain('Video segment (video/webm)');
   });
 });
+
+describe('renderReport: iframe and worker events', () => {
+  const frame = { type: 'iframe' as const, url: 'https://pay.example.com/fields.html', crossSite: true };
+  const worker = { type: 'worker' as const, url: 'https://app.example.com/search-worker.js' };
+
+  function render(events: SessionEvent[]): string {
+    return renderReport({ ...buildSession(), events });
+  }
+
+  it('names the cross-site frame a request came from and says why its bodies are missing', () => {
+    const md = render([
+      ev({
+        type: 'net-request',
+        tabId: 1,
+        t: 5_000,
+        payload: {
+          requestId: '900.2',
+          method: 'POST',
+          url: 'https://pay.example.com/api/charge',
+          status: 402,
+          requestHeaders: [],
+          responseHeaders: [],
+          requestBody: { present: false, omitted: 'cross-site' },
+          responseBody: { present: false, omitted: 'cross-site' },
+          target: frame,
+        },
+      }),
+    ]);
+    expect(md).toContain('[00:05] 🌐 402 POST /api/charge · in cross-site iframe pay.example.com');
+    expect(md).toContain('- Request: _(not captured from a cross-site frame)_');
+    expect(md).toContain('- Response: _(not captured from a cross-site frame)_');
+  });
+
+  it('names the worker an error or console message came from, and leaves page events unlabelled', () => {
+    const md = render([
+      ev({
+        type: 'error',
+        tabId: 1,
+        t: 7_000,
+        payload: { origin: 'exception', message: 'Error: Search index unavailable', target: worker },
+      }),
+      ev({
+        type: 'console',
+        tabId: 1,
+        t: 8_000,
+        payload: { level: 'error', text: 'Payment declined', target: frame },
+      }),
+      ev({
+        type: 'error',
+        tabId: 1,
+        t: 9_000,
+        payload: { origin: 'exception', message: 'Error: page error' },
+      }),
+    ]);
+    expect(md).toContain('(exception) · in worker app.example.com/search-worker.js Error: Search index unavailable');
+    expect(md).toContain('console.error · in cross-site iframe pay.example.com');
+    expect(md).toMatch(/\(exception\) Error: page error/);
+  });
+});

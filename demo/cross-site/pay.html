@@ -1,0 +1,25 @@
+<!--
+  demo/cross-site/pay.html: the payment frame embedded by index.html from
+  another site. It sends the card in the request body, as hosted payment fields
+  do, so a recording must not copy that body from a cross-site frame.
+-->
+<meta charset="utf-8" />
+<title>Payment frame</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 12px; }
+  input { font: inherit; width: 220px; }
+</style>
+<label>Card number <input id="card" value="4242 4242 4242 4242" autocomplete="off" /></label>
+<script>
+  addEventListener('message', async (e) => {
+    if (e.data?.kind !== 'charge') return;
+    const res = await fetch('/api/charge', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ card: document.getElementById('card').value, amount: e.data.amount }),
+    });
+    console.error(`Payment declined: charge returned ${res.status}`);
+    e.source.postMessage('Payment failed', e.origin);
+    throw new Error(`Charge failed with HTTP ${res.status}`);
+  });
+</script>

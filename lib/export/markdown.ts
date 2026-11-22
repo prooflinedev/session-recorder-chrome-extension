@@ -13,9 +13,11 @@
  */
 
 import { isDictatedSpeech } from '@/lib/session/events';
+import { CROSS_SITE_BODY_NOTE, describeTarget } from '@/lib/session/target';
 import type {
   AnnotationShape,
   AssetMeta,
+  CaptureTarget,
   ElementDescriptor,
   NetBody,
   Session,
@@ -345,7 +347,7 @@ function renderEvent(
       const p = e.payload;
       const repeat = p.repeat && p.repeat > 1 ? ` (×${p.repeat})` : '';
       const src = p.source ? ` @ ${p.source}` : '';
-      lines.push(`${clock} console.${p.level}${repeat}${src}`);
+      lines.push(`${clock} console.${p.level}${repeat}${src}${targetSuffix(p.target)}`);
       lines.push('```');
       lines.push(p.text);
       lines.push('```');
@@ -355,7 +357,7 @@ function renderEvent(
       const p = e.payload;
       const repeat = p.repeat && p.repeat > 1 ? ` (×${p.repeat})` : '';
       lines.push('');
-      lines.push(`⚠ **ERROR ${clock}**${repeat} (${p.origin}) ${oneLine(p.message)}`);
+      lines.push(`⚠ **ERROR ${clock}**${repeat} (${p.origin})${targetSuffix(p.target)} ${oneLine(p.message)}`);
       if (p.stack) {
         lines.push('```');
         lines.push(p.stack);
@@ -468,7 +470,7 @@ function renderNetRequest(
   const path = urlPath(p.url);
   const ws = p.websocket ? ' [ws]' : '';
   lines.push('');
-  lines.push(`${clock} 🌐 ${status} ${p.method} ${escapeInline(path)}${ws}`);
+  lines.push(`${clock} 🌐 ${status} ${p.method} ${escapeInline(path)}${ws}${targetSuffix(p.target)}`);
 
   // Collapsed repeated requests take precedence — the body was thrown away.
   if (p.collapsed) {
@@ -520,7 +522,8 @@ function renderBody(
 ): void {
   if (!body) return;
   if (!body.present) {
-    lines.push(`- ${label}: _(body not captured)_`);
+    const why = body.omitted === 'cross-site' ? CROSS_SITE_BODY_NOTE : 'body not captured';
+    lines.push(`- ${label}: _(${why})_`);
     return;
   }
   const notes: string[] = [];
@@ -608,7 +611,7 @@ function renderAppendices(
       const p = e.payload;
       const status = p.failed ? 'FAIL' : p.status != null ? String(p.status) : '—';
       lines.push(
-        `- [${formatClock(e.t)}] ${status} ${p.method} ${escapeInline(p.url)}`,
+        `- [${formatClock(e.t)}] ${status} ${p.method} ${escapeInline(p.url)}${targetSuffix(p.target)}`,
       );
     }
   }
@@ -621,11 +624,11 @@ function renderAppendices(
     for (const e of consoles) {
       const stamp = `[${formatClock(e.t)}]`;
       if (e.type === 'error') {
-        lines.push(`${stamp} ERROR (${e.payload.origin}) ${oneLine(e.payload.message)}`);
+        lines.push(`${stamp} ERROR (${e.payload.origin})${targetSuffix(e.payload.target)} ${oneLine(e.payload.message)}`);
       } else {
         const repeat =
           e.payload.repeat && e.payload.repeat > 1 ? ` (×${e.payload.repeat})` : '';
-        lines.push(`${stamp} ${e.payload.level}${repeat}: ${oneLine(e.payload.text)}`);
+        lines.push(`${stamp} ${e.payload.level}${repeat}${targetSuffix(e.payload.target)}: ${oneLine(e.payload.text)}`);
       }
     }
     lines.push('```');
@@ -660,6 +663,11 @@ function originOf(url: string): string {
   } catch {
     return url;
   }
+}
+
+/** ` · in cross-site iframe pay.example.com`, or nothing for the page itself. */
+function targetSuffix(target: CaptureTarget | undefined): string {
+  return target ? ` · in ${escapeInline(describeTarget(target))}` : '';
 }
 
 function urlPath(url: string): string {
