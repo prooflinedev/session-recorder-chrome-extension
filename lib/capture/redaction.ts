@@ -108,10 +108,11 @@ function redactRefresh(value: string, rules: RedactionRules): string {
       skip(/\s/);
     }
   }
-  const end = value.trimEnd().length;
   const quote = value[start];
-  if ((quote === "'" || quote === '"') && end - start >= 2 && value[end - 1] === quote) {
-    return `${value.slice(0, start + 1)}${redactUrl(value.slice(start + 1, end - 1), rules)}${value.slice(end - 1)}`;
+  const close = quote === "'" || quote === '"' ? value.indexOf(quote, start + 1) : -1;
+  if (close !== -1) {
+    // Mask only up to the first matching quote; keep it and anything after it.
+    return `${value.slice(0, start + 1)}${redactUrl(value.slice(start + 1, close), rules)}${value.slice(close)}`;
   }
   return `${value.slice(0, start)}${redactUrl(value.slice(start), rules)}`;
 }

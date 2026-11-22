@@ -173,11 +173,13 @@ describe('redactHeaders', () => {
       { name: 'Refresh', value: "5; URL='/next?token=SQ_SECRET'" },
       { name: 'Refresh', value: '0;url="https://a.example/n?id=1&token=DQ_SECRET"' },
       { name: 'Refresh', value: '30' },
+      { name: 'Refresh', value: "0; url='/next?token=SUF_SECRET' extra" },
     ], EMPTY_RULES);
     expect(out.map((h) => h.value)).toEqual([
       `5; URL='/next?token=${REDACTED}'`,
       `0;url="https://a.example/n?id=1&token=${REDACTED}"`,
       '30',
+      `0; url='/next?token=${REDACTED}' extra`,
     ]);
   });
 
@@ -220,10 +222,18 @@ describe('redactHeaders', () => {
 
   it('uses custom URL param patterns for URL-valued headers', () => {
     const out = redactHeaders(
-      [{ name: 'Location', value: 'https://acct.blob.core.windows.net/c/f.pdf?sp=r&sig=SAS_SECRET' }],
+      [
+        { name: 'Location', value: 'https://acct.blob.core.windows.net/c/f.pdf?sp=r&sig=SAS_SECRET' },
+        { name: 'Refresh', value: '0; url=/f.pdf?sp=r&sig=SAS_SECRET' },
+        { name: 'Refresh', value: "0; url='/f.pdf?sp=r&sig=SAS_SECRET'" },
+      ],
       rules({ urlParamPatterns: ['^sig$'] }),
     );
-    expect(out[0]!.value).toBe(`https://acct.blob.core.windows.net/c/f.pdf?sp=r&sig=${REDACTED}`);
+    expect(out.map((h) => h.value)).toEqual([
+      `https://acct.blob.core.windows.net/c/f.pdf?sp=r&sig=${REDACTED}`,
+      `0; url=/f.pdf?sp=r&sig=${REDACTED}`,
+      `0; url='/f.pdf?sp=r&sig=${REDACTED}'`,
+    ]);
   });
 
   it('leaves URL rules off headers that are not URLs', () => {

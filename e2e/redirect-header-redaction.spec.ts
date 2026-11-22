@@ -93,6 +93,16 @@ test('masks secrets in redirect Location and Referer headers in the export', asy
     'http://localhost:5319/?session_token=«redacted»',
   );
 
+  const exported = JSON.parse(text('/session.json')).events
+    .filter((e: any) => e.type === 'net-request')
+    .map((e: any) => e.payload);
+  const exportedHop = exported.find((p: any) => String(p.url).endsWith('/redirect-probe'));
+  expect(header(exportedHop.responseHeaders, 'location')).toBe(MASKED_TARGET);
+  const exportedRef = exported.find((p: any) => String(p.url).endsWith('/referer-probe'));
+  expect(header(exportedRef.requestHeaders, 'referer')).toBe(
+    'http://localhost:5319/?session_token=«redacted»',
+  );
+
   for (const file of ['/network.har', '/session.json', '/report.md']) {
     const body = text(file);
     expect(body, file).not.toContain(LOC_SECRET);
