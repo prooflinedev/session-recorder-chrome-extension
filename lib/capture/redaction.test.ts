@@ -191,7 +191,23 @@ describe('redactHeaders', () => {
       { name: 'Refresh', value: `0;url=a${pad}b?token=LONG_SECRET` },
     ], EMPTY_RULES);
     expect(performance.now() - t0).toBeLessThan(1000);
-    expect(out[3]!.value.endsWith(`b?token=${REDACTED}`)).toBe(true);
+    expect(out.map((h) => h.value)).toEqual([
+      `${pad}x`,
+      `0;url=${pad}x`,
+      `0;url='${'a'.repeat(200_000)}`,
+      `0;url=a${pad}b?token=${REDACTED}`,
+    ]);
+  });
+
+  it('masks a Refresh target written without url=, as browsers accept it', () => {
+    const out = redactHeaders([
+      { name: 'Refresh', value: '5; /next?token=BARE_SECRET' },
+      { name: 'Refresh', value: "0, 'https://a.example/n?session=BQ_SECRET'" },
+    ], EMPTY_RULES);
+    expect(out.map((h) => h.value)).toEqual([
+      `5; /next?token=${REDACTED}`,
+      `0, 'https://a.example/n?session=${REDACTED}'`,
+    ]);
   });
 
   it('masks a whole blocklisted URL-valued header, not only its params', () => {

@@ -89,10 +89,25 @@ const URL_VALUED_HEADERS = new Set(['location', 'content-location', 'referer']);
 function redactRefresh(value: string, rules: RedactionRules): string {
   // Plain string parsing, not one big regex: header values can be long and a
   // backtracking pattern made a 100,000-character value take minutes.
-  const at = value.search(/url\s*=/i);
-  if (at === -1) return value;
-  let start = value.indexOf('=', at) + 1;
-  while (start < value.length && /\s/.test(value[start]!)) start++;
+  // Same order as HTML's refresh parsing: delay, optional `;` or `,`, optional
+  // `url=`, then the target (bare targets like `5; /next?token=…` count too).
+  let start = 0;
+  const skip = (re: RegExp) => {
+    while (start < value.length && re.test(value[start]!)) start++;
+  };
+  skip(/\s/);
+  skip(/[\d.]/);
+  skip(/\s/);
+  if (value[start] === ';' || value[start] === ',') start++;
+  skip(/\s/);
+  if (value.slice(start, start + 3).toLowerCase() === 'url') {
+    let eq = start + 3;
+    while (eq < value.length && /\s/.test(value[eq]!)) eq++;
+    if (value[eq] === '=') {
+      start = eq + 1;
+      skip(/\s/);
+    }
+  }
   const end = value.trimEnd().length;
   const quote = value[start];
   if ((quote === "'" || quote === '"') && end - start >= 2 && value[end - 1] === quote) {
