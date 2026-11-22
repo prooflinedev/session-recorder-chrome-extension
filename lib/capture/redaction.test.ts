@@ -355,3 +355,208 @@ describe('redactUrl', () => {
     expect(out).toBe(`https://x.com/p?api%5Fkey=${REDACTED}&z=1`);
   });
 });
+
+describe('default rules for cloud signed URLs, API keys and URL passwords', () => {
+  it('masks the signature of an Azure storage (SAS) link', () => {
+    const out = redactUrl(
+      'https://acct.blob.core.windows.net/c/report.pdf?sv=2022-11-02&se=2026-12-01&sr=b&sp=rw&sig=FAKE%2Bsas%3D',
+      EMPTY_RULES,
+    );
+    expect(out).toBe(
+      `https://acct.blob.core.windows.net/c/report.pdf?sv=2022-11-02&se=2026-12-01&sr=b&sp=rw&sig=${REDACTED}`,
+    );
+  });
+
+  it('masks a Google API key passed as key=', () => {
+    const out = redactUrl(
+      'https://maps.googleapis.com/maps/api/geocode/json?address=Berlin&key=AIzaSyFAKEKEY',
+      EMPTY_RULES,
+    );
+    expect(out).toBe(
+      `https://maps.googleapis.com/maps/api/geocode/json?address=Berlin&key=${REDACTED}`,
+    );
+  });
+
+  it('masks Signature= in CloudFront and older S3 signed links', () => {
+    expect(
+      redactUrl(
+        'https://d111.cloudfront.net/v.mp4?Expires=1700000000&Signature=FAKE~cf&Key-Pair-Id=K2JCJMDEHXQW5F',
+        EMPTY_RULES,
+      ),
+    ).toBe(
+      `https://d111.cloudfront.net/v.mp4?Expires=1700000000&Signature=${REDACTED}&Key-Pair-Id=K2JCJMDEHXQW5F`,
+    );
+    expect(
+      redactUrl(
+        'https://b.s3.amazonaws.com/k?AWSAccessKeyId=AKIAFAKE&Expires=1700000000&Signature=FAKEv2',
+        EMPTY_RULES,
+      ),
+    ).toBe(
+      `https://b.s3.amazonaws.com/k?AWSAccessKeyId=AKIAFAKE&Expires=1700000000&Signature=${REDACTED}`,
+    );
+  });
+
+  it('masks X-Amz-Signature and X-Goog-Signature in AWS and Google Cloud V4 signed links', () => {
+    expect(
+      redactUrl(
+        'https://b.s3.amazonaws.com/k?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAFAKE%2F20261123%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-SignedHeaders=host&X-Amz-Signature=FAKEv4',
+        EMPTY_RULES,
+      ),
+    ).toBe(
+      `https://b.s3.amazonaws.com/k?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=${REDACTED}&X-Amz-SignedHeaders=host&X-Amz-Signature=${REDACTED}`,
+    );
+    expect(
+      redactUrl(
+        'https://storage.googleapis.com/b/o?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-SignedHeaders=host&X-Goog-Signature=FAKEgcs',
+        EMPTY_RULES,
+      ),
+    ).toBe(
+      `https://storage.googleapis.com/b/o?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-SignedHeaders=host&X-Goog-Signature=${REDACTED}`,
+    );
+  });
+
+  it('matches these names only as whole parameter names', () => {
+    const url =
+      'https://x.com/p?keyword=shoes&monkey=1&hotkey=k&sigma=2&signature_version=4' +
+      '&X-Amz-Signature-Version=4&x-goog-signatures=1&amz-signature=2';
+    expect(redactUrl(url, EMPTY_RULES)).toBe(url);
+  });
+
+  it('masks the password in user:password@ and keeps the user name', () => {
+    expect(redactUrl('https://admin:hunter2@internal.example.com/api', EMPTY_RULES)).toBe(
+      `https://admin:${REDACTED}@internal.example.com/api`,
+    );
+    expect(redactUrl('wss://bot:p%40ss@chat.example.com:8443/ws?room=1', EMPTY_RULES)).toBe(
+      `wss://bot:${REDACTED}@chat.example.com:8443/ws?room=1`,
+    );
+  });
+
+  it('masks the password when the user name has a raw @ (the last @ ends the user info)', () => {
+    expect(redactUrl('https://ada@corp.example:hunter2@internal.example.com/api', EMPTY_RULES)).toBe(
+      `https://ada@corp.example:${REDACTED}@internal.example.com/api`,
+    );
+    expect(redactUrlsInText('see https://ada@corp.example:hunter2@internal.example.com/api', EMPTY_RULES)).toBe(
+      `see https://ada@corp.example:${REDACTED}@internal.example.com/api`,
+    );
+  });
+
+  it('masks the password and the query secrets in the same URL', () => {
+    expect(redactUrl('https://u:pw@x.com/p?token=t&page=2#top', EMPTY_RULES)).toBe(
+      `https://u:${REDACTED}@x.com/p?token=${REDACTED}&page=2#top`,
+    );
+  });
+
+  it('leaves URLs without a password unchanged', () => {
+    for (const url of [
+      'https://admin@internal.example.com/api',
+      'https://x.com:8080/users/@ada?q=1',
+      'https://ada@host.example:8443/users/@ada', // user name and port, no password
+      'https://x.com/p?next=https://a:b@c.com', // not this URL's user info
+      'mailto:ada@example.com',
+    ]) {
+      expect(redactUrl(url, EMPTY_RULES)).toBe(url);
+    }
+  });
+
+  it('masks a URL password that Chrome echoes in a console error', () => {
+    const input =
+      "TypeError: Failed to execute 'fetch' on 'Window': Request cannot be constructed from a URL that includes credentials: https://admin:hunter2@internal.example.com/api";
+    expect(redactUrlsInText(input, EMPTY_RULES)).toBe(
+      `TypeError: Failed to execute 'fetch' on 'Window': Request cannot be constructed from a URL that includes credentials: https://admin:${REDACTED}@internal.example.com/api`,
+    );
+  });
+
+  it("ends a URL quoted with ' at its closing quote", () => {
+    expect(
+      redactUrlsInText(
+        "Access to fetch at 'https://api.test/d?token=s' from origin 'http://localhost:5319' has been blocked; ['https://a.test/?token=1','https://b.test/?token=2']",
+        EMPTY_RULES,
+      ),
+    ).toBe(
+      `Access to fetch at 'https://api.test/d?token=${REDACTED}' from origin 'http://localhost:5319' has been blocked; ['https://a.test/?token=${REDACTED}','https://b.test/?token=${REDACTED}']`,
+    );
+  });
+
+  it("ends a console URL at every ', so URLs glued together are each masked", () => {
+    for (const [input, expected] of [
+      [
+        "Redirect https://a.test/?token=1'https://b.test/?token=2&page=2' failed",
+        `Redirect https://a.test/?token=${REDACTED}'https://b.test/?token=${REDACTED}&page=2' failed`,
+      ],
+      [
+        "GET https://a.test/?page=1',https://b.test/?token=S done",
+        `GET https://a.test/?page=1',https://b.test/?token=${REDACTED} done`,
+      ],
+      [
+        "GET https://a.test/p#top'_,https://b.test/?token=S done",
+        `GET https://a.test/p#top'_,https://b.test/?token=${REDACTED} done`,
+      ],
+    ]) {
+      expect(redactUrlsInText(input!, EMPTY_RULES)).toBe(expected);
+    }
+  });
+
+  it('scans a long, apostrophe-heavy logged URL in linear time', () => {
+    // A page controls what it logs, and text is redacted before it is capped.
+    const tail = `${"'".repeat(100_000)}${"',".repeat(50_000)}`;
+    const start = performance.now();
+    expect(redactUrlsInText(`https://a.test/?token=${tail}`, EMPTY_RULES)).toBe(
+      `https://a.test/?token=${REDACTED}${tail}`,
+    );
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+
+  it('does not mistake a backslash path with @ for a password', () => {
+    // Browsers read \ as / in http(s) and ws(s) URLs, so 8443\team is port + path.
+    const url = 'https://example.com:8443\\team@docs';
+    expect(redactUrl(url, EMPTY_RULES)).toBe(url);
+    // The scan must also go on past the \ path, to the query after it.
+    expect(redactUrlsInText(`see ${url}?token=s&page=2`, EMPTY_RULES)).toBe(
+      `see ${url}?token=${REDACTED}&page=2`,
+    );
+  });
+
+  it('masks a one-time code passed as otp= in a URL', () => {
+    expect(redactUrl('https://x.com/verify?otp=123456&hotpink=1&next=%2Fhome', EMPTY_RULES)).toBe(
+      `https://x.com/verify?otp=${REDACTED}&hotpink=1&next=%2Fhome`,
+    );
+  });
+
+  it('masks private keys and one-time codes in JSON bodies', () => {
+    const input = JSON.stringify({
+      type: 'service_account',
+      client_email: 'bot@proj.iam.gserviceaccount.com',
+      private_key: '-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n',
+      privateKey: 'FAKE',
+      otp: '123456',
+      hotpink: 'yes',
+    });
+    const { text, redacted } = redactBody(input, 'application/json', EMPTY_RULES);
+    expect(redacted).toBe(true);
+    expect(JSON.parse(text)).toEqual({
+      type: 'service_account',
+      client_email: 'bot@proj.iam.gserviceaccount.com',
+      private_key: REDACTED,
+      privateKey: REDACTED,
+      otp: REDACTED,
+      hotpink: 'yes',
+    });
+  });
+
+  it('masks a one-time code in a form body', () => {
+    // key, sig and the signature names are URL-only, so they stay in a form body.
+    const urlOnly = 'key=PROJ-1&sig=v2&Signature=Ada&X-Amz-Signature=v4&X-Goog-Signature=v4';
+    const { text } = redactBody(`otp=123456&hotpink=1&${urlOnly}&remember=1`, undefined, EMPTY_RULES);
+    expect(text).toBe(`otp=${REDACTED}&hotpink=1&${urlOnly}&remember=1`);
+  });
+
+  it('keeps ordinary "key", "sig" and signature-named fields in bodies', () => {
+    const input =
+      '{"key":"PROJ-123","sig":"v2","Signature":"Ada Lovelace","X-Amz-Signature":"v4",' +
+      '"X-Goog-Signature":"v4","keyword":"login"}';
+    expect(redactBody(input, 'application/json', EMPTY_RULES)).toEqual({
+      text: input,
+      redacted: false,
+    });
+  });
+});

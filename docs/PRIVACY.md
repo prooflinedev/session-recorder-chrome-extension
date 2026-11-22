@@ -39,13 +39,29 @@ explicitly publish the selected report to Proofline or your Cloudflare Pages pro
 ## Redaction
 
 Redaction is on by default. For supported structured capture fields, the extension
-masks authorization headers, token-like JSON/form fields, sensitive URL
-parameters, and password inputs. You can add rules or disable redaction per
-session on the options page. The same URL parameter rules apply to web and
-WebSocket URLs in console messages, browser logs, arguments, sources and exception
-stacks before they are stored. Screenshots, audio, attached files and other
-arbitrary text may still contain sensitive information. This does not scrub
-recordings or reports saved before the fix.
+masks authorization headers, token-like fields in JSON and URL-encoded form bodies
+(including private keys, and one-time codes in a field named exactly `otp`), the
+same token-like names in URL parameters, passwords in `user:password@` URLs, and
+password inputs. In URLs it also masks the parameters named exactly `sig`, `Signature`,
+`X-Amz-Signature`, `X-Goog-Signature` and `key` (ignoring case), which carry
+signed-link signatures and API keys. You can add rules for other names, or disable
+redaction per session, on the options page. Multipart form uploads
+(`multipart/form-data`) are not parsed into fields, so don't rely on their fields being
+masked, and a URL inside another URL's parameter value is not checked on its own. The
+URL rules apply to network request URLs and to web and WebSocket URLs in console
+messages, browser logs, arguments, sources and exception stacks before they are stored.
+They don't apply to URLs inside other header values, such as a redirect's `Location`.
+
+Finding URLs inside console and log text is a best-effort scan. Unusual characters
+inside a logged URL, such as spaces, quotes, `<`, `>` or backticks, can end the scan
+early, and a password or parameters after that point may then be stored unmasked.
+URLs that the browser prints itself rarely contain these characters; the main
+exception is a `'` in a user name, password or path, which browsers print as typed.
+
+Page addresses (the tab URL when recording starts, tab changes and page navigations)
+are stored as the browser reports them, without URL redaction. Screenshots, audio,
+attached files and other arbitrary text may still contain sensitive information.
+This does not scrub recordings or reports saved before the fix.
 
 ## Third-party transcription (optional, off by default)
 

@@ -31,7 +31,27 @@ export const DEFAULT_HEADER_BLOCKLIST: string[] = [
  * Keys (JSON/form) whose values are considered sensitive by default.
  */
 export const DEFAULT_KEY_PATTERN: RegExp =
-  /token|secret|password|passwd|api[-_]?key|session|auth|credential|bearer/i;
+  /token|secret|password|passwd|api[-_]?key|private[-_]?key|session|auth|credential|bearer/i;
+
+/**
+ * Secret names too short to match as a substring (`otp` is inside `hotpink`).
+ * They match only as the whole key or query-param name, case-insensitively.
+ */
+export const DEFAULT_EXACT_KEYS: readonly string[] = ['otp'];
+
+/**
+ * Query-param names that carry a credential in signed links and API calls:
+ * Azure SAS `sig`, CloudFront and S3 v2 `Signature`, AWS and Google Cloud V4
+ * `X-Amz-Signature` / `X-Goog-Signature`, Google API `key`. These are URL-only:
+ * in JSON bodies `key` usually names an issue or a feature flag.
+ */
+export const DEFAULT_EXACT_URL_PARAMS: readonly string[] = [
+  'sig',
+  'signature',
+  'x-amz-signature',
+  'x-goog-signature',
+  'key',
+];
 
 /**
  * Compile a set of extra regex source strings into predicates. Invalid patterns
@@ -65,14 +85,36 @@ function safeDecode(s: string): string {
 export function buildKeyMatcher(rules: RedactionRules): (key: string) => boolean {
   const extra = compilePatterns(rules.bodyKeyPatterns);
   return (key: string): boolean =>
-    DEFAULT_KEY_PATTERN.test(key) || extra.some((re) => re.test(key));
+    DEFAULT_KEY_PATTERN.test(key) ||
+    DEFAULT_EXACT_KEYS.includes(key.toLowerCase()) ||
+    extra.some((re) => re.test(key));
 }
 
-/** Build a predicate for URL query-param names (default pattern + urlParamPatterns). */
+/** Build a predicate for URL query-param names (defaults + urlParamPatterns). */
 function buildUrlMatcher(rules: RedactionRules): (name: string) => boolean {
   const extra = compilePatterns(rules.urlParamPatterns);
-  return (name: string): boolean =>
-    DEFAULT_KEY_PATTERN.test(name) || extra.some((re) => re.test(name));
+  return (name: string): boolean => {
+    const lower = name.toLowerCase();
+    return (
+      DEFAULT_KEY_PATTERN.test(name) ||
+      DEFAULT_EXACT_KEYS.includes(lower) ||
+      DEFAULT_EXACT_URL_PARAMS.includes(lower) ||
+      extra.some((re) => re.test(name))
+    );
+  };
+}
+
+/**
+ * The `user:password@` part of an absolute URL: scheme, user name, then a
+ * password running to the last `@` before the path, query or fragment.
+ * Browsers split at that last `@`, so a raw `@` may also be in the user name.
+ * Browsers read `\` as `/` in http(s) and ws(s) URLs, so it also ends the part.
+ */
+const URL_PASSWORD = /^([a-z][a-z\d+.-]*:\/\/[^/?#:\\]*):([^/?#\\]+)@/i;
+
+/** Mask the password in `scheme://user:password@host`, keeping the user name. */
+function redactUrlPassword(url: string): string {
+  return url.replace(URL_PASSWORD, `$1:${REDACTED}@`);
 }
 
 /**
@@ -234,11 +276,15 @@ export function redactBody(
 
 /**
  * Redact matching query-param VALUES in a URL while preserving the rest of its
- * structure (scheme/host/path/hash/param order/encoding). Works on absolute and
- * relative URLs; a URL without a query string is returned unchanged.
+ * structure (scheme/host/path/hash/param order/encoding); this works on
+ * absolute and relative URLs. The `user:password@` password is masked only in
+ * `scheme://` URLs, read the way browsers read http(s) and ws(s) URLs (`\`
+ * ends the authority): callers pass request URLs and the http(s)/ws(s) URLs
+ * that redactUrlsInText finds.
  */
-export function redactUrl(url: string, rules: RedactionRules): string {
+export function redactUrl(rawUrl: string, rules: RedactionRules): string {
   const matcher = buildUrlMatcher(rules);
+  const url = redactUrlPassword(rawUrl);
 
   const hashIdx = url.indexOf('#');
   const hash = hashIdx === -1 ? '' : url.slice(hashIdx);
@@ -268,6 +314,9 @@ export function redactUrl(url: string, rules: RedactionRules): string {
 
 /** Apply the same URL rules to web/socket URLs embedded in browser diagnostics. */
 export function redactUrlsInText(text: string, rules: RedactionRules): string {
+  // A URL in free text ends at whitespace, a quote, < > or a backtick. A ' that
+  // is part of a password can't be told from one that closes a quoted URL, so
+  // every ' ends the URL: simple, linear, and glued URLs stay apart.
   const redactText = (value: string) =>
     value.replace(/\b(?:https?|wss?):\/\/[^\s"'<>`]+/gi, (url) => redactUrl(url, rules));
 
