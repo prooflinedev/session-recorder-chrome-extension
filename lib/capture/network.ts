@@ -515,7 +515,13 @@ export class NetworkCapturer {
     let text = rawText;
     // Redaction only applies to textual bodies (base64 payloads are binary).
     if (!base64 && settings.redactionEnabled) {
-      text = redactBody(text, mime, settings.customRedaction).text;
+      try {
+        text = redactBody(text, mime, settings.customRedaction).text;
+      } catch {
+        // e.g. JSON nested too deeply for the recursive redactor. Fail closed:
+        // never keep a body that could not be redacted.
+        return unredactableBodyMarker(rawText, mime);
+      }
     }
 
     const trunc = base64
@@ -563,7 +569,11 @@ export class NetworkCapturer {
 
     let text = rawText;
     if (settings.redactionEnabled) {
-      text = redactBody(text, mime, settings.customRedaction).text;
+      try {
+        text = redactBody(text, mime, settings.customRedaction).text;
+      } catch {
+        return { body: unredactableBodyMarker(rawText, mime) };
+      }
     }
     const trunc = truncateTextToBytes(text, settings.inlineBodyCapBytes);
     const body: NetBody = { present: true, text: trunc.text };
@@ -786,6 +796,20 @@ function isProbablyBinary(
 }
 
 /** Short human marker standing in for an un-shown binary body. */
+/** Stands in for a body redaction could not process. The raw text is never kept. */
+function unredactableBodyMarker(text: string, mime: string | undefined): NetBody {
+  const bytes = new TextEncoder().encode(text).length;
+  const body: NetBody = {
+    present: true,
+    originalSize: bytes,
+    truncated: false,
+    base64: false,
+    text: `«body not shown — ${bytes} bytes, could not be redacted»`,
+  };
+  if (mime) body.mime = mime;
+  return body;
+}
+
 function binaryBodyMarker(
   text: string,
   mime: string | undefined,

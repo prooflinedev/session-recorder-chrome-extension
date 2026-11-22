@@ -418,6 +418,39 @@ describe('NetworkCapturer binary bodies', () => {
     expect(body.text).not.toContain('marker-text-payload');
   });
 
+  it('replaces a decoded gzip response that cannot be redacted with a marker', async () => {
+    // Nested deeper than the recursive redactor can go; JSON.parse still succeeds.
+    const deep = '{"token":"tok-deep","d":' + '['.repeat(20000) + '1' + ']'.repeat(20000) + '}';
+    const { emitted, storeBodyAsset } = await finishResponse(
+      { 'content-type': 'application/json', 'content-encoding': 'gzip' },
+      deep,
+    );
+    const body = payloadOf(emitted[0]!).responseBody!;
+    expect(body.present).toBe(true);
+    expect(body.text).toBe(`«body not shown — ${deep.length} bytes, could not be redacted»`);
+    expect(body.text).not.toContain('tok-deep');
+    expect(storeBodyAsset).not.toHaveBeenCalled();
+  });
+
+  it('replaces a request body that cannot be redacted with a marker', () => {
+    const deep = '{"token":"tok-deep","d":' + '['.repeat(20000) + '1' + ']'.repeat(20000) + '}';
+    const { cap, emitted } = makeCapturer();
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'r-deep',
+      request: {
+        method: 'POST',
+        url: 'https://x/deep',
+        headers: { 'content-type': 'application/json' },
+        postData: deep,
+      },
+      type: 'XHR',
+    });
+    cap.handle(1, 'Network.loadingFailed', { requestId: 'r-deep', errorText: 'x' });
+    const body = payloadOf(emitted[0]!).requestBody!;
+    expect(body.text).toBe(`«body not shown — ${deep.length} bytes, could not be redacted»`);
+    expect(body.text).not.toContain('tok-deep');
+  });
+
   it('still replaces a gzip-encoded request body with a marker', () => {
     const { cap, emitted } = makeCapturer();
     cap.handle(1, 'Network.requestWillBeSent', {
@@ -595,6 +628,10 @@ describe('NetworkCapturer response bodies recorded from Chromium', () => {
         text: bodies[id]!.body,
       });
     }
+    // Their headers and MIME type are kept as Chromium reported them.
+    expect(encodingOf(payloads.get('unknown-encoding')!)).toBe('x-custom');
+    expect(encodingOf(payloads.get('blob-gzip')!)).toBe('gzip');
+    expect(payloads.get('blob-gzip')!.responseBody!.mime).toBe('application/octet-stream');
   });
 });
 
