@@ -11,10 +11,7 @@ type StartRes = { ok: boolean; session?: { id: string }; error?: string };
 type EventsRes = { events: Array<{ type: string; payload: any }> };
 
 const FAKE_SIG = 'FAKEsasSig9d41c7e2';
-// The apostrophe is kept as typed in Chrome's error; both halves must be masked.
-const FAKE_PW_START = 'FAKEpw5b0e';
-const FAKE_PW_END = 'q7a13Zx9';
-const FAKE_PASSWORD = `${FAKE_PW_START}'${FAKE_PW_END}`;
+const FAKE_PASSWORD = 'FAKEpw5b0e7a13';
 const MASKED_URL = 'http://admin:«redacted»@localhost:5319/x';
 
 test('masks a SAS sig and a URL password in the exported HAR, session and report', async ({
@@ -56,7 +53,7 @@ test('masks a SAS sig and a URL password in the exported HAR, session and report
   expect(logged).toHaveLength(1);
   expect(logged[0]!.payload.text).toContain(MASKED_URL);
 
-  // Export the Full ZIP through the real UI and check every file it contains.
+  // Export the Full ZIP through the real UI and check network.har, session.json and report.md.
   const workspace = await context.newPage();
   await workspace.goto(extUrl(extensionId, `share.html?session=${sessionId}`));
   const opened = context.waitForEvent('page');
@@ -95,8 +92,7 @@ test('masks a SAS sig and a URL password in the exported HAR, session and report
   for (const file of ['/network.har', '/session.json', '/report.md']) {
     const body = text(file);
     expect(body, file).not.toContain(FAKE_SIG);
-    expect(body, file).not.toContain(FAKE_PW_START);
-    expect(body, file).not.toContain(FAKE_PW_END);
+    expect(body, file).not.toContain(FAKE_PASSWORD);
   }
   // Guard against a vacuous pass: the console error itself was exported.
   for (const file of ['/session.json', '/report.md']) {

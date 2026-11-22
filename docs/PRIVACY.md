@@ -55,8 +55,8 @@ They don't apply to URLs inside other header values, such as a redirect's `Locat
 Finding URLs inside console and log text is a best-effort scan. Unusual characters
 inside a logged URL, such as spaces, quotes, `<`, `>` or backticks, can end the scan
 early, and a password or parameters after that point may then be stored unmasked.
-URLs that the browser prints itself rarely contain these characters, so this mostly
-affects raw URL strings that a page logs.
+URLs that the browser prints itself rarely contain these characters; the main
+exception is a `'` in a user name, password or path, which browsers print as typed.
 
 Page addresses (the tab URL when recording starts, tab changes and page navigations)
 are stored as the browser reports them, without URL redaction. Screenshots, audio,

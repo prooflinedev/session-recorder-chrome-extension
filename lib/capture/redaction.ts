@@ -314,15 +314,11 @@ export function redactUrl(rawUrl: string, rules: RedactionRules): string {
 
 /** Apply the same URL rules to web/socket URLs embedded in browser diagnostics. */
 export function redactUrlsInText(text: string, rules: RedactionRules): string {
-  // A URL right after ' is quoted, so the next ' closes it. Anywhere else an
-  // apostrophe can be part of a password or a query value and stays in the URL,
-  // unless another URL starts after it before the next space ('https://...,
-  // ',https://...); there it ends the URL, as every apostrophe used to.
+  // A URL in free text ends at whitespace, a quote, < > or a backtick. A ' that
+  // is part of a password can't be told from one that closes a quoted URL, so
+  // every ' ends the URL: simple, linear, and glued URLs stay apart.
   const redactText = (value: string) =>
-    value.replace(
-      /(?<=')(?:https?|wss?):\/\/[^\s"'<>`]+|\b(?:https?|wss?):\/\/(?:[^\s"'<>`]|'(?![^\s"<>`]*(?:https?|wss?):\/\/))+/gi,
-      (url) => redactUrl(url, rules),
-    );
+    value.replace(/\b(?:https?|wss?):\/\/[^\s"'<>`]+/gi, (url) => redactUrl(url, rules));
 
   return text.split('\n').map((line) => {
     // V8's text stack frames append coordinates outside the URL. Only split

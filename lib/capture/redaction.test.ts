@@ -466,21 +466,7 @@ describe('default rules for cloud signed URLs, API keys and URL passwords', () =
     );
   });
 
-  it('masks a URL password that contains an apostrophe in a console error', () => {
-    const input =
-      "TypeError: Failed to execute 'fetch' on 'Window': Request cannot be constructed from a URL that includes credentials: https://admin:hun'ter2@internal.example.com/api";
-    expect(redactUrlsInText(input, EMPTY_RULES)).toBe(
-      `TypeError: Failed to execute 'fetch' on 'Window': Request cannot be constructed from a URL that includes credentials: https://admin:${REDACTED}@internal.example.com/api`,
-    );
-  });
-
-  it('masks the whole key= value in console text when it contains an apostrophe', () => {
-    expect(
-      redactUrlsInText("GET https://maps.example.com/geo?key=AIza'FAKE&address=Berlin 403", EMPTY_RULES),
-    ).toBe(`GET https://maps.example.com/geo?key=${REDACTED}&address=Berlin 403`);
-  });
-
-  it("still ends a URL quoted with ' at its closing quote", () => {
+  it("ends a URL quoted with ' at its closing quote", () => {
     expect(
       redactUrlsInText(
         "Access to fetch at 'https://api.test/d?token=s' from origin 'http://localhost:5319' has been blocked; ['https://a.test/?token=1','https://b.test/?token=2']",
@@ -491,22 +477,33 @@ describe('default rules for cloud signed URLs, API keys and URL passwords', () =
     );
   });
 
-  it("ends an unquoted URL where the next 'https:// URL starts", () => {
-    expect(
-      redactUrlsInText("Redirect https://a.test/?token=1'https://b.test/?token=2&page=2' failed", EMPTY_RULES),
-    ).toBe(`Redirect https://a.test/?token=${REDACTED}'https://b.test/?token=${REDACTED}&page=2' failed`);
+  it("ends a console URL at every ', so URLs glued together are each masked", () => {
+    for (const [input, expected] of [
+      [
+        "Redirect https://a.test/?token=1'https://b.test/?token=2&page=2' failed",
+        `Redirect https://a.test/?token=${REDACTED}'https://b.test/?token=${REDACTED}&page=2' failed`,
+      ],
+      [
+        "GET https://a.test/?page=1',https://b.test/?token=S done",
+        `GET https://a.test/?page=1',https://b.test/?token=${REDACTED} done`,
+      ],
+      [
+        "GET https://a.test/p#top'_,https://b.test/?token=S done",
+        `GET https://a.test/p#top'_,https://b.test/?token=${REDACTED} done`,
+      ],
+    ]) {
+      expect(redactUrlsInText(input!, EMPTY_RULES)).toBe(expected);
+    }
   });
 
-  it("starts a new URL after ' plus punctuation, so the second URL's token is masked", () => {
-    expect(
-      redactUrlsInText("GET https://a.test/?page=1',https://b.test/?token=S done", EMPTY_RULES),
-    ).toBe(`GET https://a.test/?page=1',https://b.test/?token=${REDACTED} done`);
-  });
-
-  it("starts a new URL after ' whenever another URL follows before a space", () => {
-    expect(
-      redactUrlsInText("GET https://a.test/p#top'_,https://b.test/?token=S done", EMPTY_RULES),
-    ).toBe(`GET https://a.test/p#top'_,https://b.test/?token=${REDACTED} done`);
+  it('scans a long, apostrophe-heavy logged URL in linear time', () => {
+    // A page controls what it logs, and text is redacted before it is capped.
+    const tail = `${"'".repeat(100_000)}${"',".repeat(50_000)}`;
+    const start = performance.now();
+    expect(redactUrlsInText(`https://a.test/?token=${tail}`, EMPTY_RULES)).toBe(
+      `https://a.test/?token=${REDACTED}${tail}`,
+    );
+    expect(performance.now() - start).toBeLessThan(1000);
   });
 
   it('does not mistake a backslash path with @ for a password', () => {
@@ -547,9 +544,10 @@ describe('default rules for cloud signed URLs, API keys and URL passwords', () =
   });
 
   it('masks a one-time code in a form body', () => {
-    // key and sig are URL-only, so they stay in a form body.
-    const { text } = redactBody('otp=123456&hotpink=1&key=PROJ-1&sig=v2&remember=1', undefined, EMPTY_RULES);
-    expect(text).toBe(`otp=${REDACTED}&hotpink=1&key=PROJ-1&sig=v2&remember=1`);
+    // key, sig and the signature names are URL-only, so they stay in a form body.
+    const urlOnly = 'key=PROJ-1&sig=v2&Signature=Ada&X-Amz-Signature=v4&X-Goog-Signature=v4';
+    const { text } = redactBody(`otp=123456&hotpink=1&${urlOnly}&remember=1`, undefined, EMPTY_RULES);
+    expect(text).toBe(`otp=${REDACTED}&hotpink=1&${urlOnly}&remember=1`);
   });
 
   it('keeps ordinary "key", "sig" and signature-named fields in bodies', () => {
