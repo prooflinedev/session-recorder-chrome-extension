@@ -25,6 +25,7 @@ import {
 } from '@/lib/sharing/draft';
 import { useShareReport } from './useShareReport';
 import { useReportEvidence, type EvidenceItem } from './useReportEvidence';
+import { ConsoleInsights } from './ConsoleInsights';
 
 const params = new URLSearchParams(location.search);
 const sessionId = params.get('session') ?? '';
@@ -96,7 +97,7 @@ export function App(): React.JSX.Element {
             <div className="report-columns">
               <article className="report-document">
                 <IssueDraft share={share} />
-                <Evidence />
+                <Evidence startedAt={state.session.startedAt} />
                 <AdvancedReport share={share} />
               </article>
               <ReportDetails share={share} />
@@ -257,11 +258,12 @@ function IssueDraft({ share }: { share: ShareModel }) {
     </section>
   );
 }
-function Evidence() {
-  const { items, diagnostics, error } = useReportEvidence(sessionId);
+function Evidence({ startedAt }: { startedAt: number }) {
+  const { items, diagnostics, error, loading } = useReportEvidence(sessionId);
   const lead = items.find((item) => item.label === 'Annotation') ?? items[0];
   const others = items.filter((item) => item !== lead);
   return (
+    <>
     <section className="report-evidence" aria-labelledby="evidence-title">
       <div className="section-heading">
         <h2 id="evidence-title">Evidence</h2>
@@ -307,6 +309,8 @@ function Evidence() {
         </details>
       )}
     </section>
+    {!loading && !error && <ConsoleInsights events={diagnostics} startedAt={startedAt} />}
+    </>
   );
 }
 function EvidenceRow({ item }: { item: EvidenceItem }) {
