@@ -435,6 +435,44 @@ describe('default rules for cloud signed URLs, API keys and URL passwords', () =
     );
   });
 
+  it('masks a URL password that contains an apostrophe in a console error', () => {
+    const input =
+      "TypeError: Failed to execute 'fetch' on 'Window': Request cannot be constructed from a URL that includes credentials: https://admin:hun'ter2@internal.example.com/api";
+    expect(redactUrlsInText(input, EMPTY_RULES)).toBe(
+      `TypeError: Failed to execute 'fetch' on 'Window': Request cannot be constructed from a URL that includes credentials: https://admin:${REDACTED}@internal.example.com/api`,
+    );
+  });
+
+  it('masks the whole key= value in console text when it contains an apostrophe', () => {
+    expect(
+      redactUrlsInText("GET https://maps.example.com/geo?key=AIza'FAKE&address=Berlin 403", EMPTY_RULES),
+    ).toBe(`GET https://maps.example.com/geo?key=${REDACTED}&address=Berlin 403`);
+  });
+
+  it("still ends a URL quoted with ' at its closing quote", () => {
+    expect(
+      redactUrlsInText(
+        "Access to fetch at 'https://api.test/d?token=s' from origin 'http://localhost:5319' has been blocked; ['https://a.test/?token=1','https://b.test/?token=2']",
+        EMPTY_RULES,
+      ),
+    ).toBe(
+      `Access to fetch at 'https://api.test/d?token=${REDACTED}' from origin 'http://localhost:5319' has been blocked; ['https://a.test/?token=${REDACTED}','https://b.test/?token=${REDACTED}']`,
+    );
+  });
+
+  it('does not mistake a backslash path with @ for a password', () => {
+    // Browsers read \ as / in http(s) and ws(s) URLs, so 8443\team is port + path.
+    const url = 'https://example.com:8443\\team@docs';
+    expect(redactUrl(url, EMPTY_RULES)).toBe(url);
+    expect(redactUrlsInText(`see ${url}`, EMPTY_RULES)).toBe(`see ${url}`);
+  });
+
+  it('masks a one-time code passed as otp= in a URL', () => {
+    expect(redactUrl('https://x.com/verify?otp=123456&next=%2Fhome', EMPTY_RULES)).toBe(
+      `https://x.com/verify?otp=${REDACTED}&next=%2Fhome`,
+    );
+  });
+
   it('masks private keys and one-time codes in JSON bodies', () => {
     const input = JSON.stringify({
       type: 'service_account',
@@ -459,8 +497,8 @@ describe('default rules for cloud signed URLs, API keys and URL passwords', () =
     expect(text).toBe(`otp=${REDACTED}&remember=1`);
   });
 
-  it('keeps ordinary "key" and "sig" fields in bodies (issue keys, flag keys)', () => {
-    const input = '{"key":"PROJ-123","sig":"v2","keyword":"login"}';
+  it('keeps ordinary "key", "sig" and "Signature" fields in bodies', () => {
+    const input = '{"key":"PROJ-123","sig":"v2","Signature":"Ada Lovelace","keyword":"login"}';
     expect(redactBody(input, 'application/json', EMPTY_RULES)).toEqual({
       text: input,
       redacted: false,
