@@ -552,7 +552,9 @@ export class NetworkCapturer {
     mime: string | undefined,
     settings: CaptureSettings,
   ): { body: NetBody; overflowText?: string } {
-    // Same binary guard as responses (e.g. gzip-compressed request beacons).
+    // Binary guard with the Content-Encoding check kept: unlike a response body,
+    // postData is the bytes the page sent, so a gzip header here means the text
+    // really is compressed (e.g. gzip-compressed request beacons).
     if (isProbablyBinary(rawText, headers)) {
       return {
         body: binaryBodyMarker(rawText, mime, getHeader(headers, 'content-encoding')),
