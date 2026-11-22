@@ -460,6 +460,12 @@ describe('default rules for cloud signed URLs, API keys and URL passwords', () =
     );
   });
 
+  it("ends an unquoted URL where the next 'https:// URL starts", () => {
+    expect(
+      redactUrlsInText("Redirect https://a.test/?token=1'https://b.test/?page=2' failed", EMPTY_RULES),
+    ).toBe(`Redirect https://a.test/?token=${REDACTED}'https://b.test/?page=2' failed`);
+  });
+
   it('does not mistake a backslash path with @ for a password', () => {
     // Browsers read \ as / in http(s) and ws(s) URLs, so 8443\team is port + path.
     const url = 'https://example.com:8443\\team@docs';
@@ -468,8 +474,8 @@ describe('default rules for cloud signed URLs, API keys and URL passwords', () =
   });
 
   it('masks a one-time code passed as otp= in a URL', () => {
-    expect(redactUrl('https://x.com/verify?otp=123456&next=%2Fhome', EMPTY_RULES)).toBe(
-      `https://x.com/verify?otp=${REDACTED}&next=%2Fhome`,
+    expect(redactUrl('https://x.com/verify?otp=123456&hotpink=1&next=%2Fhome', EMPTY_RULES)).toBe(
+      `https://x.com/verify?otp=${REDACTED}&hotpink=1&next=%2Fhome`,
     );
   });
 
@@ -480,6 +486,7 @@ describe('default rules for cloud signed URLs, API keys and URL passwords', () =
       private_key: '-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n',
       privateKey: 'FAKE',
       otp: '123456',
+      hotpink: 'yes',
     });
     const { text, redacted } = redactBody(input, 'application/json', EMPTY_RULES);
     expect(redacted).toBe(true);
@@ -489,12 +496,13 @@ describe('default rules for cloud signed URLs, API keys and URL passwords', () =
       private_key: REDACTED,
       privateKey: REDACTED,
       otp: REDACTED,
+      hotpink: 'yes',
     });
   });
 
   it('masks a one-time code in a form body', () => {
-    const { text } = redactBody('otp=123456&remember=1', undefined, EMPTY_RULES);
-    expect(text).toBe(`otp=${REDACTED}&remember=1`);
+    const { text } = redactBody('otp=123456&hotpink=1&remember=1', undefined, EMPTY_RULES);
+    expect(text).toBe(`otp=${REDACTED}&hotpink=1&remember=1`);
   });
 
   it('keeps ordinary "key", "sig" and "Signature" fields in bodies', () => {

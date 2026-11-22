@@ -86,6 +86,11 @@ test('masks a SAS sig and a URL password in the exported HAR, session and report
   expect(entry, 'HAR has the probe request').toBeTruthy();
   expect(entry.request.url).toMatch(/&sig=«redacted»$/);
   expect(entry.request.queryString.find((q: any) => q.name === 'sig')?.value).toBe('«redacted»');
+  const exported = JSON.parse(text('/session.json')).events.filter(
+    (e: any) => e.type === 'net-request' && String(e.payload?.url).includes('/sas-probe-'),
+  );
+  expect(exported, 'session.json has the probe request').toHaveLength(1);
+  expect(exported[0].payload.url).toMatch(/&sp=rw&sig=«redacted»$/);
 
   for (const file of ['/network.har', '/session.json', '/report.md']) {
     const body = text(file);
