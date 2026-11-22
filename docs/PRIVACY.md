@@ -28,6 +28,10 @@ recording:
 - Network requests and responses (via `chrome.debugger` / CDP), including bodies
   and headers
 - Console logs, exceptions, and failed requests
+- The same for dedicated workers and for iframes from other sites, such as
+  embedded payment or sign-in forms. Request and response bodies from another
+  site's iframe, and from workers it starts, are never read: only the method,
+  URL, status, headers and timing are kept, with the usual redaction
 - Clicks, inputs, scrolls, keystrokes, and page navigations
 - Screenshots of the recorded tab
 - Microphone audio, when you start voice narration

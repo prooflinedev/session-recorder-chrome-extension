@@ -124,6 +124,16 @@ function errMessage(e: unknown): string {
   return typeof m === 'string' ? m : String(e);
 }
 
+/** `https://host:port` of a URL, without its path or query, for notes. */
+function originOf(url: string): string {
+  try {
+    const { origin } = new URL(url);
+    return origin === 'null' ? 'with an opaque origin' : origin;
+  } catch {
+    return 'with an unknown address';
+  }
+}
+
 /** Decode a base64 (no data: prefix) string to bytes, in a service worker. */
 function base64ToBytes(base64: string): Uint8Array {
   const bin = atob(base64);
@@ -216,12 +226,14 @@ class Orchestrator {
   private readonly console: ConsoleCapturer;
   private readonly screenshots: ScreenshotScheduler;
   private readonly multitab: MultiTabTracker;
+  /** Child-target gaps already noted, so a reloading iframe isn't noted twice. */
+  private readonly reportedChildGaps = new Set<string>();
 
   constructor() {
     this.dbg = new DebuggerManager();
 
     this.network = new NetworkCapturer({
-      send: (tabId, method, params) => this.dbg.send(tabId, method, params),
+      send: (tabId, method, params, sessionId) => this.dbg.send(tabId, method, params, sessionId),
       getSettings: () => this.activeSettings(),
       emit: (raw) => this.recordEvent(raw),
       storeBodyAsset: this.storeBodyAsset,
@@ -231,6 +243,7 @@ class Orchestrator {
     this.console = new ConsoleCapturer(
       (raw) => this.recordEvent(raw),
       () => this.activeSettings(),
+      (tabId) => this.dbg.observes(tabId, 'worker'),
     );
 
     this.screenshots = new ScreenshotScheduler({
@@ -255,14 +268,15 @@ class Orchestrator {
 
   init(): void {
     // CDP fan-out: one shared listener in DebuggerManager, routed here.
-    this.dbg.onEvent((tabId, method, params) => {
+    this.dbg.onEvent((tabId, method, params, child) => {
       if (method.startsWith('Network.')) {
-        this.network.handle(tabId, method, params);
+        this.network.handle(tabId, method, params, child);
       } else if (CONSOLE_METHODS.has(method)) {
-        this.console.handle(tabId, method, params);
+        this.console.handle(tabId, method, params, child);
       }
     });
     this.dbg.onDetach((tabId, reason) => this.onDebuggerDetach(tabId, reason));
+    this.dbg.onChildGap((tabId, child, reason) => this.onChildGap(tabId, child, reason));
 
     // Typed request/response messaging.
     onMessage((msg, sender) => this.handleMessage(msg, sender));
@@ -745,6 +759,34 @@ class Orchestrator {
   // --------------------------------------------------------------------------
   // CDP detach + tab lifecycle
   // --------------------------------------------------------------------------
+
+  /**
+   * An iframe or worker in a recorded tab could not be observed. Say so once
+   * per session for each origin, so an empty network list isn't read as
+   * "nothing failed".
+   */
+  private onChildGap(
+    tabId: number,
+    child: { type: 'iframe' | 'worker'; url: string } | undefined,
+    reason: string,
+  ): void {
+    const session = this.current;
+    if (!session || !this.isSessionTab(tabId)) return;
+    const what = child
+      ? `the ${child.type === 'iframe' ? 'cross-site iframe' : 'worker'} ${originOf(child.url)}`
+      : `cross-site iframes and workers in tab ${tabId}`;
+    const key = `${session.id}\u0000${tabId}\u0000${what}`;
+    if (this.reportedChildGaps.has(key)) return;
+    this.reportedChildGaps.add(key);
+    this.recordEvent({
+      type: 'session-note',
+      tabId,
+      payload: {
+        kind: 'warning',
+        text: `Could not observe ${what}: ${reason}. ${child ? 'Its' : 'Their'} network requests, console messages and errors are not in this recording.`,
+      },
+    });
+  }
 
   private onDebuggerDetach(tabId: number, reason: string): void {
     const session = this.current;

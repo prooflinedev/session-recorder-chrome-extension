@@ -15,12 +15,14 @@
 
 import type {
   CaptureSettings,
+  CaptureTarget,
   ConsoleLevel,
   ConsolePayload,
   ErrorPayload,
   RawEvent,
 } from '@/lib/session/types';
 import { redactUrl, redactUrlsInText } from './redaction';
+import type { ChildTarget } from './debugger';
 
 /** Max size (bytes/chars) of a joined console message before truncation. */
 const TEXT_CAP = 2048;
@@ -58,15 +60,43 @@ export class ConsoleCapturer {
   private readonly emit: (raw: RawEvent) => void;
   private readonly getSettings: () => CaptureSettings;
   private pending: Pending | null = null;
+  /** Child session of the event being handled, stamped on what it emits. */
+  private source?: ChildTarget;
   private timer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(emit: (raw: RawEvent) => void, getSettings: () => CaptureSettings) {
+  /**
+   * @param observesWorkers Whether a worker in the tab has its own debugger
+   *   session. Chrome also forwards a worker's uncaught errors to its page as a
+   *   `Log` entry; while the worker itself is observed, that copy is a duplicate.
+   */
+  constructor(
+    emit: (raw: RawEvent) => void,
+    getSettings: () => CaptureSettings,
+    private readonly observesWorkers: (tabId: number) => boolean = () => false,
+  ) {
     this.emit = emit;
     this.getSettings = getSettings;
   }
 
-  /** Route a `Runtime.*` / `Log.*` CDP event. Unknown methods are ignored. */
-  handle(tabId: number, method: string, params: Record<string, unknown>): void {
+  /**
+   * Route a `Runtime.*` / `Log.*` CDP event. Unknown methods are ignored.
+   * `child` is the iframe or worker session it came from, if not the page.
+   */
+  handle(
+    tabId: number,
+    method: string,
+    params: Record<string, unknown>,
+    child?: ChildTarget,
+  ): void {
+    this.source = child;
+    try {
+      this.route(tabId, method, params);
+    } finally {
+      this.source = undefined;
+    }
+  }
+
+  private route(tabId: number, method: string, params: Record<string, unknown>): void {
     switch (method) {
       case 'Runtime.consoleAPICalled':
         this.onConsoleApiCalled(tabId, params);
@@ -164,6 +194,7 @@ export class ConsoleCapturer {
     params: Record<string, unknown>,
   ): void {
     const entry = (params['entry'] as Record<string, unknown> | undefined) ?? {};
+    if (entry['source'] === 'worker' && this.observesWorkers(tabId)) return;
     const level = typeof entry['level'] === 'string' ? (entry['level'] as string) : '';
     const rawText = typeof entry['text'] === 'string' ? (entry['text'] as string) : '';
     const url = typeof entry['url'] === 'string' ? (entry['url'] as string) : undefined;
@@ -204,7 +235,8 @@ export class ConsoleCapturer {
 
   /** Buffer a console event, coalescing consecutive duplicates. */
   private pushConsole(tabId: number, payload: ConsolePayload): void {
-    const key = `${payload.level}\u0000${payload.text}`;
+    // The same message from the page and from a frame are two messages.
+    const key = `${payload.level}\u0000${payload.text}\u0000${this.source?.sessionId ?? ''}`;
 
     if (this.pending && this.pending.key === key) {
       // Duplicate within the quiet window: bump repeat, extend the window.
@@ -247,7 +279,14 @@ export class ConsoleCapturer {
     tabId: number,
     payload: RawEvent<T>['payload'],
   ): RawEvent<T> {
+    if (this.source) payload.target = this.targetOf(this.source);
     return { type, tabId, payload };
+  }
+
+  private targetOf(child: ChildTarget): CaptureTarget {
+    const target: CaptureTarget = { type: child.type, url: this.redactUrl(child.url) };
+    if (child.crossSite) target.crossSite = true;
+    return target;
   }
 
   private redactText(text: string): string {

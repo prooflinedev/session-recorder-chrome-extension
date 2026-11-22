@@ -1,0 +1,47 @@
+<!--
+  demo/cross-site/index.html: a checkout whose payment form lives in a
+  cross-site iframe and whose search runs in a dedicated worker.
+
+  The page is served from http://localhost:5319. The payment frame is served
+  from http://pay.example.test:5319, which is another site, so Chrome runs it in
+  its own process and reports it as a separate debugger target. Browser tests
+  map every hostname except localhost to 127.0.0.1, so the same static server
+  answers both origins.
+
+  Pay asks the frame to charge the card: the frame POSTs to /api/charge (the
+  static server answers 501), logs a console error and throws. Search asks the
+  worker to fetch /api/search (404), and the worker throws. None of that
+  happens in the top page. Pay also fetches /api/cart from the top page (404),
+  which the recorder has always captured.
+-->
+<meta charset="utf-8" />
+<title>Cross-site checkout</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 24px; }
+  iframe { border: 1px solid #ccd; width: 420px; height: 160px; display: block; margin: 12px 0; }
+  button { font: inherit; padding: 6px 12px; margin-right: 8px; }
+</style>
+<h1>Cross-site checkout</h1>
+<p>Order total: <strong>$120.00</strong></p>
+<iframe id="pay-frame" title="Payment" src="http://pay.example.test:5319/cross-site/pay.html"></iframe>
+<button id="pay">Pay $120.00</button>
+<button id="search">Search orders</button>
+<p id="status" role="status"></p>
+<script>
+  const frame = document.getElementById('pay-frame');
+  const status = document.getElementById('status');
+  const worker = new Worker('search-worker.js');
+  worker.onmessage = (e) => { status.textContent = e.data; };
+  document.getElementById('pay').addEventListener('click', async () => {
+    status.textContent = 'Paying…';
+    // The page's own request: the recorder already captures this one.
+    await fetch('/api/cart').catch(() => {});
+    frame.contentWindow.postMessage({ kind: 'charge', amount: 12000 }, '*');
+  });
+  document.getElementById('search').addEventListener('click', () => {
+    worker.postMessage({ query: 'weekender' });
+  });
+  addEventListener('message', (e) => {
+    if (e.origin === 'http://pay.example.test:5319') status.textContent = e.data;
+  });
+</script>

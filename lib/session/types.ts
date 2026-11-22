@@ -271,8 +271,26 @@ export interface NetHeader {
   value: string;
 }
 
+/**
+ * The frame or worker that produced a network, console or error event, when it
+ * was not the recorded tab's own page. Chrome reports a cross-site iframe and a
+ * dedicated worker as separate debugger targets.
+ */
+export interface CaptureTarget {
+  type: 'iframe' | 'worker';
+  /** Redacted URL of the frame's document or the worker's script. */
+  url: string;
+  /**
+   * Content from another site: a cross-site iframe or a worker it started.
+   * Request and response bodies from such a target are not captured.
+   */
+  crossSite?: boolean;
+}
+
 export interface NetBody {
   present: boolean;
+  /** Why the body was deliberately left out, when it was. */
+  omitted?: 'cross-site';
   mime?: string;
   /** Possibly truncated and/or redacted body text. */
   text?: string;
@@ -317,6 +335,8 @@ export interface NetRequestPayload {
   collapsed?: { count: number; statuses: number[]; note?: string };
   /** Set by the trimmer when the body was reduced to a JSON shape summary. */
   bodyShape?: { request?: string; response?: string };
+  /** Set when an iframe or worker, not the page itself, made the request. */
+  target?: CaptureTarget;
 }
 
 export interface ConsolePayload {
@@ -327,6 +347,8 @@ export interface ConsolePayload {
   repeat?: number;
   stack?: string;
   source?: string; // url:line
+  /** Set when an iframe or worker, not the page itself, logged the message. */
+  target?: CaptureTarget;
 }
 
 export interface ErrorPayload {
@@ -336,6 +358,8 @@ export interface ErrorPayload {
   linkedRequestId?: string;
   /** Consecutive-duplicate collapse count (set by the trimmer). */
   repeat?: number;
+  /** Set when an iframe or worker, not the page itself, raised the error. */
+  target?: CaptureTarget;
 }
 
 export type ScreenshotTrigger =

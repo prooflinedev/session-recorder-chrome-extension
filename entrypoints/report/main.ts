@@ -18,6 +18,7 @@ import {
   dropStaticAssets,
 } from '@/lib/export/trimmer';
 import { isDictatedSpeech } from '@/lib/session/events';
+import { CROSS_SITE_BODY_NOTE, describeTarget } from '@/lib/session/target';
 import type { TrimContext } from '@/lib/export/trimmer';
 import { buildBundle } from '@/lib/export/bundle';
 import { zipFiles } from '@/lib/export/zip';
@@ -26,6 +27,7 @@ import { broadcast, onBroadcast } from '@/lib/messaging';
 import type {
   AssetMeta,
   AnnotationShape,
+  CaptureTarget,
   NetRequestPayload,
   SessionEvent,
   VerbosityLevel,
@@ -288,12 +290,14 @@ function eventNode(e: SessionEvent, mediaUrls: Map<string, string>): HTMLElement
       const p = e.payload;
       row.className = 'r-row' + (p.level === 'error' ? ' r-err' : ' r-muted');
       row.append(clockOf(e), tag(p.level === 'error' ? 'error' : 'log'), el('span', 'r-txt', p.text));
+      appendTarget(row, p.target);
       return row;
     }
     case 'error': {
       const rep = e.payload.repeat && e.payload.repeat > 1 ? ` (×${e.payload.repeat})` : '';
       row.className = 'r-row r-err';
       row.append(clockOf(e), tag('error'), el('span', 'r-txt', e.payload.message + rep));
+      appendTarget(row, e.payload.target);
       return row;
     }
     case 'screenshot':
@@ -348,6 +352,7 @@ function netRow(p: NetRequestPayload, e: SessionEvent): HTMLElement {
   line.appendChild(el('span', 'r-net__meth', `${p.method} ${pathOf(p.url)}`));
   const status = p.failed ? 'failed' : netMeta(p.status, p.timing?.durationMs);
   if (status) line.appendChild(el('span', 'r-net__status', status));
+  appendTarget(line, p.target);
   row.appendChild(line);
   if (p.collapsed) {
     row.appendChild(el('div', 'r-net__note', `(×${p.collapsed.count} similar, statuses ${p.collapsed.statuses.join(', ')})`));
@@ -357,8 +362,16 @@ function netRow(p: NetRequestPayload, e: SessionEvent): HTMLElement {
   } else {
     if (p.requestBody?.text) row.appendChild(bodyPre('request', p.requestBody.text));
     if (p.responseBody?.text) row.appendChild(bodyPre('response', p.responseBody.text));
+    if (p.requestBody?.omitted === 'cross-site' || p.responseBody?.omitted === 'cross-site') {
+      row.appendChild(el('div', 'r-net__note', `Bodies ${CROSS_SITE_BODY_NOTE}.`));
+    }
   }
   return row;
+}
+
+/** Name the iframe or worker an event came from; the page itself needs no label. */
+function appendTarget(row: HTMLElement, target: CaptureTarget | undefined): void {
+  if (target) row.appendChild(el('span', 'r-src', `in ${describeTarget(target)}`));
 }
 
 function netGroup(run: SessionEvent[]): HTMLElement {

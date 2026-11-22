@@ -24,7 +24,7 @@ Recording, annotation and ZIP export work without an account or API key. Configu
 ## What a recording contains
 
 - Clicks, inputs, navigation and tabs opened by the recorded app.
-- Console messages, exceptions, network requests and responses.
+- Console messages, exceptions, network requests and responses, including those from workers and from other sites' iframes. Bodies from another site's iframe, such as an embedded payment form, are not recorded.
 - Screenshots, live page annotations and screenshot markup.
 - Optional microphone narration, transcripts and tab video with sound.
 - Uploaded or attached files, markers and notes.

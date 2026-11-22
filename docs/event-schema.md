@@ -39,6 +39,13 @@ optional `at` (an explicit ms-epoch timestamp; the funnel defaults to now), and
   selector: id, then `[data-testid]`, then a short ancestor path), and `rect`
 - `NetHeader` is `{ name, value }` (both strings)
 - `NetBody` is described under [net-request](#net-request)
+- `CaptureTarget` is `{ type, url, crossSite? }` and names the iframe or worker
+  that produced a `net-request`, `console` or `error` event. It is absent for
+  the recorded tab's own page. `type` is `iframe` (a frame Chrome isolates in its
+  own process, which happens when it is on another site) or `worker` (a
+  dedicated worker). `url` is the redacted URL of the frame's document or the
+  worker's script. `crossSite` is true for a cross-site iframe and for any worker
+  it starts.
 
 ### Protected types
 
@@ -180,7 +187,9 @@ fragment. It is captured through `onHistoryStateUpdated` and
 ### `net-request`
 `NetRequestPayload` records one network request and response, assembled from CDP
 `Network.*` events. When redaction is enabled, it applies to headers, URL, and
-bodies before emit.
+bodies before emit. Requests made by cross-site iframes and dedicated workers are
+included: the recorder auto-attaches to them as child debugger sessions
+(`Target.setAutoAttach`, Chrome 125 or later) and tags each with `target`.
 
 | Field            | Type                    | Meaning |
 | ---------------- | ----------------------- | ------- |
@@ -204,9 +213,15 @@ bodies before emit.
 | `wsFrames`       | `WsFrame[]` (optional)  | WebSocket frames, capped at about 100, each text capped at about 2 KB. |
 | `collapsed`      | `{ count: number; statuses: number[]; note?: string }` (optional) | The trimmer sets this when it folds repeated calls to the same endpoint into this representative request. |
 | `bodyShape`      | `{ request?: string; response?: string }` (optional) | The trimmer sets this when it reduces a body to a JSON shape summary. |
+| `target`         | `CaptureTarget` (optional) | The iframe or worker that made the request. Absent for the page's own requests. |
 
-`NetBody` is `{ present, mime?, text?, truncated?, originalSize?, assetId?, base64? }`:
+`NetBody` is `{ present, omitted?, mime?, text?, truncated?, originalSize?, assetId?, base64? }`:
 - `present` is whether a body exists. It is false when the CDP body was evicted.
+- `omitted` is `'cross-site'` when the recorder deliberately did not read the
+  body because a cross-site iframe, or a worker it started, made the request.
+  Hosted payment and sign-in fields send card numbers and passwords, which
+  value-based redaction cannot reliably recognize. WebSocket frames from such a
+  target keep their direction, opcode and time, but no `text`.
 - `mime` is the body MIME type
 - `text` is the body text, possibly truncated or redacted
 - `truncated` is true when `text` was cut to the inline cap
@@ -227,6 +242,7 @@ bodies before emit.
 | `repeat`| `number` (optional)   | Count of collapsed consecutive duplicates (same level and text within 1000 ms). |
 | `stack` | `string` (optional)   | Stack trace, when present. |
 | `source`| `string` (optional)   | Origin as `url:line`, from the first stack frame. |
+| `target`| `CaptureTarget` (optional) | The iframe or worker that logged the message. Absent for the page itself. |
 
 ### `error`
 `ErrorPayload` records an error surfaced from any source. It is protected, and the
@@ -239,6 +255,7 @@ renderer isolates these with a `⚠` prefix.
 | `origin`         | `'exception' \| 'console' \| 'network' \| 'log'` | Where it came from: an uncaught exception, `console.error`, a network failure, or an error-level `Log.entryAdded`. |
 | `linkedRequestId`| `string` (optional)                              | The `net-request` this error is tied to. Its captured body is preserved by trimming. |
 | `repeat` | `number` (optional) | Number of consecutive duplicate errors collapsed by the trimmer. |
+| `target` | `CaptureTarget` (optional) | The iframe or worker that raised the error. Absent for the page itself. Chrome also forwards a worker's uncaught error to its page as a `Log` entry; that copy is dropped while the worker has its own session. |
 
 ---
 
@@ -373,3 +390,8 @@ protected.
 | ------ | --------------------------------------------- | ------- |
 | `text` | `string`                                      | Note text. |
 | `kind` | `'rehydrate' \| 'detach' \| 'info' \| 'warning'` | Category of system note. |
+
+A `warning` note starting `Could not observe` names an iframe or worker whose
+child session could not be set up, once per origin per session. Its network
+requests, console messages and errors are missing from the recording, so an
+empty network list is not evidence that nothing failed there.

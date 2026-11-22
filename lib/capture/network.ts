@@ -12,6 +12,7 @@
 
 import type {
   CaptureSettings,
+  CaptureTarget,
   NetBody,
   NetHeader,
   NetRequestPayload,
@@ -21,14 +22,16 @@ import type {
 import { API_SPEC_BODY_CAP_BYTES } from '@/lib/session/settings';
 import { isApiIsh } from '@/lib/export/openapi';
 import { redactBody, redactHeaders, redactUrl } from './redaction';
+import type { ChildTarget } from './debugger';
 
 /** Injected collaborators; see docs/internal-api.md §lib/capture/network.ts. */
 export interface NetworkDeps {
-  /** DebuggerManager.send — issue a CDP command against a tab. */
+  /** DebuggerManager.send — issue a CDP command against a tab or a child session. */
   send: (
     tabId: number,
     method: string,
     params?: object,
+    sessionId?: string,
   ) => Promise<Record<string, unknown>>;
   getSettings: () => CaptureSettings;
   /** The background `recordEvent` funnel. */
@@ -46,6 +49,8 @@ export interface NetworkDeps {
 /** In-flight accumulation for a single request or WebSocket. */
 interface PartialRequest {
   requestId: string;
+  /** The iframe or worker that made the request, when the page didn't. */
+  child?: ChildTarget;
   /** Tab that owns this request; needed to emit still-open sockets on flush. */
   tabId?: number;
   method?: string;
@@ -95,6 +100,14 @@ function applyResponse(p: PartialRequest, response: Record<string, unknown>): vo
   }
 }
 
+/**
+ * Body placeholder for requests from a cross-site iframe, or a worker it
+ * started. Hosted payment and sign-in fields send card numbers and passwords,
+ * which value-based redaction can't reliably recognize, so their bodies are
+ * never read. Method, URL, status, headers and timing are still recorded.
+ */
+const CROSS_SITE_BODY: NetBody = { present: false, omitted: 'cross-site' };
+
 /** WebSocket frame text cap (bytes ~ chars). */
 const WS_FRAME_TEXT_CAP = 2 * 1024;
 /** Max WebSocket frames retained per socket. */
@@ -107,11 +120,25 @@ export class NetworkCapturer {
   private readonly emitQueue = new Map<string, Promise<void>>();
   /** Bumped on reset so deferred emits from a previous recording are dropped. */
   private generation = 0;
+  /** Child session of the event being handled; `ensure()` stamps it on new records. */
+  private source?: ChildTarget;
 
   constructor(private readonly deps: NetworkDeps) {}
 
-  /** Route a `Network.*` CDP event. Never throws. */
-  handle(tabId: number, method: string, params: Record<string, unknown>): void {
+  /**
+   * Route a `Network.*` CDP event. Never throws. `child` is the iframe or worker
+   * session it came from. Request ids stay unprefixed: Chrome numbers them per
+   * renderer process, and it reports a worker request's `*ExtraInfo` events on
+   * the page's session rather than the worker's, so one request's events can
+   * arrive from two sessions. The session that sent `requestWillBeSent` owns it.
+   */
+  handle(
+    tabId: number,
+    method: string,
+    params: Record<string, unknown>,
+    child?: ChildTarget,
+  ): void {
+    this.source = child;
     try {
       switch (method) {
         case 'Network.requestWillBeSent':
@@ -150,6 +177,8 @@ export class NetworkCapturer {
       }
     } catch {
       /* never let a malformed CDP event escape into the debugger listener */
+    } finally {
+      this.source = undefined;
     }
   }
 
@@ -209,7 +238,8 @@ export class NetworkCapturer {
       if (url) p.url = url;
       mergeHeaders(p.reqHeaders, asRecord(request.headers));
       const postData = asString(request.postData);
-      if (postData !== undefined) p.requestBodyText = postData;
+      // A cross-site body is never held, only the fact that there was one.
+      if (postData !== undefined) p.requestBodyText = p.child?.crossSite ? '' : postData;
     }
 
     const initiator = asRecord(params.initiator);
@@ -282,10 +312,17 @@ export class NetworkCapturer {
 
       const settings = this.deps.getSettings();
       let responseBody: NetBody;
+      if (p.child?.crossSite) {
+        // Another site's frame: payment and sign-in fields post card numbers
+        // and passwords. Keep the request's outcome, never its content.
+        this.completeHttp(tabId, p, { responseBody: { ...CROSS_SITE_BODY } });
+        return;
+      }
       try {
-        const res = await this.deps.send(tabId, 'Network.getResponseBody', {
-          requestId,
-        });
+        // A worker's body lives in the worker's session; the page's in the tab's.
+        const res = p.child
+          ? await this.deps.send(tabId, 'Network.getResponseBody', { requestId }, p.child.sessionId)
+          : await this.deps.send(tabId, 'Network.getResponseBody', { requestId });
         // Reset can happen during the fetch. Do not persist an old body into
         // the new recording before completeHttp gets a chance to drop it.
         if (!this.httpChains.get(requestId)?.hops.includes(p)) return;
@@ -436,6 +473,11 @@ export class NetworkCapturer {
       response && typeof response.opcode === 'number' ? response.opcode : 0;
     const payload = (response && asString(response.payloadData)) ?? '';
     const settings = this.deps.getSettings();
+    if (p.child?.crossSite) {
+      // Keep the frame's direction and time, never its content (CROSS_SITE_BODY).
+      frames.push({ dir, opcode, ts: Math.max(0, Date.now() - this.deps.sessionStart()) });
+      return;
+    }
     // Text frames only (opcode 1); binary frames are base64 and have no keys.
     let text =
       settings.redactionEnabled && opcode === 1
@@ -608,7 +650,10 @@ export class NetworkCapturer {
 
     // When set, the full request body must be stored as an asset before emit.
     let storeRequestBody: { text: string; mime: string } | undefined;
-    if (p.requestBodyText !== undefined) {
+    if (p.child) payload.target = this.targetOf(p.child, settings);
+    if (p.requestBodyText !== undefined && p.child?.crossSite) {
+      payload.requestBody = { ...CROSS_SITE_BODY };
+    } else if (p.requestBodyText !== undefined) {
       const { body, overflowText } = this.buildRequestBody(
         p.requestBodyText,
         p.reqHeaders,
@@ -688,9 +733,17 @@ export class NetworkCapturer {
     let p = this.pending.get(requestId);
     if (!p) {
       p = { requestId, reqHeaders: {}, respHeaders: {} };
+      if (this.source) p.child = this.source;
       this.pending.set(requestId, p);
     }
     return p;
+  }
+
+  private targetOf(child: ChildTarget, settings: CaptureSettings): CaptureTarget {
+    const url = settings.redactionEnabled ? redactUrl(child.url, settings.customRedaction) : child.url;
+    const target: CaptureTarget = { type: child.type, url };
+    if (child.crossSite) target.crossSite = true;
+    return target;
   }
 }
 
