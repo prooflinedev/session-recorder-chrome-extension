@@ -322,7 +322,13 @@ test('keeps the JSON body of gzip and brotli responses', async ({
     });
     res.end(encoding === 'gzip' ? gzipSync(bodyFor('gzip')) : brotliCompressSync(bodyFor('br')));
   });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {
     const page = await context.newPage();
@@ -351,7 +357,23 @@ test('keeps the JSON body of gzip and brotli responses', async ({
     await page.evaluate(async () => {
       for (const path of ['/api/gzip', '/api/br']) await (await fetch(path)).text();
     });
-    await page.waitForTimeout(1000);
+    // The page's fetch() does not wait for the recorder's own Network.getResponseBody
+    // call, so poll the recorded events until both bodies are in (or the recorder
+    // reports degraded mode) before stopping. Bounded, so a regression still fails.
+    const capture = async () => {
+      const { events } = await dispatch<EventsRes>(background, {
+        kind: 'events/get',
+        sessionId: started.session!.id,
+      });
+      if (events.some((e) => /Deep capture unavailable/.test(e.payload?.text ?? ''))) return 'degraded';
+      const done = ['/api/gzip', '/api/br'].every((path) =>
+        events.some(
+          (e) => e.type === 'net-request' && e.payload?.url === origin + path && e.payload?.responseBody,
+        ),
+      );
+      return done ? 'captured' : 'waiting';
+    };
+    await expect.poll(capture, { timeout: 10_000 }).not.toBe('waiting');
     await dispatch(background, { kind: 'session/stop' });
 
     const { events } = await dispatch<EventsRes>(background, {
