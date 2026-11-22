@@ -1,0 +1,35 @@
+{
+  "note": "Real Chromium 151.0.7922.34 CDP events for the /api/* fetches to a loopback server. Kept as Chromium reported them: method, URL, type, status, statusText, mimeType, encodedDataLength, the response headers other than Date, Connection, Keep-Alive and Transfer-Encoding, and each Network.getResponseBody result in bodies. Left out: request headers, timestamps, initiator, hasExtraInfo and the ExtraInfo events, so the capturer emits without waiting for ExtraInfo. Request IDs and the port are normalised.",
+  "events": [
+    {"method":"Network.requestWillBeSent","params":{"requestId":"plain","request":{"method":"GET","url":"http://127.0.0.1:8000/api/plain","headers":{}},"type":"Fetch"}},
+    {"method":"Network.responseReceived","params":{"requestId":"plain","type":"Fetch","response":{"url":"http://127.0.0.1:8000/api/plain","status":200,"statusText":"OK","headers":{"content-type":"application/json; charset=utf-8"},"mimeType":"application/json"}}},
+    {"method":"Network.loadingFinished","params":{"requestId":"plain","encodedDataLength":272}},
+    {"method":"Network.requestWillBeSent","params":{"requestId":"gzip","request":{"method":"GET","url":"http://127.0.0.1:8000/api/gzip","headers":{}},"type":"Fetch"}},
+    {"method":"Network.responseReceived","params":{"requestId":"gzip","type":"Fetch","response":{"url":"http://127.0.0.1:8000/api/gzip","status":200,"statusText":"OK","headers":{"content-encoding":"gzip","content-type":"application/json; charset=utf-8"},"mimeType":"application/json"}}},
+    {"method":"Network.loadingFinished","params":{"requestId":"gzip","encodedDataLength":314}},
+    {"method":"Network.requestWillBeSent","params":{"requestId":"br","request":{"method":"GET","url":"http://127.0.0.1:8000/api/br","headers":{}},"type":"Fetch"}},
+    {"method":"Network.responseReceived","params":{"requestId":"br","type":"Fetch","response":{"url":"http://127.0.0.1:8000/api/br","status":200,"statusText":"OK","headers":{"content-encoding":"br","content-type":"application/json; charset=utf-8"},"mimeType":"application/json"}}},
+    {"method":"Network.loadingFinished","params":{"requestId":"br","encodedDataLength":295}},
+    {"method":"Network.requestWillBeSent","params":{"requestId":"deflate","request":{"method":"GET","url":"http://127.0.0.1:8000/api/deflate","headers":{}},"type":"Fetch"}},
+    {"method":"Network.responseReceived","params":{"requestId":"deflate","type":"Fetch","response":{"url":"http://127.0.0.1:8000/api/deflate","status":200,"statusText":"OK","headers":{"content-encoding":"deflate","content-type":"application/json; charset=utf-8"},"mimeType":"application/json"}}},
+    {"method":"Network.loadingFinished","params":{"requestId":"deflate","encodedDataLength":305}},
+    {"method":"Network.requestWillBeSent","params":{"requestId":"zstd","request":{"method":"GET","url":"http://127.0.0.1:8000/api/zstd","headers":{}},"type":"Fetch"}},
+    {"method":"Network.responseReceived","params":{"requestId":"zstd","type":"Fetch","response":{"url":"http://127.0.0.1:8000/api/zstd","status":200,"statusText":"OK","headers":{"content-encoding":"zstd","content-type":"application/json; charset=utf-8"},"mimeType":"application/json"}}},
+    {"method":"Network.loadingFinished","params":{"requestId":"zstd","encodedDataLength":305}},
+    {"method":"Network.requestWillBeSent","params":{"requestId":"unknown-encoding","request":{"method":"GET","url":"http://127.0.0.1:8000/api/unknown-encoding","headers":{}},"type":"Fetch"}},
+    {"method":"Network.responseReceived","params":{"requestId":"unknown-encoding","type":"Fetch","response":{"url":"http://127.0.0.1:8000/api/unknown-encoding","status":200,"statusText":"OK","headers":{"content-encoding":"x-custom","content-type":"application/json; charset=utf-8"},"mimeType":"application/json"}}},
+    {"method":"Network.loadingFinished","params":{"requestId":"unknown-encoding","encodedDataLength":318}},
+    {"method":"Network.requestWillBeSent","params":{"requestId":"blob-gzip","request":{"method":"GET","url":"http://127.0.0.1:8000/api/blob-gzip","headers":{}},"type":"Fetch"}},
+    {"method":"Network.responseReceived","params":{"requestId":"blob-gzip","type":"Fetch","response":{"url":"http://127.0.0.1:8000/api/blob-gzip","status":200,"statusText":"OK","headers":{"content-encoding":"gzip","content-type":"application/octet-stream"},"mimeType":"application/octet-stream"}}},
+    {"method":"Network.loadingFinished","params":{"requestId":"blob-gzip","encodedDataLength":238}}
+  ],
+  "bodies": {
+    "plain": {"body":"{\"error\":\"card_declined\",\"detail\":\"Zahlung abgelehnt ✓\",\"token\":\"tok-SECRET-123\"}","base64Encoded":false},
+    "gzip": {"body":"{\"error\":\"card_declined\",\"detail\":\"Zahlung abgelehnt ✓\",\"token\":\"tok-SECRET-123\"}","base64Encoded":false},
+    "br": {"body":"{\"error\":\"card_declined\",\"detail\":\"Zahlung abgelehnt ✓\",\"token\":\"tok-SECRET-123\"}","base64Encoded":false},
+    "deflate": {"body":"{\"error\":\"card_declined\",\"detail\":\"Zahlung abgelehnt ✓\",\"token\":\"tok-SECRET-123\"}","base64Encoded":false},
+    "zstd": {"body":"{\"error\":\"card_declined\",\"detail\":\"Zahlung abgelehnt ✓\",\"token\":\"tok-SECRET-123\"}","base64Encoded":false},
+    "unknown-encoding": {"body":"H4sIAAAAAAAACqtWSi0qyi9SslJKTixKiU9JTc7JzEtNUdJRSkktSczMUbJSikrMyCnNS1dITEpPzUnNyCtReDRnspKOUkl+dmqekhWI1g12dQ5yDdE1NDJWqgUABdK/rVMAAAA=","base64Encoded":true},
+    "blob-gzip": {"body":"AAECA/r7/P0AAAcI","base64Encoded":true}
+  }
+}

@@ -4,6 +4,7 @@ import type {
   NetRequestPayload,
   RawEvent,
 } from '@/lib/session/types';
+import chromiumResponses from '@/lib/fixtures/chromium-compressed-responses.json';
 import { NetworkCapturer, type NetworkDeps } from './network';
 
 const SETTINGS: CaptureSettings = {
@@ -19,6 +20,11 @@ const SETTINGS: CaptureSettings = {
   screenshotDedupThreshold: 4,
   captureApiSpec: false,
 };
+
+/** The first `cap` UTF-8 bytes of `text`, decoded again (the inline cap counts bytes). */
+function firstBytes(text: string, cap: number): string {
+  return new TextDecoder().decode(new TextEncoder().encode(text).subarray(0, cap));
+}
 
 function makeCapturer(overrides: Partial<NetworkDeps> = {}): {
   cap: NetworkCapturer;
@@ -280,12 +286,17 @@ describe('NetworkCapturer API-spec full-body capture', () => {
 });
 
 describe('NetworkCapturer binary bodies', () => {
-  it('replaces a gzip-encoded response body with a short marker', async () => {
-    const gzipGarbage = 'garbage-that-should-not-appear';
+  // Network.getResponseBody returns the body after Chrome has undone the
+  // Content-Encoding, so a compressed response arrives here as plain text.
+  async function finishResponse(headers: Record<string, string>, body: string) {
+    const storeBodyAsset = vi.fn(
+      async (_text: string, _mime: string, _base64: boolean) => 'asset-decoded',
+    );
     const { cap, emitted } = makeCapturer({
-      send: vi.fn(async () => ({ body: gzipGarbage, base64Encoded: false })),
+      send: vi.fn(async () => ({ body, base64Encoded: false })),
+      storeBodyAsset,
     });
-    const rid = 'r-gzip';
+    const rid = 'r-encoded';
     cap.handle(2, 'Network.requestWillBeSent', {
       requestId: rid,
       request: { method: 'GET', url: 'https://x/data', headers: {} },
@@ -295,21 +306,195 @@ describe('NetworkCapturer binary bodies', () => {
       requestId: rid,
       response: {
         status: 200,
-        headers: { 'content-type': 'text/plain', 'content-encoding': 'gzip' },
-        mimeType: 'text/plain',
+        headers,
+        mimeType: (headers['content-type'] ?? '').split(';')[0],
       },
     });
     cap.handle(2, 'Network.loadingFinished', { requestId: rid });
     await vi.waitFor(() => expect(emitted).toHaveLength(1));
+    return { emitted, storeBodyAsset };
+  }
 
+  // br, deflate and zstd are covered by the Chromium replay below.
+  it('keeps a gzip-encoded JSON response body, which CDP returns decoded, and redacts it', async () => {
+    const { emitted } = await finishResponse(
+      { 'content-type': 'application/json', 'content-encoding': 'gzip' },
+      '{"error":"card_declined","password":"hunter2"}',
+    );
     const body = payloadOf(emitted[0]!).responseBody!;
-    expect(body.present).toBe(true);
-    expect(body.base64).toBe(false);
-    expect(body.truncated).toBe(false);
-    expect(body.text).toContain('binary body');
-    expect(body.text).toContain('gzip');
-    expect(body.text).not.toContain('garbage');
-    expect(body.originalSize).toBeGreaterThan(0);
+    expect(body.text).not.toContain('binary body');
+    expect(body.text).not.toContain('hunter2');
+    expect(JSON.parse(body.text!)).toEqual({
+      error: 'card_declined',
+      password: '«redacted»',
+    });
+    expect(body.base64).toBeUndefined();
+  });
+
+  it('applies the inline and asset caps to a large decoded gzip response', async () => {
+    const big = `{"token":"tok-1","data":"${'x'.repeat(100 * 1024)}"}`;
+    const { emitted, storeBodyAsset } = await finishResponse(
+      { 'content-type': 'application/json', 'content-encoding': 'gzip' },
+      big,
+    );
+    const body = payloadOf(emitted[0]!).responseBody!;
+    expect(body.truncated).toBe(true);
+    expect(body.originalSize).toBeGreaterThan(SETTINGS.inlineBodyCapBytes);
+    expect(new TextEncoder().encode(body.text!).length).toBeLessThanOrEqual(
+      SETTINGS.inlineBodyCapBytes,
+    );
+    expect(body.assetId).toBe('asset-decoded');
+    // The asset is the whole redacted body, not the inline prefix: it equals the
+    // original with only the token replaced, and the inline text is its start.
+    expect(storeBodyAsset).toHaveBeenCalledTimes(1);
+    const stored = storeBodyAsset.mock.calls[0]![0];
+    expect(stored).toBe(
+      JSON.stringify({ token: '«redacted»', data: 'x'.repeat(100 * 1024) }, null, 2),
+    );
+    // Stored as plain JSON text: its own MIME type, not base64.
+    expect(storeBodyAsset).toHaveBeenCalledWith(stored, 'application/json', false);
+    expect(new TextEncoder().encode(stored).length).toBe(body.originalSize);
+    expect(body.text).toBe(firstBytes(stored, SETTINGS.inlineBodyCapBytes));
+  });
+
+  it.each([
+    ['a 3-byte character split by the cap', 'a'.repeat(64 * 1024 - 1) + '✓', 'a'.repeat(64 * 1024 - 1)],
+    ['a 2-byte character split by the cap', 'a'.repeat(64 * 1024 - 1) + 'é', 'a'.repeat(64 * 1024 - 1)],
+    ['a 4-byte character split by the cap', 'a'.repeat(64 * 1024 - 2) + '😀', 'a'.repeat(64 * 1024 - 2)],
+    ['a character that ends exactly at the cap', 'a'.repeat(64 * 1024 - 3) + '✓', 'a'.repeat(64 * 1024 - 3) + '✓'],
+  ])('cuts a decoded gzip preview before %s', async (_case, head, expected) => {
+    const { emitted } = await finishResponse(
+      { 'content-type': 'text/plain', 'content-encoding': 'gzip' },
+      head + 'b'.repeat(100),
+    );
+    const body = payloadOf(emitted[0]!).responseBody!;
+    expect(body.truncated).toBe(true);
+    expect(body.text).toBe(expected);
+    expect(body.text).not.toContain('\uFFFD');
+    expect(new TextEncoder().encode(body.text!).length).toBeLessThanOrEqual(
+      SETTINGS.inlineBodyCapBytes,
+    );
+  });
+
+  it('stores no asset for a decoded gzip response over the asset cap', async () => {
+    const huge = `{"token":"tok-1","data":"${'x'.repeat(600 * 1024)}"}`;
+    expect(new TextEncoder().encode(huge).length).toBeGreaterThan(SETTINGS.assetBodyCapBytes);
+    const { emitted, storeBodyAsset } = await finishResponse(
+      { 'content-type': 'application/json', 'content-encoding': 'gzip' },
+      huge,
+    );
+    const body = payloadOf(emitted[0]!).responseBody!;
+    expect(body.truncated).toBe(true);
+    expect(body.originalSize).toBeGreaterThan(SETTINGS.assetBodyCapBytes);
+    expect(new TextEncoder().encode(body.text!).length).toBeLessThanOrEqual(
+      SETTINGS.inlineBodyCapBytes,
+    );
+    expect(body.assetId).toBeUndefined();
+    expect(storeBodyAsset).not.toHaveBeenCalled();
+    const redacted = JSON.stringify({ token: '«redacted»', data: 'x'.repeat(600 * 1024) }, null, 2);
+    expect(body.text).toBe(firstBytes(redacted, SETTINGS.inlineBodyCapBytes));
+  });
+
+  // The content-type and control-character checks must not depend on the header:
+  // each case runs with and without Content-Encoding.
+  const withAndWithoutGzip = (cases: string[]) =>
+    cases.flatMap((c) => [[c, 'gzip'], [c, '']] as [string, string][]);
+
+  it.each(withAndWithoutGzip(['application/octet-stream', 'application/x-protobuf', 'text/event-stream']))(
+    'still replaces a %s response body with a marker (content-encoding "%s")',
+    async (contentType, enc) => {
+      const { emitted } = await finishResponse(
+        { 'content-type': contentType, ...(enc ? { 'content-encoding': enc } : {}) },
+        'readable-but-binary-typed',
+      );
+      const body = payloadOf(emitted[0]!).responseBody!;
+      expect(body.text).toBe(`«binary body — 25 bytes${enc ? ', ' + enc : ''}, not shown»`);
+      expect(body.originalSize).toBe(25);
+      expect(body).toMatchObject({ present: true, base64: false, truncated: false });
+    },
+  );
+
+  it.each(['gzip', ''])(
+    'still replaces a text body full of control characters (content-encoding "%s")',
+    async (enc) => {
+      const { emitted } = await finishResponse(
+        { 'content-type': 'text/plain', ...(enc ? { 'content-encoding': enc } : {}) },
+        String.fromCharCode(1).repeat(10) + 'marker-text-payload',
+      );
+      const body = payloadOf(emitted[0]!).responseBody!;
+      expect(body.text).toBe(`«binary body — 29 bytes${enc ? ', ' + enc : ''}, not shown»`);
+      expect(body).toMatchObject({ present: true, base64: false, truncated: false });
+      expect(body.text).not.toContain('marker-text-payload');
+    },
+  );
+
+  it('replaces a decoded gzip response that cannot be redacted with a marker', async () => {
+    // Nested deeper than the recursive redactor can go; JSON.parse still succeeds.
+    // About 80 KB: over the inline cap and under the asset cap, so a raw copy would
+    // be stored if the failure fell through.
+    const deep = '{"token":"tok-deep","d":' + '['.repeat(40000) + '1' + ']'.repeat(40000) + '}';
+    expect(deep.length).toBeGreaterThan(SETTINGS.inlineBodyCapBytes);
+    expect(deep.length).toBeLessThan(SETTINGS.assetBodyCapBytes);
+    const { emitted, storeBodyAsset } = await finishResponse(
+      { 'content-type': 'application/json', 'content-encoding': 'gzip' },
+      deep,
+    );
+    const body = payloadOf(emitted[0]!).responseBody!;
+    expect(body).toMatchObject({ present: true, base64: false, truncated: false });
+    expect(body.text).toBe(`«body not shown — ${deep.length} bytes, could not be redacted»`);
+    expect(body.text).not.toContain('tok-deep');
+    expect(storeBodyAsset).not.toHaveBeenCalled();
+  });
+
+  it('replaces a request body that cannot be redacted with a marker and stores no copy', async () => {
+    const deep = '{"token":"tok-deep","d":' + '['.repeat(20000) + '1' + ']'.repeat(20000) + '}';
+    // API-spec capture on, so a raw copy handed back for storage would show up here.
+    const storeBodyAsset = vi.fn(
+      async (_text: string, _mime: string, _base64: boolean) => 'asset-deep',
+    );
+    const { cap, emitted } = makeCapturer({
+      getSettings: () => ({ ...SETTINGS, captureApiSpec: true, inlineBodyCapBytes: 1024 }),
+      storeBodyAsset,
+    });
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'r-deep',
+      request: {
+        method: 'POST',
+        url: 'https://x/deep',
+        headers: { 'content-type': 'application/json' },
+        postData: deep,
+      },
+      type: 'XHR',
+    });
+    cap.handle(1, 'Network.loadingFailed', { requestId: 'r-deep', errorText: 'x' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(storeBodyAsset).not.toHaveBeenCalled();
+    expect(emitted).toHaveLength(1);
+    const body = payloadOf(emitted[0]!).requestBody!;
+    expect(body).toMatchObject({ present: true, base64: false, truncated: false });
+    expect(body.text).toBe(`«body not shown — ${deep.length} bytes, could not be redacted»`);
+    expect(body.text).not.toContain('tok-deep');
+  });
+
+  it('still replaces a gzip-encoded request body with a marker', () => {
+    const { cap, emitted } = makeCapturer();
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'r-beacon-gzip',
+      request: {
+        method: 'POST',
+        url: 'https://x/ingest',
+        headers: { 'content-type': 'application/json', 'content-encoding': 'gzip' },
+        postData: '{"looks":"like text"}',
+      },
+      type: 'XHR',
+    });
+    cap.handle(1, 'Network.loadingFailed', {
+      requestId: 'r-beacon-gzip',
+      errorText: 'x',
+    });
+
+    const body = payloadOf(emitted[0]!).requestBody!;
+    expect(body.text).toBe('«binary body — 21 bytes, gzip, not shown»');
   });
 
   it('replaces a high-non-printable request body with a marker (no binary header)', () => {
@@ -389,6 +574,95 @@ describe('NetworkCapturer binary bodies', () => {
     const body = payloadOf(emitted[0]!).requestBody!;
     expect(body.text).toContain('plain text here');
     expect(body.text).not.toContain('binary body');
+  });
+});
+
+describe('NetworkCapturer response bodies recorded from Chromium', () => {
+  // A loopback server sent the same JSON plain, gzip, br, deflate and zstd, then
+  // gzip bytes under an encoding Chromium does not know, then gzip-encoded binary.
+  const bodies: Record<string, { body: string; base64Encoded: boolean }> =
+    chromiumResponses.bodies;
+  const sentJson = bodies.plain!.body;
+  let fetched: string[] = [];
+
+  async function replay(): Promise<Map<string, NetRequestPayload>> {
+    fetched = [];
+    const { cap, emitted } = makeCapturer({
+      send: vi.fn(async (tabId: number, method: string, params?: object) => {
+        const id = (params as { requestId: string }).requestId;
+        fetched.push(`${tabId} ${method} ${id}`);
+        // Only the real call gets a body: the events came from tab 1, and the body
+        // must be asked for with Network.getResponseBody.
+        if (tabId !== 1 || method !== 'Network.getResponseBody') return {};
+        const recorded = bodies[id]!;
+        if (recorded.base64Encoded) return { ...recorded };
+        // Each text response gets its own non-redacted field, so a body fetched
+        // under another request's id would show up in the assertions below.
+        return { ...recorded, body: JSON.stringify({ ...JSON.parse(recorded.body), via: id }) };
+      }),
+    });
+    for (const { method, params } of chromiumResponses.events) {
+      cap.handle(1, method, params);
+    }
+    await vi.waitFor(() => expect(emitted).toHaveLength(Object.keys(bodies).length));
+    return new Map(emitted.map((raw) => [payloadOf(raw).requestId, payloadOf(raw)]));
+  }
+
+  function encodingOf(p: NetRequestPayload): string | undefined {
+    return p.responseHeaders.find((h) => /^content-encoding$/i.test(h.name))?.value;
+  }
+
+  it.each(['gzip', 'br', 'deflate', 'zstd'])(
+    'keeps the decoded JSON body of a %s response',
+    async (encoding) => {
+      const payloads = await replay();
+      const p = payloads.get(encoding)!;
+      // What Chromium reported: the header names the encoding, the body is text.
+      expect(encodingOf(p)).toBe(encoding);
+      expect(p.responseBody!.mime).toBe('application/json');
+      expect(p.responseBody!.present).toBe(true);
+      expect(payloads.get('plain')!.responseBody!.present).toBe(true);
+      expect(payloads.get('plain')!.responseBody!.mime).toBe('application/json');
+      expect(bodies[encoding]).toEqual({ body: sentJson, base64Encoded: false });
+      expect(JSON.parse(p.responseBody!.text!)).toEqual({
+        error: 'card_declined',
+        detail: 'Zahlung abgelehnt ✓',
+        token: '«redacted»',
+        via: encoding,
+      });
+      // Same stored body as the uncompressed control, apart from its own `via`.
+      const control = payloads.get('plain')!.responseBody!;
+      expect(JSON.parse(control.text!).via).toBe('plain');
+      expect({ ...p.responseBody, text: JSON.parse(p.responseBody!.text!).via }).toEqual({
+        ...control,
+        text: encoding,
+      });
+      expect(JSON.parse(p.responseBody!.text!)).toEqual({ ...JSON.parse(control.text!), via: encoding });
+    },
+  );
+
+  it('asks Chromium for the body of every request, on its tab, under its own id', async () => {
+    await replay();
+    expect([...fetched].sort()).toEqual(
+      Object.keys(bodies).map((id) => `1 Network.getResponseBody ${id}`).sort(),
+    );
+  });
+
+  it('stores bodies Chromium returned as base64 unchanged, still base64', async () => {
+    const payloads = await replay();
+    for (const id of ['unknown-encoding', 'blob-gzip']) {
+      expect(bodies[id]!.base64Encoded).toBe(true);
+      expect(payloads.get(id)!.responseBody).toMatchObject({
+        base64: true,
+        text: bodies[id]!.body,
+      });
+    }
+    // Their headers and MIME type are kept as Chromium reported them.
+    expect(encodingOf(payloads.get('unknown-encoding')!)).toBe('x-custom');
+    expect(payloads.get('unknown-encoding')!.responseBody!.mime).toBe('application/json');
+    for (const id of ['unknown-encoding', 'blob-gzip']) expect(payloads.get(id)!.responseBody!.present).toBe(true);
+    expect(encodingOf(payloads.get('blob-gzip')!)).toBe('gzip');
+    expect(payloads.get('blob-gzip')!.responseBody!.mime).toBe('application/octet-stream');
   });
 });
 

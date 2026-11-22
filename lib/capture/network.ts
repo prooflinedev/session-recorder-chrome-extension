@@ -502,18 +502,26 @@ export class NetworkCapturer {
     settings: CaptureSettings,
     apiSpec: boolean,
   ): Promise<NetBody> {
-    // Binary / compressed textual bodies (gzip analytics beacons, protobuf, …)
+    // Binary textual bodies (protobuf, event streams, …)
     // would otherwise be inlined as pages of mojibake. Replace them with a short
     // human marker BEFORE redaction/truncation. base64 bodies are already binary
     // and handled by the base64 path below.
-    if (!base64 && isProbablyBinary(rawText, headers)) {
+    // Network.getResponseBody returns the body after Chrome has undone any
+    // Content-Encoding, so that header says nothing about this text.
+    if (!base64 && isProbablyBinary(rawText, headers, { decoded: true })) {
       return binaryBodyMarker(rawText, mime, getHeader(headers, 'content-encoding'));
     }
 
     let text = rawText;
     // Redaction only applies to textual bodies (base64 payloads are binary).
     if (!base64 && settings.redactionEnabled) {
-      text = redactBody(text, mime, settings.customRedaction).text;
+      try {
+        text = redactBody(text, mime, settings.customRedaction).text;
+      } catch {
+        // e.g. JSON nested too deeply for the recursive redactor. Fail closed:
+        // never keep a body that could not be redacted.
+        return unredactableBodyMarker(rawText, mime);
+      }
     }
 
     const trunc = base64
@@ -550,7 +558,9 @@ export class NetworkCapturer {
     mime: string | undefined,
     settings: CaptureSettings,
   ): { body: NetBody; overflowText?: string } {
-    // Same binary guard as responses (e.g. gzip-compressed request beacons).
+    // Binary guard with the Content-Encoding check kept: unlike a response body,
+    // postData is the bytes the page sent, so a gzip header here means the text
+    // really is compressed (e.g. gzip-compressed request beacons).
     if (isProbablyBinary(rawText, headers)) {
       return {
         body: binaryBodyMarker(rawText, mime, getHeader(headers, 'content-encoding')),
@@ -559,7 +569,11 @@ export class NetworkCapturer {
 
     let text = rawText;
     if (settings.redactionEnabled) {
-      text = redactBody(text, mime, settings.customRedaction).text;
+      try {
+        text = redactBody(text, mime, settings.customRedaction).text;
+      } catch {
+        return { body: unredactableBodyMarker(rawText, mime) };
+      }
     }
     const trunc = truncateTextToBytes(text, settings.inlineBodyCapBytes);
     const body: NetBody = { present: true, text: trunc.text };
@@ -740,7 +754,8 @@ const BINARY_CONTENT_TYPES = /octet-stream|protobuf|grpc|event-stream/i;
 
 /**
  * Heuristic: is this textual body actually binary/compressed and thus useless
- * (and huge) to inline? True when a content-encoding marks it compressed, the
+ * (and huge) to inline? True when a content-encoding marks it compressed
+ * (skipped when `decoded`: Chrome has already undone the encoding), the
  * content-type is a known binary/stream type, or the text has a high ratio of
  * characters that never occur in genuine text.
  *
@@ -756,8 +771,9 @@ const BINARY_CONTENT_TYPES = /octet-stream|protobuf|grpc|event-stream/i;
 function isProbablyBinary(
   text: string,
   headers: Record<string, string>,
+  { decoded = false }: { decoded?: boolean } = {},
 ): boolean {
-  const enc = getHeader(headers, 'content-encoding');
+  const enc = decoded ? undefined : getHeader(headers, 'content-encoding');
   if (enc && BINARY_CONTENT_ENCODINGS.test(enc)) return true;
   const ct = getHeader(headers, 'content-type');
   if (ct && BINARY_CONTENT_TYPES.test(ct)) return true;
@@ -780,6 +796,20 @@ function isProbablyBinary(
 }
 
 /** Short human marker standing in for an un-shown binary body. */
+/** Stands in for a body redaction could not process. The raw text is never kept. */
+function unredactableBodyMarker(text: string, mime: string | undefined): NetBody {
+  const bytes = new TextEncoder().encode(text).length;
+  const body: NetBody = {
+    present: true,
+    originalSize: bytes,
+    truncated: false,
+    base64: false,
+    text: `«body not shown — ${bytes} bytes, could not be redacted»`,
+  };
+  if (mime) body.mime = mime;
+  return body;
+}
+
 function binaryBodyMarker(
   text: string,
   mime: string | undefined,
@@ -810,9 +840,11 @@ function truncateTextToBytes(text: string, cap: number): Truncation {
   if (originalSize <= cap) {
     return { text, truncated: false, originalSize };
   }
-  const truncatedText = new TextDecoder('utf-8', { fatal: false }).decode(
-    bytes.subarray(0, cap),
-  );
+  // If the cap falls inside a multi-byte character, back up to that character's
+  // first byte. Decoding the partial bytes would add U+FFFD and go past the cap.
+  let end = cap;
+  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
+  const truncatedText = new TextDecoder('utf-8').decode(bytes.subarray(0, end));
   return { text: truncatedText, truncated: true, originalSize };
 }
 

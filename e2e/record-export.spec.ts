@@ -10,6 +10,9 @@
  * which is exactly what we assert.
  */
 import { unzipSync } from 'fflate';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { test, expect, extUrl, dispatch, tabIdForUrl } from './support';
 
 type StartRes = { ok: boolean; session?: { id: string; name: string }; error?: string };
@@ -294,4 +297,113 @@ test('never records secrets typed into key, code, PIN and phrase fields', async 
     expect(ev.payload?.value).toBe('«redacted»');
   }
   expect(JSON.stringify(events)).not.toContain('leak-');
+});
+
+test('keeps the JSON body of gzip and brotli responses', async ({
+  context,
+  background,
+}) => {
+  // Most production servers compress. Network.getResponseBody hands the body
+  // back already decoded, so it must be recorded as text, not a binary marker.
+  // Each route sends its own non-redacted value, so a body saved under the wrong
+  // URL would not match.
+  const bodyFor = (via: string) =>
+    JSON.stringify({ error: 'card_declined', token: 'tok-compressed', via });
+  const server = createServer((req, res) => {
+    const encoding = { '/api/gzip': 'gzip', '/api/br': 'br' }[req.url ?? ''];
+    if (!encoding) {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end('<!doctype html><title>Compressing fixture</title>');
+      return;
+    }
+    res.writeHead(200, {
+      'content-type': 'application/json',
+      'content-encoding': encoding,
+    });
+    res.end(encoding === 'gzip' ? gzipSync(bodyFor('gzip')) : brotliCompressSync(bodyFor('br')));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const page = await context.newPage();
+    await page.goto(origin);
+    const tabId = await tabIdForUrl(background, origin);
+    // Ask Chromium directly whether the debugger can attach to this tab, before the
+    // recorder is involved. Only an environment that cannot attach may skip; if it
+    // can attach and the recorder still starts degraded, that is a regression.
+    const canAttach = await background.evaluate(async (id) => {
+      try {
+        await chrome.debugger.attach({ tabId: id }, '1.3');
+      } catch {
+        return false;
+      }
+      // Outside the catch: a detach error is a real failure, not "cannot attach".
+      await chrome.debugger.detach({ tabId: id });
+      return true;
+    }, tabId);
+    test.skip(!canAttach, 'chrome.debugger cannot attach to a tab in this environment');
+    const started = await dispatch<StartRes>(background, {
+      kind: 'session/start',
+      tabId,
+    });
+    expect(started.ok).toBe(true);
+    // Stop the recording even if a fetch or the capture poll fails, so the session
+    // is finalized before the browser is torn down.
+    try {
+      await page.waitForTimeout(800);
+      await page.evaluate(async () => {
+        for (const path of ['/api/gzip', '/api/br']) await (await fetch(path)).text();
+      });
+      // The page's fetch() does not wait for the recorder's own Network.getResponseBody
+      // call, so poll the recorded events until both bodies are in (or the recorder
+      // reports degraded mode) before stopping. Bounded, so a regression still fails.
+      const capture = async () => {
+        const { events } = await dispatch<EventsRes>(background, {
+          kind: 'events/get',
+          sessionId: started.session!.id,
+        });
+        if (events.some((e) => /Deep capture unavailable/.test(e.payload?.text ?? ''))) return 'degraded';
+        const done = ['/api/gzip', '/api/br'].every((path) =>
+          events.some(
+            (e) => e.type === 'net-request' && e.payload?.url === origin + path && e.payload?.responseBody,
+          ),
+        );
+        return done ? 'captured' : 'waiting';
+      };
+      await expect.poll(capture, { timeout: 10_000 }).not.toBe('waiting');
+    } finally {
+      await dispatch(background, { kind: 'session/stop' });
+    }
+
+    const { events } = await dispatch<EventsRes>(background, {
+      kind: 'events/get',
+      sessionId: started.session!.id,
+    });
+    expect(
+      events.some((e) => /Deep capture unavailable/.test(e.payload?.text ?? '')),
+      'the debugger can attach, yet the recorder started in degraded mode without network capture',
+    ).toBe(false);
+    for (const path of ['/api/gzip', '/api/br']) {
+      const request = events.find(
+        (e) => e.type === 'net-request' && e.payload?.url === origin + path,
+      );
+      expect(request, path).toBeDefined();
+      const text: string = request?.payload?.responseBody?.text ?? '';
+      expect(text, path).not.toContain('binary body');
+      expect(JSON.parse(text)).toEqual({
+        error: 'card_declined',
+        token: '«redacted»',
+        via: path === '/api/gzip' ? 'gzip' : 'br',
+      });
+    }
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
 });

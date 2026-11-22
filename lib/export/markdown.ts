@@ -542,9 +542,19 @@ function renderBody(
     return;
   }
   lines.push(`- ${label}${suffix}:`);
-  lines.push('```' + fenceLang(body.mime));
+  // A body can contain its own backtick runs (a Markdown reply, a code sample in
+  // JSON, ...). Fence it with a longer run than any inside, so it cannot close the
+  // block early and turn the rest of the body into report markup.
+  const fence = '`'.repeat(Math.max(3, longestBacktickRun(body.text) + 1));
+  lines.push(fence + fenceLang(body.mime));
   lines.push(body.text);
-  lines.push('```');
+  lines.push(fence);
+}
+
+function longestBacktickRun(text: string): number {
+  let longest = 0;
+  for (const run of text.match(/`+/g) ?? []) longest = Math.max(longest, run.length);
+  return longest;
 }
 
 function renderAnnotation(
