@@ -416,7 +416,9 @@ describe('default rules for cloud signed URLs, API keys and URL passwords', () =
   });
 
   it('matches these names only as whole parameter names', () => {
-    const url = 'https://x.com/p?keyword=shoes&monkey=1&hotkey=k&sigma=2&signature_version=4';
+    const url =
+      'https://x.com/p?keyword=shoes&monkey=1&hotkey=k&sigma=2&signature_version=4' +
+      '&X-Amz-Signature-Version=4&x-goog-signatures=1&amz-signature=2';
     expect(redactUrl(url, EMPTY_RULES)).toBe(url);
   });
 
@@ -527,8 +529,10 @@ describe('default rules for cloud signed URLs, API keys and URL passwords', () =
     expect(text).toBe(`otp=${REDACTED}&hotpink=1&remember=1`);
   });
 
-  it('keeps ordinary "key", "sig" and "Signature" fields in bodies', () => {
-    const input = '{"key":"PROJ-123","sig":"v2","Signature":"Ada Lovelace","keyword":"login"}';
+  it('keeps ordinary "key", "sig" and signature-named fields in bodies', () => {
+    const input =
+      '{"key":"PROJ-123","sig":"v2","Signature":"Ada Lovelace","X-Amz-Signature":"v4",' +
+      '"X-Goog-Signature":"v4","keyword":"login"}';
     expect(redactBody(input, 'application/json', EMPTY_RULES)).toEqual({
       text: input,
       redacted: false,
