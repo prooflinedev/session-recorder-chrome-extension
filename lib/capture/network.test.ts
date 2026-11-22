@@ -650,4 +650,49 @@ describe('NetworkCapturer redirects', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(emitted).toHaveLength(0);
   });
+
+  it('redacts cloud credentials and modern session headers in requests and responses', () => {
+    const emitted: RawEvent[] = [];
+    const { cap } = makeCapturer({ emit: (raw) => emitted.push(raw) });
+    const rid = 'r-cloud-headers';
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: rid,
+      request: {
+        method: 'POST',
+        url: 'https://api.example.com/deploy',
+        headers: {
+          'x-amz-security-token': 'AQoDYXdzEJr-aws-session-token',
+          'api-key': 'azure-secret-key-12345',
+          'x-csrf-token': 'csrf-token-abc',
+          'content-type': 'application/json',
+        },
+      },
+      type: 'Fetch',
+    });
+    cap.handle(1, 'Network.responseReceived', {
+      requestId: rid,
+      response: {
+        status: 200,
+        statusText: 'OK',
+        headers: {
+          'x-session-token': 'new-session-token-xyz',
+          'content-type': 'application/json',
+        },
+      },
+    });
+    cap.handle(1, 'Network.loadingFailed', { requestId: rid, errorText: 'failed' });
+
+    expect(emitted).toHaveLength(1);
+    const p = payloadOf(emitted[0]!);
+    expect(p.requestHeaders).toEqual([
+      { name: 'x-amz-security-token', value: '«redacted»' },
+      { name: 'api-key', value: '«redacted»' },
+      { name: 'x-csrf-token', value: '«redacted»' },
+      { name: 'content-type', value: 'application/json' },
+    ]);
+    expect(p.responseHeaders).toEqual([
+      { name: 'x-session-token', value: '«redacted»' },
+      { name: 'content-type', value: 'application/json' },
+    ]);
+  });
 });
