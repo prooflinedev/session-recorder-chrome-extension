@@ -21,6 +21,11 @@ const SETTINGS: CaptureSettings = {
   captureApiSpec: false,
 };
 
+/** The first `cap` UTF-8 bytes of `text`, decoded again (the inline cap counts bytes). */
+function firstBytes(text: string, cap: number): string {
+  return new TextDecoder().decode(new TextEncoder().encode(text).subarray(0, cap));
+}
+
 function makeCapturer(overrides: Partial<NetworkDeps> = {}): {
   cap: NetworkCapturer;
   emitted: RawEvent[];
@@ -345,7 +350,7 @@ describe('NetworkCapturer binary bodies', () => {
       JSON.stringify({ token: '«redacted»', data: 'x'.repeat(100 * 1024) }, null, 2),
     );
     expect(new TextEncoder().encode(stored).length).toBe(body.originalSize);
-    expect(stored.startsWith(body.text!)).toBe(true);
+    expect(body.text).toBe(firstBytes(stored, SETTINGS.inlineBodyCapBytes));
   });
 
   it('stores no asset for a decoded gzip response over the asset cap', async () => {
@@ -363,7 +368,8 @@ describe('NetworkCapturer binary bodies', () => {
     );
     expect(body.assetId).toBeUndefined();
     expect(storeBodyAsset).not.toHaveBeenCalled();
-    expect(body.text).not.toContain('tok-1');
+    const redacted = JSON.stringify({ token: '«redacted»', data: 'x'.repeat(600 * 1024) }, null, 2);
+    expect(body.text).toBe(firstBytes(redacted, SETTINGS.inlineBodyCapBytes));
   });
 
   it.each(['application/octet-stream', 'application/x-protobuf', 'text/event-stream'])(
@@ -496,12 +502,20 @@ describe('NetworkCapturer response bodies recorded from Chromium', () => {
   const bodies: Record<string, { body: string; base64Encoded: boolean }> =
     chromiumResponses.bodies;
   const sentJson = bodies.plain!.body;
+  let fetched: string[] = [];
 
   async function replay(): Promise<Map<string, NetRequestPayload>> {
+    fetched = [];
     const { cap, emitted } = makeCapturer({
-      send: vi.fn(async (_tabId: number, _method: string, params?: object) => ({
-        ...bodies[(params as { requestId: string }).requestId],
-      })),
+      send: vi.fn(async (_tabId: number, _method: string, params?: object) => {
+        const id = (params as { requestId: string }).requestId;
+        fetched.push(id);
+        const recorded = bodies[id]!;
+        if (recorded.base64Encoded) return { ...recorded };
+        // Each text response gets its own non-redacted field, so a body fetched
+        // under another request's id would show up in the assertions below.
+        return { ...recorded, body: JSON.stringify({ ...JSON.parse(recorded.body), via: id }) };
+      }),
     });
     for (const { method, params } of chromiumResponses.events) {
       cap.handle(1, method, params);
@@ -526,11 +540,23 @@ describe('NetworkCapturer response bodies recorded from Chromium', () => {
         error: 'card_declined',
         detail: 'Zahlung abgelehnt ✓',
         token: '«redacted»',
+        via: encoding,
       });
-      // Same stored body as the uncompressed control.
-      expect(p.responseBody).toEqual(payloads.get('plain')!.responseBody);
+      // Same stored body as the uncompressed control, apart from its own `via`.
+      const control = payloads.get('plain')!.responseBody!;
+      expect(JSON.parse(control.text!).via).toBe('plain');
+      expect({ ...p.responseBody, text: JSON.parse(p.responseBody!.text!).via }).toEqual({
+        ...control,
+        text: encoding,
+      });
+      expect(JSON.parse(p.responseBody!.text!)).toEqual({ ...JSON.parse(control.text!), via: encoding });
     },
   );
+
+  it('asks Chromium for the body of every request, under its own id', async () => {
+    await replay();
+    expect([...fetched].sort()).toEqual(Object.keys(bodies).sort());
+  });
 
   it('stores bodies Chromium returned as base64 unchanged, still base64', async () => {
     const payloads = await replay();

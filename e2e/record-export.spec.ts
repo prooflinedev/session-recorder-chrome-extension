@@ -305,7 +305,10 @@ test('keeps the JSON body of gzip and brotli responses', async ({
 }) => {
   // Most production servers compress. Network.getResponseBody hands the body
   // back already decoded, so it must be recorded as text, not a binary marker.
-  const json = JSON.stringify({ error: 'card_declined', token: 'tok-compressed' });
+  // Each route sends its own non-redacted value, so a body saved under the wrong
+  // URL would not match.
+  const bodyFor = (via: string) =>
+    JSON.stringify({ error: 'card_declined', token: 'tok-compressed', via });
   const server = createServer((req, res) => {
     const encoding = { '/api/gzip': 'gzip', '/api/br': 'br' }[req.url ?? ''];
     if (!encoding) {
@@ -317,7 +320,7 @@ test('keeps the JSON body of gzip and brotli responses', async ({
       'content-type': 'application/json',
       'content-encoding': encoding,
     });
-    res.end(encoding === 'gzip' ? gzipSync(json) : brotliCompressSync(json));
+    res.end(encoding === 'gzip' ? gzipSync(bodyFor('gzip')) : brotliCompressSync(bodyFor('br')));
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -331,11 +334,12 @@ test('keeps the JSON body of gzip and brotli responses', async ({
     const canAttach = await background.evaluate(async (id) => {
       try {
         await chrome.debugger.attach({ tabId: id }, '1.3');
-        await chrome.debugger.detach({ tabId: id });
-        return true;
       } catch {
         return false;
       }
+      // Outside the catch: a detach error is a real failure, not "cannot attach".
+      await chrome.debugger.detach({ tabId: id });
+      return true;
     }, tabId);
     test.skip(!canAttach, 'chrome.debugger cannot attach to a tab in this environment');
     const started = await dispatch<StartRes>(background, {
@@ -368,6 +372,7 @@ test('keeps the JSON body of gzip and brotli responses', async ({
       expect(JSON.parse(text)).toEqual({
         error: 'card_declined',
         token: '«redacted»',
+        via: path === '/api/gzip' ? 'gzip' : 'br',
       });
     }
   } finally {
