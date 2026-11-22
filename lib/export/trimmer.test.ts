@@ -271,12 +271,17 @@ describe('pending requests are never collapsed', () => {
     return { events, ctx, pendingEventId: target.id, pendingRequestId: p.requestId };
   }
 
-  /** The exact pending event survives, and no marker absorbed or became it. */
+  /**
+   * The exact pending event survives, the completed repeats were still
+   * collapsed into exactly one marker, and that marker never absorbed or
+   * became the pending request.
+   */
   function expectPendingIntact(
     out: SessionEvent[],
     pendingEventId: string,
     pendingRequestId: string,
     status: number | undefined,
+    collapsedCount: number,
   ) {
     const nets = out.filter(isNet);
     const survivors = nets.filter((e) => e.payload.requestId === pendingRequestId);
@@ -288,37 +293,45 @@ describe('pending requests are never collapsed', () => {
     expect(kept.payload.status).toBe(status);
 
     const markers = nets.filter((e) => e.payload.collapsed !== undefined);
-    for (const m of markers) {
-      expect(m.payload.requestId).not.toBe(pendingRequestId);
-      expect(m.payload.pending).toBeUndefined();
-      // Only the two other completed repeats are folded in; the pending one
-      // (and a missing status, which would read as 0) never counts.
-      expect(m.payload.collapsed!.count).toBe(2);
-      expect(m.payload.collapsed!.statuses).toEqual([200]);
-    }
+    expect(markers).toHaveLength(1);
+    const m = markers[0]!;
+    expect(m.payload.requestId).not.toBe(pendingRequestId);
+    expect(m.payload.pending).toBeUndefined();
+    // Only the completed repeats are folded in; the pending one (and a missing
+    // status, which would read as 0) never counts.
+    expect(m.payload.collapsed!.count).toBe(collapsedCount);
+    expect(m.payload.collapsed!.statuses).toEqual([200]);
   }
 
-  const cases: [string, number, number | undefined][] = [
-    ['2nd call, no status (formerly the marker)', 1, undefined],
-    ['2nd call, headers 200 (formerly the marker)', 1, 200],
-    ['3rd call, no status', 2, undefined],
-    ['3rd call, headers 200', 2, 200],
-    ['4th call, no status', 3, undefined],
+  /**
+   * [label, index of the pending call, its status, completed calls the marker
+   * folds in]. When the first call is the pending one it stays as itself and
+   * all three completed repeats are collapsed.
+   */
+  const cases: [string, number, number | undefined, number][] = [
+    ['1st call, no status', 0, undefined, 3],
+    ['1st call, headers 200', 0, 200, 3],
+    ['2nd call, no status (formerly the marker)', 1, undefined, 2],
+    ['2nd call, headers 200 (formerly the marker)', 1, 200, 2],
+    ['3rd call, no status', 2, undefined, 2],
+    ['3rd call, headers 200', 2, 200, 2],
+    ['4th call, no status', 3, undefined, 2],
+    ['4th call, headers 200', 3, 200, 2],
   ];
 
-  it.each(cases)('collapseRepeatedRequests keeps the %s', (_label, at, status) => {
+  it.each(cases)('collapseRepeatedRequests keeps the %s', (_label, at, status, folded) => {
     const { events, ctx, pendingEventId, pendingRequestId } = withPending(at, status);
     const out = collapseRepeatedRequests()(events, ctx);
-    expectPendingIntact(out, pendingEventId, pendingRequestId, status);
-    // First call + one marker + the pending call.
-    expect(out.filter(isNet)).toHaveLength(3);
+    expectPendingIntact(out, pendingEventId, pendingRequestId, status, folded);
+    // The pending call and one marker, plus the first call when it completed.
+    expect(out.filter(isNet)).toHaveLength(at === 0 ? 2 : 3);
   });
 
   it.each(['L2', 'L3'] as const)('%s exports keep the pending event intact', (level) => {
-    for (const [, at, status] of cases) {
+    for (const [, at, status, folded] of cases) {
       const { events, ctx, pendingEventId, pendingRequestId } = withPending(at, status);
       const out = applyLevel(events, level, ctx);
-      expectPendingIntact(out, pendingEventId, pendingRequestId, status);
+      expectPendingIntact(out, pendingEventId, pendingRequestId, status, folded);
     }
   });
 });

@@ -8,16 +8,21 @@
  * plumbing and the human-readable error phrasing live here so the callers can
  * work in plain async/await.
  *
- * Every attachment belongs to one owner (a recording session id). Only the
- * owner can detach it, and a different owner attaching the same tab first
- * releases the old attachment and makes its own. So work left over from an
- * ended session (a late adoption, an enable rollback) can never detach or reuse
- * a newer session's attachment.
+ * Every attachment belongs to one owner (a recording session id) and is
+ * registered as the tab's current record synchronously, before any await. Only
+ * the owner can detach it, and a different owner attaching the same tab
+ * replaces the record at once and releases the old one. So work left over from
+ * an ended session (a late adoption, an enable rollback) can never detach or
+ * reuse a newer session's attachment, and an owner's `detachAll()` sees every
+ * attach it started, including one still waiting for its turn on the tab.
  *
- * Releasing waits only for Chrome to confirm the attach, never for the capture
- * domains to finish enabling (an enable can hang, e.g. after a renderer crash).
- * An enable that answers after its attachment was released sends nothing
- * further and changes nothing.
+ * A released record stays tracked until Chrome has acknowledged the detach:
+ * `detach()`/`detachAll()` wait for the owner's releases, and a new attachment
+ * to the tab is made only after earlier ones are fully detached. Releasing
+ * waits for Chrome to answer the attach, never for the capture domains to
+ * finish enabling (an enable can hang, e.g. after a renderer crash). An enable
+ * that answers after its attachment was released sends nothing further and
+ * changes nothing.
  *
  * `onDetach` names only a tab, not which attachment ended, so a detach event is
  * checked before it is believed: see `onDetachListener`.
@@ -38,13 +43,18 @@ export type AttachOwner = string;
 
 /** One tab's attachment, from the moment `attach()` is called. */
 interface Attachment {
+  tabId: number;
   owner: AttachOwner;
-  /** Chrome confirmed the attach; the capture domains may still be enabling. */
+  /** Chrome holds a session for it; the capture domains may still be enabling. */
   connected: boolean;
   /** Settles when Chrome answers the attach (rejects if it failed or was cancelled). */
   confirmed: Promise<void>;
   /** Settles once the attach, including enabling the domains, has finished. */
   ready: Promise<void>;
+  /** Set when released; settles once Chrome has acknowledged the detach. */
+  released: Promise<void> | null;
+  /** Reason of the latest detach event received while it was confirmed. */
+  detachReason: string | null;
 }
 
 const PROTOCOL_VERSION = '1.3';
@@ -125,7 +135,10 @@ function toReadableError(rawMessage: string | undefined, tabId: number): Error {
 }
 
 export class DebuggerManager {
+  /** Each tab's current attachment: the one new commands and events belong to. */
   private readonly attachments = new Map<number, Attachment>();
+  /** Released attachments whose Chrome detach hasn't been acknowledged yet. */
+  private readonly releasing = new Set<Attachment>();
   private readonly eventHandlers: CdpEventHandler[] = [];
   private readonly detachHandlers: DetachHandler[] = [];
   private disposed = false;
@@ -156,6 +169,10 @@ export class DebuggerManager {
     // confirms a new attach); if this attach dies too, enabling its domains
     // fails and rolls it back.
     if (!attachment || !attachment.connected) return;
+    // Chrome delivers detach events in order and an earlier session's event
+    // arrives before a newer attach is confirmed, so the latest event is the
+    // best account of why this attachment ended.
+    attachment.detachReason = reason;
 
     // The event carries no attachment identity, so ask Chrome whether our
     // session on the tab is still alive before believing it. Each event gets
@@ -169,12 +186,14 @@ export class DebuggerManager {
       // Alive (a stale event), or an error that doesn't prove a detach: keep it.
       if (message === undefined || !isDetachedError(message)) return;
 
-      // Chrome really ended it (tab closed, DevTools opened, …). Forgetting the
-      // record first means a repeat event finds nothing, so handlers hear once.
-      this.forget(tabId, attachment);
+      // Chrome really ended it (tab closed, DevTools opened, …): there is no
+      // session left to detach. Forgetting the record first means a repeat
+      // event finds nothing, so handlers hear once.
+      this.forget(attachment);
       attachment.connected = false;
+      const why = attachment.detachReason ?? reason;
       for (const h of this.detachHandlers) {
-        h(tabId, reason);
+        h(tabId, why);
       }
     });
   };
@@ -188,67 +207,63 @@ export class DebuggerManager {
    * Attach the debugger to a tab for `owner` and enable the capture domains.
    * Throws an `Error` with a human-readable `.message` on failure.
    *
-   * The attachment is registered synchronously, before any await, so a
-   * `detachAll(owner)` that runs while the attach is in flight still sees it.
-   * The same owner attaching again shares the existing attempt. A different
-   * owner waits for Chrome to answer the existing attempt, releases it, and
-   * attaches fresh: an attachment is never shared across owners.
+   * The attachment becomes the tab's current record synchronously, before any
+   * await, so a `detachAll(owner)` that runs while the attach is in flight
+   * still sees it. The same owner attaching again shares the existing attempt.
+   * A different owner's record is released at once, and Chrome is asked to
+   * attach only after every earlier attachment to the tab has been detached:
+   * an attachment is never shared across owners.
    *
    * Rejects if the attachment is released (Stop, a takeover) before its
    * domains finished enabling, since it then isn't capturing.
    */
-  async attach(tabId: number, owner: AttachOwner): Promise<void> {
-    for (;;) {
-      const existing = this.attachments.get(tabId);
-      if (!existing) break;
-      if (existing.owner === owner) return existing.ready;
-      await existing.confirmed.catch(() => {});
-      if (this.attachments.get(tabId) === existing) {
-        await this.release(tabId, existing);
-      }
-    }
+  attach(tabId: number, owner: AttachOwner): Promise<void> {
+    const existing = this.attachments.get(tabId);
+    if (existing?.owner === owner) return existing.ready;
+    if (existing) void this.release(existing);
     const attachment: Attachment = {
+      tabId,
       owner,
       connected: false,
       confirmed: Promise.resolve(),
       ready: Promise.resolve(),
+      released: null,
+      detachReason: null,
     };
     this.attachments.set(tabId, attachment);
-    attachment.confirmed = this.connect(tabId, attachment);
-    attachment.ready = attachment.confirmed.then(() => this.enableDomains(tabId, attachment));
+    attachment.confirmed = this.connect(attachment);
+    attachment.ready = attachment.confirmed.then(() => this.enableDomains(attachment));
     return attachment.ready;
   }
 
   /**
-   * Detach `owner`'s attachment to a tab, after Chrome has answered an attach
-   * still in flight (but without waiting for its domains to enable). Does
-   * nothing, and resolves `false`, when the tab isn't attached or belongs to
-   * another owner, so a stale caller can never detach a newer session's tab.
-   * Never rejects.
+   * Detach `owner`'s attachment to a tab and wait until Chrome has
+   * acknowledged it, including a release of the owner's already in progress
+   * (an enable rollback, say). An attach still in flight is waited for, but
+   * not its domain setup. Resolves `true` if it released the tab's current
+   * attachment, `false` when the tab isn't attached or belongs to another
+   * owner, so a stale caller can never detach a newer session's tab. Never
+   * rejects.
    */
   async detach(tabId: number, owner: AttachOwner): Promise<boolean> {
-    const attachment = this.attachments.get(tabId);
-    if (!attachment || attachment.owner !== owner) return false;
-    await attachment.confirmed.catch(() => {});
-    if (this.attachments.get(tabId) !== attachment) return false;
-    await this.release(tabId, attachment);
-    return true;
+    const current = this.attachments.get(tabId);
+    const mine = current?.owner === owner ? current : undefined;
+    if (mine) void this.release(mine);
+    await this.releasesOf((a) => a.tabId === tabId && a.owner === owner);
+    return mine !== undefined;
   }
 
   /**
    * Detach every attachment `owner` holds, including attaches still in flight
-   * (each waits for Chrome's answer first). Returns the tabs detached. Never
-   * rejects.
+   * or waiting for the tab, and wait until Chrome has acknowledged every
+   * release of the owner's. Returns the tabs whose current attachment it
+   * released. Never rejects.
    */
   async detachAll(owner: AttachOwner): Promise<number[]> {
-    const tabs = [...this.attachments]
-      .filter(([, a]) => a.owner === owner)
-      .map(([tabId]) => tabId);
-    const detached: number[] = [];
-    for (const tabId of tabs) {
-      if (await this.detach(tabId, owner)) detached.push(tabId);
-    }
-    return detached;
+    const mine = [...this.attachments.values()].filter((a) => a.owner === owner);
+    for (const a of mine) void this.release(a);
+    await this.releasesOf((a) => a.owner === owner);
+    return mine.map((a) => a.tabId);
   }
 
   /** True once Chrome has confirmed an attachment to the tab (any owner). */
@@ -267,8 +282,20 @@ export class DebuggerManager {
       .map(([tabId]) => tabId);
   }
 
-  /** Attach in Chrome for one registered attachment; resolves once confirmed. */
-  private async connect(tabId: number, attachment: Attachment): Promise<void> {
+  /**
+   * Attach in Chrome for one registered attachment; resolves once confirmed.
+   * Chrome allows the extension one session per tab, so it first waits for the
+   * tab's earlier attachments to be detached. Those are exactly the ones being
+   * released when this starts (attach() released the record it replaced just
+   * before); it never waits for a newer attachment, so waits can't form a cycle.
+   */
+  private async connect(attachment: Attachment): Promise<void> {
+    const { tabId } = attachment;
+    const earlier = [...this.releasing].filter((a) => a.tabId === tabId && a !== attachment);
+    if (earlier.length > 0) {
+      await Promise.all(earlier.map((a) => a.released));
+      if (!this.isCurrent(attachment)) throw cancelled(tabId);
+    }
     try {
       await new Promise<void>((resolve, reject) => {
         chrome.debugger.attach({ tabId }, PROTOCOL_VERSION, () => {
@@ -281,17 +308,13 @@ export class DebuggerManager {
         });
       });
     } catch (e) {
-      this.forget(tabId, attachment);
+      this.forget(attachment);
       throw e;
     }
-
-    if (this.attachments.get(tabId) !== attachment) {
-      // Dropped while Chrome was attaching (the manager was disposed). Nobody
-      // owns this attachment any more, so undo it rather than leak it.
-      await this.chromeDetach(tabId);
-      throw cancelled(tabId);
-    }
+    // Chrome holds a session for it from here on; whoever released it while
+    // Chrome was attaching detaches it once this settles (see release()).
     attachment.connected = true;
+    if (!this.isCurrent(attachment)) throw cancelled(tabId);
   }
 
   /**
@@ -300,35 +323,63 @@ export class DebuggerManager {
    * this attachment is released, nothing more is sent (it would reach whoever
    * holds the tab now) and nothing is rolled back.
    */
-  private async enableDomains(tabId: number, attachment: Attachment): Promise<void> {
+  private async enableDomains(attachment: Attachment): Promise<void> {
+    const { tabId } = attachment;
     for (const { method, params } of ENABLE_SEQUENCE) {
-      if (this.attachments.get(tabId) !== attachment) throw cancelled(tabId);
+      if (!this.isCurrent(attachment)) throw cancelled(tabId);
       try {
         await this.send(tabId, method, params);
       } catch (e) {
         // Enabling failed after a successful attach: roll back this attachment
         // only (never one that has since replaced it), then surface the error.
-        if (this.attachments.get(tabId) === attachment) {
-          await this.release(tabId, attachment);
-        }
+        if (this.isCurrent(attachment)) await this.release(attachment);
         throw e instanceof Error ? e : new Error(String(e));
       }
     }
-    if (this.attachments.get(tabId) !== attachment) throw cancelled(tabId);
+    if (!this.isCurrent(attachment)) throw cancelled(tabId);
   }
 
-  /** Remove an attachment's record and, if Chrome attached it, detach it. */
-  private async release(tabId: number, attachment: Attachment): Promise<void> {
-    this.forget(tabId, attachment);
-    if (attachment.connected) {
-      attachment.connected = false;
-      await this.chromeDetach(tabId);
+  /**
+   * Release an attachment: it stops being the tab's current record at once,
+   * and once Chrome has answered its attach, a session Chrome granted is
+   * detached. The only place that detaches in Chrome. Idempotent; settles when
+   * Chrome has acknowledged the detach (or immediately if there was none).
+   */
+  private release(attachment: Attachment): Promise<void> {
+    if (attachment.released) return attachment.released;
+    this.forget(attachment);
+    this.releasing.add(attachment);
+    attachment.released = (async () => {
+      await attachment.confirmed.catch(() => {});
+      if (attachment.connected) {
+        attachment.connected = false;
+        await this.chromeDetach(attachment.tabId);
+      }
+    })().finally(() => {
+      this.releasing.delete(attachment);
+    });
+    return attachment.released;
+  }
+
+  /**
+   * Wait until no release matching `match` is outstanding, including ones
+   * that start while waiting. Never rejects.
+   */
+  private async releasesOf(match: (a: Attachment) => boolean): Promise<void> {
+    for (;;) {
+      const pending = [...this.releasing].filter(match);
+      if (pending.length === 0) return;
+      await Promise.all(pending.map((a) => a.released));
     }
   }
 
-  /** Drop the record only if it is still this attachment. */
-  private forget(tabId: number, attachment: Attachment): void {
-    if (this.attachments.get(tabId) === attachment) this.attachments.delete(tabId);
+  private isCurrent(attachment: Attachment): boolean {
+    return this.attachments.get(attachment.tabId) === attachment;
+  }
+
+  /** Drop the record only if it is still the tab's current one. */
+  private forget(attachment: Attachment): void {
+    if (this.isCurrent(attachment)) this.attachments.delete(attachment.tabId);
   }
 
   /**
@@ -397,14 +448,13 @@ export class DebuggerManager {
     chrome.debugger.onEvent.removeListener(this.onEventListener);
     chrome.debugger.onDetach.removeListener(this.onDetachListener);
 
-    // Attaches still in flight see their record gone and undo themselves.
-    const tabs = this.attachedTabs();
-    this.attachments.clear();
     this.eventHandlers.length = 0;
     this.detachHandlers.length = 0;
 
-    for (const tabId of tabs) {
-      void this.chromeDetach(tabId);
+    // Release every record: attached tabs are detached, and attaches still in
+    // flight are detached as soon as Chrome answers them.
+    for (const attachment of [...this.attachments.values()]) {
+      void this.release(attachment);
     }
   }
 }

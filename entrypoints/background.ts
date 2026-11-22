@@ -355,8 +355,9 @@ class Orchestrator {
     const idx = this.recent.findIndex((e) => e.id === event.id);
     if (idx >= 0) this.recent[idx] = event;
     // Re-broadcast so the live timeline reflects the change (for example a
-    // voice segment whose transcript just finished). The store upserts by id.
-    if (this.current) {
+    // voice segment whose transcript just finished). The store upserts by id,
+    // so an event of an earlier session would be appended to the live one.
+    if (this.current && this.current.id === event.sessionId) {
       broadcast({
         kind: 'event/tick',
         event,
@@ -399,7 +400,9 @@ class Orchestrator {
         return { ok: false, error: `Cannot access tab ${tabId}: ${errMessage(e)}` };
       }
     } finally {
-      this.pendingStart = null;
+      // Stop may already have released this reservation, and a newer Start
+      // may hold its own.
+      if (this.pendingStart === pending) this.pendingStart = null;
     }
     // Nothing below awaits before `current` is assigned.
     if (pending.cancelled) {
@@ -451,9 +454,12 @@ class Orchestrator {
 
     await createSession(session);
 
-    // From here on Stop can run during any await. Once it has, startup must
-    // not attach, listen, activate the tab or record anything more: each
-    // check below sits right before the next step, with no await between.
+    // From here on Stop can run during any await. Once it has, startup takes
+    // no further step (attach, listeners, tab activation, notes, from-start
+    // captures): each check below sits right before the next step, with no
+    // await between. Work already handed off finishes under its own guards:
+    // the attach is released by Stop's detachAll(), and the start screenshot
+    // is dropped by Stop's screenshot reset.
     if (this.isEnding(session)) return { ok: true, session };
 
     // Attach the debugger for deep capture (network / console / screenshots).
@@ -689,9 +695,11 @@ class Orchestrator {
   private stop(): Promise<{ ok: boolean }> {
     const session = this.current;
     if (!session) {
-      // A start() still before its session exists: cancel it.
+      // A start() still before its session exists: cancel it and release its
+      // reservation, so a new Start can begin right away.
       if (this.pendingStart) {
         this.pendingStart.cancelled = true;
+        this.pendingStart = null;
         return Promise.resolve({ ok: true });
       }
       return Promise.resolve({ ok: false });
@@ -712,6 +720,10 @@ class Orchestrator {
   private async stopSession(session: Session): Promise<{ ok: boolean }> {
     session.status = 'stopping';
     this.broadcastState();
+
+    // A mic/video toggle-off already flushing finishes first, so the teardown
+    // below neither stops that recorder twice nor closes the document under it.
+    await Promise.all([...this.recorderStops].map((s) => s.catch(() => {})));
 
     // Don't trust the in-memory flags: rehydrate() forces micOn/videoOn off
     // after a SW restart while the offscreen document (which survives
@@ -736,6 +748,9 @@ class Orchestrator {
     // unfinished HTTP requests as pending — before the final write, otherwise
     // they are lost.
     await this.network.flushOpen().catch(() => {});
+    // A screenshot still being taken (the start shot, a key moment) must not
+    // land in the session after its final write, or in the next session.
+    this.screenshots.reset();
 
     await this.writer?.flush().catch(() => {});
     this.writer?.dispose();
@@ -743,6 +758,15 @@ class Orchestrator {
     this.multitab.stop();
     this.unregisterNavListeners();
     this.stopHeartbeat();
+
+    // Close any annotation editor still open in a session tab (also one left
+    // open after annotation was toggled off from another tab): its Done would
+    // otherwise save the frozen image after the session's final write. The
+    // editor's cancel comes back as annotation/exit, which is ignored now that
+    // the session is ending. Tabs without an editor ignore this.
+    for (const t of session.tabs) {
+      await sendToTab(t.tabId, { kind: 'content/annotate', on: false });
+    }
 
     for (const t of session.tabs) {
       await sendToTab(t.tabId, { kind: 'content/setActive', active: false });
@@ -796,9 +820,18 @@ class Orchestrator {
     const session = this.current;
     // While stopping, writing 'paused' would make the session look live again.
     if (!session || this.isEnding(session)) return { ok: false };
+    // The committed state, not `this.paused`: an overlapping Pause sets that
+    // early, and restoring it would leave Stop's final flush filtered.
+    const wasPaused = session.status === 'paused';
     this.paused = true;
     await this.setPointing(false);
-    if (this.isEnding(session)) return { ok: false };
+    if (this.isEnding(session)) {
+      // Refused: don't leave Stop's final flush filtered as if paused.
+      this.paused = wasPaused;
+      return { ok: false };
+    }
+    // A Resume ran meanwhile and wins: don't mark the session paused again.
+    if (!this.paused) return { ok: false };
     session.status = 'paused';
     // The offscreen doc may still be recording even when the flags are off
     // (rehydrate() resets them after a SW restart); pause/resume no-op when
@@ -814,12 +847,14 @@ class Orchestrator {
 
   private async resume(): Promise<{ ok: boolean }> {
     const session = this.current;
-    // While stopping, writing 'recording' would revive a stopped session.
-    if (!session || this.isEnding(session)) return { ok: false };
+    // While stopping, writing 'recording' would revive a stopped session. Not
+    // paused (a second Resume): resuming the recorders again would fail and
+    // misreport them.
+    if (!session || this.isEnding(session) || !this.paused) return { ok: false };
     this.paused = false;
     session.status = 'recording';
     if (this.micOn) void this.sendToOffscreen({ kind: 'audio/resume' });
-    if (this.videoOn) await this.resumeVideo();
+    if (this.videoOn) await this.resumeVideo(session);
     await this.persistSession();
     this.broadcastState();
     return { ok: true };
@@ -831,31 +866,41 @@ class Orchestrator {
    * stream id must be minted right before the offscreen doc re-acquires it.
    * Failure degrades to "video off" with a loud session note, never an error.
    */
-  private async resumeVideo(): Promise<void> {
-    try {
-      const tabId = await this.activeSessionTabId();
-      if (tabId < 0) throw new Error('No session tab to capture.');
-      const streamId = await this.getTabStreamId(tabId);
-      const res = await this.sendToOffscreen({
-        kind: 'video/resume',
-        streamId,
-        // Tab audio is captured by default; acquireStream falls back to
-        // video-only when the tab has no capturable audio.
-        audio: true,
-      });
-      if (!res || !res.ok) {
-        throw new Error((res && res.error) || 'Video capture did not resume.');
+  private async resumeVideo(session: Session): Promise<void> {
+    await this.withOffscreen(async () => {
+      try {
+        // Stopped meanwhile: Stop has torn the recorder down, and the document
+        // may already be a newer session's. Paused again meanwhile: the
+        // recorder must stay paused.
+        if (this.isEnding(session) || this.paused) return;
+        const tabId = await this.activeSessionTabId();
+        if (tabId < 0) throw new Error('No session tab to capture.');
+        const streamId = await this.getTabStreamId(tabId);
+        if (this.isEnding(session) || this.paused) return;
+        const res = await this.sendToOffscreen({
+          kind: 'video/resume',
+          streamId,
+          // Tab audio is captured by default; acquireStream falls back to
+          // video-only when the tab has no capturable audio.
+          audio: true,
+        });
+        if (!res || !res.ok) {
+          throw new Error((res && res.error) || 'Video capture did not resume.');
+        }
+        // Paused while it was resuming: Pause found no recording to pause.
+        if (this.paused) await this.sendToOffscreen({ kind: 'video/pause' });
+      } catch (e) {
+        if (this.isEnding(session)) return;
+        this.videoOn = false;
+        this.recordEvent({
+          type: 'session-note',
+          payload: {
+            kind: 'warning',
+            text: `Video recording could not resume: ${errMessage(e)}`,
+          },
+        });
       }
-    } catch (e) {
-      this.videoOn = false;
-      this.recordEvent({
-        type: 'session-note',
-        payload: {
-          kind: 'warning',
-          text: `Video recording could not resume: ${errMessage(e)}`,
-        },
-      });
-    }
+    });
   }
 
   // --------------------------------------------------------------------------
@@ -1162,10 +1207,18 @@ class Orchestrator {
         if (this.dictationTarget?.id === msg.id && this.dictationTarget.tabId === sender.tab?.id) this.setDictationTarget(undefined);
         return { ok: true };
       case 'dictation/mic': {
-        if (!this.current || !this.pointing || sender.tab?.id !== this.dictationTarget?.tabId) return { ok: false, micOn: this.micOn };
+        const session = this.current;
+        if (!session || !this.pointing || sender.tab?.id !== this.dictationTarget?.tabId) return { ok: false, micOn: this.micOn };
         const config = await this.loadTranscriptionConfig();
         if (msg.on && !config) return { ok: false, micOn: this.micOn, error: 'Set up a transcription provider in Settings → Transcription to dictate comments.' };
-        try { if (msg.on) await this.vocabularyReady; await this.setMic(msg.on); return { ok: this.micOn === msg.on, micOn: this.micOn, error: this.lastError }; }
+        try {
+          if (msg.on) await this.vocabularyReady;
+          // The session may have ended (and another started) while waiting:
+          // its dictation must not toggle the next session's microphone.
+          if (this.isEnding(session)) return { ok: false, micOn: this.micOn };
+          await this.setMic(msg.on);
+          return { ok: this.micOn === msg.on, micOn: this.micOn, error: this.lastError };
+        }
         catch (error) { return { ok: false, micOn: this.micOn, error: errMessage(error) }; }
       }
       case 'annotation/exit':
@@ -1294,14 +1347,18 @@ class Orchestrator {
     dataUrl: string,
     sender: chrome.runtime.MessageSender,
   ): Promise<{ ok: boolean; error?: string }> {
-    if (!this.current) return { ok: false, error: 'No active session.' };
+    const session = this.current;
+    if (!session) return { ok: false, error: 'No active session.' };
     const p = event.payload as FilePayload;
     const blob = await dataUrlToBlob(dataUrl);
+    // Recording ended (or another started) while decoding: the file belongs to
+    // no live session now.
+    if (this.current !== session) return { ok: false, error: 'No active session.' };
 
     // Enforce the session's configured file cap here (the content script only
     // applies a coarse client-side guard). Oversized files are recorded as
     // metadata only — no blob stored.
-    const cap = this.current.settings.fileCapBytes;
+    const cap = session.settings.fileCapBytes;
     if (blob.size > cap) {
       this.recordEvent({
         type: 'file-captured',
@@ -1312,6 +1369,7 @@ class Orchestrator {
     }
 
     const asset = await this.putAssetBlob('file', blob, p.mime);
+    if (this.current !== session) return { ok: false, error: 'No active session.' };
     this.recordEvent({
       type: 'file-captured',
       tabId: event.tabId ?? sender.tab?.id,
@@ -1326,9 +1384,13 @@ class Orchestrator {
     dataUrl: string;
     note?: string;
   }): Promise<{ ok: boolean; error?: string }> {
-    if (!this.current) return { ok: false, error: 'No active session.' };
+    const session = this.current;
+    if (!session) return { ok: false, error: 'No active session.' };
     const blob = await dataUrlToBlob(msg.dataUrl);
+    // Recording ended (or another started) while decoding.
+    if (this.current !== session) return { ok: false, error: 'No active session.' };
     const asset = await this.putAssetBlob('file', blob, msg.mime);
+    if (this.current !== session) return { ok: false, error: 'No active session.' };
     this.recordEvent({
       type: 'file-attached',
       payload: {
@@ -1348,8 +1410,12 @@ class Orchestrator {
     image: string | undefined,
     sender: chrome.runtime.MessageSender,
   ): Promise<{ ok: boolean }> {
+    const session = this.current;
     this.annotating = false;
     broadcast({ kind: 'annotation/state', annotating: false });
+    // An editor left over from a session that is ending (Stop closed it) must
+    // neither reactivate capture in the tab nor record into any session.
+    if (!session || this.isEnding(session)) return { ok: false };
 
     // Resume interaction capture in the tab (the editor tore itself down). Use
     // setActive, NOT content/annotate{on:false}: the latter is also handled by
@@ -1385,11 +1451,13 @@ class Orchestrator {
     let screenshotAssetId: string | undefined;
     try {
       const blob = await dataUrlToBlob(image);
+      if (this.isEnding(session)) return { ok: false };
       const asset = await this.putAssetBlob('screenshot', blob, blob.type);
       screenshotAssetId = asset.id;
     } catch {
       /* if the image fails to decode, record the shapes without an image */
     }
+    if (this.isEnding(session)) return { ok: false };
 
     const payload: AnnotationPayload = {
       shapes: shapeList,
@@ -1593,16 +1661,22 @@ class Orchestrator {
   }
 
   private async toggleAnnotation(): Promise<boolean> {
-    if (!this.current || this.paused) return false;
+    const session = this.current;
+    if (!session || this.paused) return false;
     if (this.pointing) await this.setPointing(false);
+    // Each await can outlive the session: an editor opened after Stop would
+    // save its image into whichever session is current by then.
+    if (this.isEnding(session)) return false;
     this.annotating = !this.annotating;
     const tabId = await this.activeSessionTabId();
+    if (this.isEnding(session)) return false;
     if (tabId >= 0) {
       if (this.annotating) {
         // Freeze the current view and hand it to the editor to annotate. This
         // avoids drawing on a moving page and lets the editor work on a stable
         // image.
         const image = await this.captureTabImage(tabId).catch(() => undefined);
+        if (this.isEnding(session)) return false;
         await sendToTab(tabId, {
           kind: 'content/annotate',
           on: true,
@@ -1617,11 +1691,19 @@ class Orchestrator {
     return this.annotating;
   }
 
-  /** Grab the current tab view as a JPEG data URL (debugger, else tabs API). */
+  /**
+   * Grab the current tab view as a JPEG data URL: through the debugger when it
+   * is attached, else (or if that fails, e.g. the debugger was just detached
+   * and the detach is still being confirmed) through the tabs API.
+   */
   private async captureTabImage(tabId: number): Promise<string | undefined> {
     if (this.dbg.isAttached(tabId)) {
-      const { data } = await this.dbg.captureScreenshot(tabId, 90);
-      return `data:image/jpeg;base64,${data}`;
+      try {
+        const { data } = await this.dbg.captureScreenshot(tabId, 90);
+        return `data:image/jpeg;base64,${data}`;
+      } catch {
+        /* fall back to the tabs API below */
+      }
     }
     try {
       const tab = await chrome.tabs.get(tabId);
@@ -1690,57 +1772,68 @@ class Orchestrator {
 
   private async setMic(on: boolean): Promise<void> {
     if (on === this.micOn) return;
+    const session = this.current;
     if (on) {
-      const session = this.current;
       if (!session) throw new Error('No active session to narrate.');
       if (!(await this.isMicGranted())) {
         await this.requestMicPermission();
       }
-      if (this.isEnding(session)) throw captureEnded('microphone');
-      await this.ensureOffscreen();
-      // Hand the transcription config to the offscreen doc so it can stream live
-      // (Deepgram). Await the getUserMedia result: only claim the mic is on if
-      // recording actually started.
-      const config = await this.loadTranscriptionConfig();
-      if (this.isEnding(session)) {
-        await this.abandonOffscreenStart(session);
-        throw captureEnded('microphone');
-      }
-      const res = await this.sendToOffscreen({
-        kind: 'audio/start',
-        sessionId: session.id,
-        startedAt: this.sessionStartEpoch,
-        transcription: config ? { ...config, keyterms: this.pageKeyterms } : null,
-        dictating: !!this.dictationTarget,
+      await this.withOffscreen(async () => {
+        if (this.isEnding(session)) throw captureEnded('microphone');
+        if (this.micOn) return;
+        await this.ensureOffscreen();
+        // Hand the transcription config to the offscreen doc so it can stream
+        // live (Deepgram). Await the getUserMedia result: only claim the mic is
+        // on if recording actually started.
+        const config = await this.loadTranscriptionConfig();
+        if (this.isEnding(session)) {
+          await this.abandonOffscreenStart();
+          throw captureEnded('microphone');
+        }
+        const res = await this.sendToOffscreen({
+          kind: 'audio/start',
+          sessionId: session.id,
+          startedAt: this.sessionStartEpoch,
+          transcription: config ? { ...config, keyterms: this.pageKeyterms } : null,
+          dictating: !!this.dictationTarget,
+        });
+        if (this.isEnding(session)) {
+          // Stop may have checked the offscreen document before this recorder
+          // started, so it would never stop it.
+          await this.abandonOffscreenStart(res && res.ok ? 'audio/stop' : undefined);
+          throw captureEnded('microphone');
+        }
+        if (res && res.ok) {
+          this.micOn = true;
+          this.micStreaming = res.streaming === true;
+          this.lastError = undefined;
+          // Paused while it was starting: Pause found no recorder to pause.
+          if (this.paused) await this.sendToOffscreen({ kind: 'audio/pause' });
+        } else {
+          this.micOn = false;
+          this.micStreaming = false;
+          this.lastError =
+            (res && res.error) || 'Could not start the microphone.';
+          // The offscreen document is shared with video capture — only tear it
+          // down when video isn't using it.
+          if (!this.videoOn) await this.closeOffscreen().catch(() => {});
+        }
       });
-      if (this.isEnding(session)) {
-        // Stop may have checked the offscreen document before this recorder
-        // started, so it would never stop it.
-        if (res && res.ok) await this.abandonOffscreenStart(session, 'audio/stop');
-        else await this.abandonOffscreenStart(session);
-        throw captureEnded('microphone');
-      }
-      if (res && res.ok) {
-        this.micOn = true;
-        this.micStreaming = res.streaming === true;
-        this.lastError = undefined;
-      } else {
-        this.micOn = false;
-        this.micStreaming = false;
-        this.lastError =
-          (res && res.error) || 'Could not start the microphone.';
-        // The offscreen document is shared with video capture — only tear it
-        // down when video isn't using it.
-        if (!this.videoOn) await this.closeOffscreen().catch(() => {});
-      }
     } else {
-      // Await the stop handshake so the offscreen has emitted + delivered its
-      // final segment BEFORE we tear the document down (otherwise the last
-      // up-to-30s of narration is lost to the destroy-before-flush race).
-      await this.sendToOffscreen({ kind: 'audio/stop' });
-      this.micOn = false;
-      this.micStreaming = false;
-      if (!this.videoOn) await this.closeOffscreen().catch(() => {});
+      await this.withOffscreen(async () => {
+        // Once the session is ending, Stop owns the teardown: a second stop of
+        // the same recorder would race its final flush.
+        if (session && this.isEnding(session)) return;
+        await this.trackRecorderStop(async () => {
+          // Await the stop handshake so the offscreen has emitted + delivered its
+          // final segment BEFORE we tear the document down (otherwise the last
+          // up-to-30s of narration is lost to the destroy-before-flush race).
+          await this.sendToOffscreen({ kind: 'audio/stop' });
+          this.micOn = false;
+          this.micStreaming = false;
+          if (!this.videoOn) await this.closeOffscreen().catch(() => {});
+        });
+      });
     }
     this.broadcastState();
   }
@@ -1754,50 +1847,61 @@ class Orchestrator {
    * that cannot be captured must not break the session.
    */
   private async setVideo(on: boolean): Promise<void> {
+    const session = this.current;
     if (on) {
-      const session = this.current;
       if (!session) throw new Error('No active session to record video for.');
-      const tabId = await this.activeSessionTabId();
-      if (tabId < 0) throw new Error('No session tab to capture.');
-      const streamId = await this.getTabStreamId(tabId);
-      if (this.isEnding(session)) throw captureEnded('video capture');
-      await this.ensureOffscreen();
-      if (this.isEnding(session)) {
-        await this.abandonOffscreenStart(session);
-        throw captureEnded('video capture');
-      }
-      const res = await this.sendToOffscreen({
-        kind: 'video/start',
-        sessionId: session.id,
-        startedAt: this.sessionStartEpoch,
-        streamId,
-        // Tab audio is captured by default; acquireStream falls back to
-        // video-only when the tab has no capturable audio.
-        audio: true,
+      await this.withOffscreen(async () => {
+        if (this.isEnding(session)) throw captureEnded('video capture');
+        const tabId = await this.activeSessionTabId();
+        if (tabId < 0) throw new Error('No session tab to capture.');
+        // Minted inside the turn: stream ids are single-use and expire fast.
+        const streamId = await this.getTabStreamId(tabId);
+        if (this.isEnding(session)) throw captureEnded('video capture');
+        await this.ensureOffscreen();
+        if (this.isEnding(session)) {
+          await this.abandonOffscreenStart();
+          throw captureEnded('video capture');
+        }
+        const res = await this.sendToOffscreen({
+          kind: 'video/start',
+          sessionId: session.id,
+          startedAt: this.sessionStartEpoch,
+          streamId,
+          // Tab audio is captured by default; acquireStream falls back to
+          // video-only when the tab has no capturable audio.
+          audio: true,
+        });
+        if (this.isEnding(session)) {
+          // Stop may have checked the offscreen document before this recorder
+          // started, so it would never stop it.
+          await this.abandonOffscreenStart(res && res.ok ? 'video/stop' : undefined);
+          throw captureEnded('video capture');
+        }
+        if (res && res.ok) {
+          this.videoOn = true;
+          this.lastError = undefined;
+          // Paused while it was starting: Pause found no recorder to pause.
+          if (this.paused) await this.sendToOffscreen({ kind: 'video/pause' });
+        } else {
+          this.videoOn = false;
+          if (!this.micOn) await this.closeOffscreen().catch(() => {});
+          throw new Error(
+            (res && res.error) || 'Could not start tab video capture.',
+          );
+        }
       });
-      if (this.isEnding(session)) {
-        // Stop may have checked the offscreen document before this recorder
-        // started, so it would never stop it.
-        if (res && res.ok) await this.abandonOffscreenStart(session, 'video/stop');
-        else await this.abandonOffscreenStart(session);
-        throw captureEnded('video capture');
-      }
-      if (res && res.ok) {
-        this.videoOn = true;
-        this.lastError = undefined;
-      } else {
-        this.videoOn = false;
-        if (!this.micOn) await this.closeOffscreen().catch(() => {});
-        throw new Error(
-          (res && res.error) || 'Could not start tab video capture.',
-        );
-      }
     } else {
-      // Await the stop handshake: the offscreen must deliver the final video
-      // segment before the document may be destroyed.
-      await this.sendToOffscreen({ kind: 'video/stop' });
-      this.videoOn = false;
-      if (!this.micOn) await this.closeOffscreen().catch(() => {});
+      await this.withOffscreen(async () => {
+        // Once the session is ending, Stop owns the teardown.
+        if (session && this.isEnding(session)) return;
+        await this.trackRecorderStop(async () => {
+          // Await the stop handshake: the offscreen must deliver the final video
+          // segment before the document may be destroyed.
+          await this.sendToOffscreen({ kind: 'video/stop' });
+          this.videoOn = false;
+          if (!this.micOn) await this.closeOffscreen().catch(() => {});
+        });
+      });
     }
     this.broadcastState();
   }
@@ -1913,6 +2017,12 @@ class Orchestrator {
    *  don't both call createDocument — the second would throw. */
   private offscreenCreating: Promise<void> | null = null;
 
+  /** The tail of the offscreen turn queue (see `withOffscreen`). */
+  private offscreenTurn: Promise<void> = Promise.resolve();
+
+  /** Mic/video stop handshakes in progress (see `trackRecorderStop`). */
+  private readonly recorderStops = new Set<Promise<void>>();
+
   private async ensureOffscreen(): Promise<void> {
     if (this.offscreenCreating) return this.offscreenCreating;
     if (await this.hasOffscreen()) return;
@@ -1930,16 +2040,48 @@ class Orchestrator {
   }
 
   /**
-   * A mic/video start for `session` found it ended part-way: stop the recorder
-   * it started (if any) and close the offscreen document if nothing else is
-   * recording. Skipped once a newer session is current, since the shared
-   * document is then that session's.
+   * Run `fn` as the only change to the offscreen document and its recorders
+   * in progress. A turn that has started for a live session finishes before
+   * any later turn (another session's start included) begins, so what it set
+   * up is its own. Stop's teardown doesn't queue here, since a recorder start
+   * can hang; turns re-check their session after every await instead, and
+   * Stop waits only for a stop handshake already in progress
+   * (`trackRecorderStop`).
    */
-  private async abandonOffscreenStart(
-    session: Session,
-    stopKind?: 'audio/stop' | 'video/stop',
-  ): Promise<void> {
-    if (this.current !== session && this.current !== null) return;
+  private withOffscreen<T>(fn: () => Promise<T>): Promise<T> {
+    const turn = this.offscreenTurn.then(fn);
+    this.offscreenTurn = turn.then(
+      () => undefined,
+      () => undefined,
+    );
+    return turn;
+  }
+
+  /**
+   * Run a mic/video stop handshake so Stop can wait for it: Stop's own
+   * teardown must not stop the same recorder a second time or close the
+   * document while this one is still delivering its final segment. A stop
+   * handshake is bounded by the offscreen flush, unlike a recorder start.
+   */
+  private trackRecorderStop(stop: () => Promise<void>): Promise<void> {
+    const run = stop();
+    this.recorderStops.add(run);
+    const done = () => {
+      this.recorderStops.delete(run);
+    };
+    run.then(done, done);
+    return run;
+  }
+
+  /**
+   * Undo a mic/video start whose session ended part-way. Called only inside
+   * that start's offscreen turn, after it checked its session was live when
+   * the turn began: a newer session's recorders can only come in a later turn,
+   * so the recorder this turn started and the document it created are the
+   * ended session's. Stops that recorder, and closes the document unless a
+   * recorder Stop hasn't flushed yet is still on.
+   */
+  private async abandonOffscreenStart(stopKind?: 'audio/stop' | 'video/stop'): Promise<void> {
     if (stopKind) await this.sendToOffscreen({ kind: stopKind });
     if (!this.micOn && !this.videoOn) await this.closeOffscreen().catch(() => {});
   }
