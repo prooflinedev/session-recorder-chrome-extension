@@ -325,6 +325,19 @@ test('keeps the JSON body of gzip and brotli responses', async ({
     const page = await context.newPage();
     await page.goto(origin);
     const tabId = await tabIdForUrl(background, origin);
+    // Ask Chromium directly whether the debugger can attach to this tab, before the
+    // recorder is involved. Only an environment that cannot attach may skip; if it
+    // can attach and the recorder still starts degraded, that is a regression.
+    const canAttach = await background.evaluate(async (id) => {
+      try {
+        await chrome.debugger.attach({ tabId: id }, '1.3');
+        await chrome.debugger.detach({ tabId: id });
+        return true;
+      } catch {
+        return false;
+      }
+    }, tabId);
+    test.skip(!canAttach, 'chrome.debugger cannot attach to a tab in this environment');
     const started = await dispatch<StartRes>(background, {
       kind: 'session/start',
       tabId,
@@ -341,10 +354,10 @@ test('keeps the JSON body of gzip and brotli responses', async ({
       kind: 'events/get',
       sessionId: started.session!.id,
     });
-    test.skip(
+    expect(
       events.some((e) => /Deep capture unavailable/.test(e.payload?.text ?? '')),
-      'chrome.debugger could not attach, so this run has no network capture',
-    );
+      'the debugger can attach, yet the recorder started in degraded mode without network capture',
+    ).toBe(false);
     for (const path of ['/api/gzip', '/api/br']) {
       const request = events.find(
         (e) => e.type === 'net-request' && e.payload?.url === origin + path,

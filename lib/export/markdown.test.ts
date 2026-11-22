@@ -304,6 +304,29 @@ describe('renderReport', () => {
     expect(md).toContain('## Appendix: Network Index');
   });
 
+  it('fences a body longer than any backtick run inside it', () => {
+    const body = 'before\n```\n## injected heading\n````\nafter';
+    const input = buildSession();
+    const events = input.events.map((e) =>
+      e.type === 'net-request' && e.payload.responseBody
+        ? ({ ...e, payload: { ...e.payload, responseBody: { present: true, mime: 'text/plain', text: body } } } as SessionEvent)
+        : e,
+    );
+    const lines = renderReport({ ...input, events }).split('\n');
+    const start = lines.indexOf(body.split('\n')[0]!) - 1;
+    // the longest run inside is 4 backticks, so the fence is 5
+    expect(lines[start]).toBe('`````');
+    expect(lines.slice(start + 1, start + 1 + body.split('\n').length)).toEqual(body.split('\n'));
+    expect(lines[start + 1 + body.split('\n').length]).toBe('`````');
+  });
+
+  it('keeps the usual three-backtick fence for a body without backticks', () => {
+    const lines = renderReport(buildSession()).split('\n');
+    const at = lines.indexOf('{"error":"boom"}');
+    expect(lines[at - 1]).toBe('```json');
+    expect(lines[at + 1]).toBe('```');
+  });
+
   it('links included screenshots and annotations', () => {
     const md = renderReport(buildSession());
     expect(md).toContain('![error dialog visible](screenshots/001-0004.jpg)');

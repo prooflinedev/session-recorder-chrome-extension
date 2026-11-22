@@ -337,9 +337,33 @@ describe('NetworkCapturer binary bodies', () => {
       SETTINGS.inlineBodyCapBytes,
     );
     expect(body.assetId).toBe('asset-decoded');
+    // The asset is the whole redacted body, not the inline prefix: it equals the
+    // original with only the token replaced, and the inline text is its start.
+    expect(storeBodyAsset).toHaveBeenCalledTimes(1);
     const stored = storeBodyAsset.mock.calls[0]![0];
-    expect(stored).not.toContain('tok-1');
-    expect(stored).toContain('«redacted»');
+    expect(stored).toBe(
+      JSON.stringify({ token: '«redacted»', data: 'x'.repeat(100 * 1024) }, null, 2),
+    );
+    expect(new TextEncoder().encode(stored).length).toBe(body.originalSize);
+    expect(stored.startsWith(body.text!)).toBe(true);
+  });
+
+  it('stores no asset for a decoded gzip response over the asset cap', async () => {
+    const huge = `{"token":"tok-1","data":"${'x'.repeat(600 * 1024)}"}`;
+    expect(new TextEncoder().encode(huge).length).toBeGreaterThan(SETTINGS.assetBodyCapBytes);
+    const { emitted, storeBodyAsset } = await finishResponse(
+      { 'content-type': 'application/json', 'content-encoding': 'gzip' },
+      huge,
+    );
+    const body = payloadOf(emitted[0]!).responseBody!;
+    expect(body.truncated).toBe(true);
+    expect(body.originalSize).toBeGreaterThan(SETTINGS.assetBodyCapBytes);
+    expect(new TextEncoder().encode(body.text!).length).toBeLessThanOrEqual(
+      SETTINGS.inlineBodyCapBytes,
+    );
+    expect(body.assetId).toBeUndefined();
+    expect(storeBodyAsset).not.toHaveBeenCalled();
+    expect(body.text).not.toContain('tok-1');
   });
 
   it.each(['application/octet-stream', 'application/x-protobuf', 'text/event-stream'])(
