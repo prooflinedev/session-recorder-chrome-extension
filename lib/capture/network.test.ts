@@ -432,9 +432,16 @@ describe('NetworkCapturer binary bodies', () => {
     expect(storeBodyAsset).not.toHaveBeenCalled();
   });
 
-  it('replaces a request body that cannot be redacted with a marker', () => {
+  it('replaces a request body that cannot be redacted with a marker and stores no copy', async () => {
     const deep = '{"token":"tok-deep","d":' + '['.repeat(20000) + '1' + ']'.repeat(20000) + '}';
-    const { cap, emitted } = makeCapturer();
+    // API-spec capture on, so a raw copy handed back for storage would show up here.
+    const storeBodyAsset = vi.fn(
+      async (_text: string, _mime: string, _base64: boolean) => 'asset-deep',
+    );
+    const { cap, emitted } = makeCapturer({
+      getSettings: () => ({ ...SETTINGS, captureApiSpec: true, inlineBodyCapBytes: 1024 }),
+      storeBodyAsset,
+    });
     cap.handle(1, 'Network.requestWillBeSent', {
       requestId: 'r-deep',
       request: {
@@ -446,6 +453,9 @@ describe('NetworkCapturer binary bodies', () => {
       type: 'XHR',
     });
     cap.handle(1, 'Network.loadingFailed', { requestId: 'r-deep', errorText: 'x' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(storeBodyAsset).not.toHaveBeenCalled();
+    expect(emitted).toHaveLength(1);
     const body = payloadOf(emitted[0]!).requestBody!;
     expect(body.text).toBe(`«body not shown — ${deep.length} bytes, could not be redacted»`);
     expect(body.text).not.toContain('tok-deep');
