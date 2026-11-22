@@ -313,10 +313,11 @@ export function redactUrl(rawUrl: string, rules: RedactionRules): string {
 export function redactUrlsInText(text: string, rules: RedactionRules): string {
   // A URL right after ' is quoted, so the next ' closes it. Anywhere else an
   // apostrophe can be part of a password or a query value and stays in the URL,
-  // unless it opens the next quoted URL ('https://...).
+  // unless only punctuation and then the next URL follow it ('https://...,
+  // ',https://...).
   const redactText = (value: string) =>
     value.replace(
-      /(?<=')(?:https?|wss?):\/\/[^\s"'<>`]+|\b(?:https?|wss?):\/\/(?:[^\s"'<>`]|'(?!(?:https?|wss?):\/\/))+/gi,
+      /(?<=')(?:https?|wss?):\/\/[^\s"'<>`]+|\b(?:https?|wss?):\/\/(?:[^\s"'<>`]|'(?![^\w\s"'<>`]*(?:https?|wss?):\/\/))+/gi,
       (url) => redactUrl(url, rules),
     );
 
