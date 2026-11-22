@@ -36,7 +36,14 @@ describe('constants', () => {
       'cookie',
       'set-cookie',
       'x-api-key',
+      'api-key',
       'x-auth-token',
+      'x-access-token',
+      'x-amz-security-token',
+      'x-csrf-token',
+      'x-xsrf-token',
+      'x-session-token',
+      'private-token',
       'proxy-authorization',
       'www-authenticate',
     ]);
@@ -139,6 +146,38 @@ describe('redactHeaders', () => {
       { name: 'Cookie', value: REDACTED },
       { name: 'Content-Type', value: 'application/json' },
       { name: 'X-Custom', value: 'keep-me' },
+    ]);
+  });
+
+  it('redacts modern cloud, API key, CSRF, and session headers by default', () => {
+    const cloudHeaders: NetHeader[] = [
+      { name: 'api-key', value: 'sk-azure-openai-12345' },
+      { name: 'API-KEY', value: 'sk-upper-case' },
+      { name: 'x-amz-security-token', value: 'AQoDYXdzEJr123456789' },
+      { name: 'X-Amz-Security-Token', value: 'AQoDYXdzEJr987654321' },
+      { name: 'x-csrf-token', value: 'csrf-secret-token' },
+      { name: 'X-CSRF-Token', value: 'csrf-secret-token-upper' },
+      { name: 'x-xsrf-token', value: 'xsrf-secret-token' },
+      { name: 'x-access-token', value: 'jwt-access-token' },
+      { name: 'x-session-token', value: 'session-secret-token' },
+      { name: 'private-token', value: 'glpat-gitlab-token' },
+      { name: 'x-request-id', value: 'req-123' },
+      { name: 'Accept', value: 'application/json' },
+    ];
+    const out = redactHeaders(cloudHeaders, EMPTY_RULES);
+    expect(out).toEqual([
+      { name: 'api-key', value: REDACTED },
+      { name: 'API-KEY', value: REDACTED },
+      { name: 'x-amz-security-token', value: REDACTED },
+      { name: 'X-Amz-Security-Token', value: REDACTED },
+      { name: 'x-csrf-token', value: REDACTED },
+      { name: 'X-CSRF-Token', value: REDACTED },
+      { name: 'x-xsrf-token', value: REDACTED },
+      { name: 'x-access-token', value: REDACTED },
+      { name: 'x-session-token', value: REDACTED },
+      { name: 'private-token', value: REDACTED },
+      { name: 'x-request-id', value: 'req-123' },
+      { name: 'Accept', value: 'application/json' },
     ]);
   });
 

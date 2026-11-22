@@ -153,4 +153,33 @@ describe('network.har in the export bundle', () => {
     const files = await buildBundle({ ...quiet, level: 'L0' });
     expect(harFile(files)).toBeUndefined();
   });
+
+  it('preserves redacted cloud and auth headers in HAR entries', () => {
+    const { session, events } = new SessionBuilder()
+      .net('POST', 'https://api.example.com/deploy', {
+        status: 200,
+      })
+      .build();
+    const req = firstRequest(events);
+    req.requestHeaders = [
+      { name: 'x-amz-security-token', value: '«redacted»' },
+      { name: 'api-key', value: '«redacted»' },
+      { name: 'content-type', value: 'application/json' },
+    ];
+    req.responseHeaders = [
+      { name: 'x-session-token', value: '«redacted»' },
+      { name: 'content-type', value: 'application/json' },
+    ];
+    const har = buildHar(session, events) as any;
+    const entry = har.log.entries[0];
+    expect(entry.request.headers).toEqual([
+      { name: 'x-amz-security-token', value: '«redacted»' },
+      { name: 'api-key', value: '«redacted»' },
+      { name: 'content-type', value: 'application/json' },
+    ]);
+    expect(entry.response.headers).toEqual([
+      { name: 'x-session-token', value: '«redacted»' },
+      { name: 'content-type', value: 'application/json' },
+    ]);
+  });
 });
