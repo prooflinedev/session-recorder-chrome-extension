@@ -76,8 +76,16 @@ function buildUrlMatcher(rules: RedactionRules): (name: string) => boolean {
 }
 
 /**
- * Return a new header array with blocklisted (and custom) header values masked.
- * Comparison is case-insensitive on the header name. Input is never mutated.
+ * Headers whose value is (or, for `refresh`, ends with) a URL. They get the
+ * same query-param rules as request URLs, so a redirect to a signed link does
+ * not keep the secret that the next hop's URL already masks.
+ */
+const URL_VALUED_HEADERS = new Set(['location', 'content-location', 'referer', 'refresh']);
+
+/**
+ * Return a new header array with blocklisted (and custom) header values masked
+ * and URL rules applied to URL-valued headers. Comparison is case-insensitive
+ * on the header name. Input is never mutated.
  */
 export function redactHeaders(
   headers: NetHeader[],
@@ -87,11 +95,12 @@ export function redactHeaders(
     ...DEFAULT_HEADER_BLOCKLIST,
     ...rules.headerNames.map((n) => n.toLowerCase()),
   ]);
-  return headers.map((h) =>
-    blocked.has(h.name.toLowerCase())
-      ? { name: h.name, value: REDACTED }
-      : { name: h.name, value: h.value },
-  );
+  return headers.map((h) => {
+    const name = h.name.toLowerCase();
+    if (blocked.has(name)) return { name: h.name, value: REDACTED };
+    if (URL_VALUED_HEADERS.has(name)) return { name: h.name, value: redactUrl(h.value, rules) };
+    return { name: h.name, value: h.value };
+  });
 }
 
 /** Recursively clone a parsed JSON value, masking values under matching keys. */

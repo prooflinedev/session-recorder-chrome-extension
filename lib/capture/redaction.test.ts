@@ -152,6 +152,37 @@ describe('redactHeaders', () => {
     redactHeaders(headers, rules({ headerNames: ['x-custom'] }));
     expect(headers).toEqual(snapshot);
   });
+
+  it('applies the URL rules to headers whose value is a URL', () => {
+    const out = redactHeaders([
+      { name: 'Location', value: 'https://files.example/r.pdf?id=7&token=LOC_SECRET' },
+      { name: 'content-location', value: '/r.pdf?access_token=CL_SECRET' },
+      { name: 'Referer', value: 'https://app.example/invite?invite_token=REF_SECRET#top' },
+      { name: 'Refresh', value: '0; url=/next?session=REFRESH_SECRET' },
+    ], EMPTY_RULES);
+    expect(out).toEqual([
+      { name: 'Location', value: `https://files.example/r.pdf?id=7&token=${REDACTED}` },
+      { name: 'content-location', value: `/r.pdf?access_token=${REDACTED}` },
+      { name: 'Referer', value: `https://app.example/invite?invite_token=${REDACTED}#top` },
+      { name: 'Refresh', value: `0; url=/next?session=${REDACTED}` },
+    ]);
+  });
+
+  it('uses custom URL param patterns for URL-valued headers', () => {
+    const out = redactHeaders(
+      [{ name: 'Location', value: 'https://acct.blob.core.windows.net/c/f.pdf?sp=r&sig=SAS_SECRET' }],
+      rules({ urlParamPatterns: ['^sig$'] }),
+    );
+    expect(out[0]!.value).toBe(`https://acct.blob.core.windows.net/c/f.pdf?sp=r&sig=${REDACTED}`);
+  });
+
+  it('leaves URL rules off headers that are not URLs', () => {
+    const out = redactHeaders(
+      [{ name: 'X-Note', value: 'see /x?token=NOT_A_URL_HEADER' }],
+      EMPTY_RULES,
+    );
+    expect(out[0]!.value).toBe('see /x?token=NOT_A_URL_HEADER');
+  });
 });
 
 describe('redactBody — JSON', () => {
