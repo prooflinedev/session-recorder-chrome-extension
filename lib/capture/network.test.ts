@@ -507,9 +507,12 @@ describe('NetworkCapturer response bodies recorded from Chromium', () => {
   async function replay(): Promise<Map<string, NetRequestPayload>> {
     fetched = [];
     const { cap, emitted } = makeCapturer({
-      send: vi.fn(async (_tabId: number, _method: string, params?: object) => {
+      send: vi.fn(async (tabId: number, method: string, params?: object) => {
         const id = (params as { requestId: string }).requestId;
-        fetched.push(id);
+        fetched.push(`${tabId} ${method} ${id}`);
+        // Only the real call gets a body: the events came from tab 1, and the body
+        // must be asked for with Network.getResponseBody.
+        if (tabId !== 1 || method !== 'Network.getResponseBody') return {};
         const recorded = bodies[id]!;
         if (recorded.base64Encoded) return { ...recorded };
         // Each text response gets its own non-redacted field, so a body fetched
@@ -553,9 +556,11 @@ describe('NetworkCapturer response bodies recorded from Chromium', () => {
     },
   );
 
-  it('asks Chromium for the body of every request, under its own id', async () => {
+  it('asks Chromium for the body of every request, on its tab, under its own id', async () => {
     await replay();
-    expect([...fetched].sort()).toEqual(Object.keys(bodies).sort());
+    expect([...fetched].sort()).toEqual(
+      Object.keys(bodies).map((id) => `1 Network.getResponseBody ${id}`).sort(),
+    );
   });
 
   it('stores bodies Chromium returned as base64 unchanged, still base64', async () => {
