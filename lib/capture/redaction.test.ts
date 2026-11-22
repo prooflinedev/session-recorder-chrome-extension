@@ -165,6 +165,21 @@ describe('redactBody — JSON', () => {
     expect(text).toContain('\n  ');
   });
 
+  it('preserves __proto__ properties while recursively redacting JSON', () => {
+    const input =
+      '{"__proto__":{"token":"nested-token","nested":{"password":"nested-password"}},"safe":"kept"}';
+    const { text, redacted } = redactBody(input, 'application/json', EMPTY_RULES);
+    expect(redacted).toBe(true);
+
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(parsed, '__proto__')).toBe(true);
+    expect(parsed['__proto__']).toEqual({
+      token: REDACTED,
+      nested: { password: REDACTED },
+    });
+    expect(parsed['safe']).toBe('kept');
+  });
+
   it('recurses into nested objects and arrays', () => {
     const input = JSON.stringify({
       user: { name: 'joe', apiKey: 'k1' },
