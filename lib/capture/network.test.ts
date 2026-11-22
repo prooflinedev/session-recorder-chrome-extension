@@ -289,7 +289,9 @@ describe('NetworkCapturer binary bodies', () => {
   // Network.getResponseBody returns the body after Chrome has undone the
   // Content-Encoding, so a compressed response arrives here as plain text.
   async function finishResponse(headers: Record<string, string>, body: string) {
-    const storeBodyAsset = vi.fn(async (_text: string) => 'asset-decoded');
+    const storeBodyAsset = vi.fn(
+      async (_text: string, _mime: string, _base64: boolean) => 'asset-decoded',
+    );
     const { cap, emitted } = makeCapturer({
       send: vi.fn(async () => ({ body, base64Encoded: false })),
       storeBodyAsset,
@@ -349,6 +351,8 @@ describe('NetworkCapturer binary bodies', () => {
     expect(stored).toBe(
       JSON.stringify({ token: '«redacted»', data: 'x'.repeat(100 * 1024) }, null, 2),
     );
+    // Stored as plain JSON text: its own MIME type, not base64.
+    expect(storeBodyAsset).toHaveBeenCalledWith(stored, 'application/json', false);
     expect(new TextEncoder().encode(stored).length).toBe(body.originalSize);
     expect(body.text).toBe(firstBytes(stored, SETTINGS.inlineBodyCapBytes));
   });

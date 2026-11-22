@@ -335,6 +335,22 @@ describe('renderReport', () => {
     expect(lines[at + 1]).toBe('````');
   });
 
+  it('widens the fence of a request body too', () => {
+    // A JSON request body whose string holds a Markdown code block.
+    const reqBody = '{"query":"```sql\\nselect 1;\\n```"}';
+    const input = buildSession();
+    const events = input.events.map((e) =>
+      e.type === 'net-request' && e.payload.requestBody
+        ? ({ ...e, payload: { ...e.payload, requestBody: { present: true, mime: 'application/json', text: reqBody } } } as SessionEvent)
+        : e,
+    );
+    const lines = renderReport({ ...input, events }).split('\n');
+    const at = lines.indexOf(reqBody);
+    expect(at).toBeGreaterThan(0);
+    expect(lines[at - 1]).toBe('````json');
+    expect(lines[at + 1]).toBe('````');
+  });
+
   it('keeps the usual three-backtick fence for a body without backticks', () => {
     const lines = renderReport(buildSession()).split('\n');
     const at = lines.indexOf('{"error":"boom"}');
