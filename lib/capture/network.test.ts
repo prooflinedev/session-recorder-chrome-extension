@@ -410,6 +410,7 @@ describe('NetworkCapturer binary bodies', () => {
       const body = payloadOf(emitted[0]!).responseBody!;
       expect(body.text).toBe(`«binary body — 25 bytes${enc ? ', ' + enc : ''}, not shown»`);
       expect(body.originalSize).toBe(25);
+      expect(body).toMatchObject({ present: true, base64: false, truncated: false });
     },
   );
 
@@ -422,6 +423,7 @@ describe('NetworkCapturer binary bodies', () => {
       );
       const body = payloadOf(emitted[0]!).responseBody!;
       expect(body.text).toBe(`«binary body — 29 bytes${enc ? ', ' + enc : ''}, not shown»`);
+      expect(body).toMatchObject({ present: true, base64: false, truncated: false });
       expect(body.text).not.toContain('marker-text-payload');
     },
   );
@@ -617,6 +619,8 @@ describe('NetworkCapturer response bodies recorded from Chromium', () => {
       // What Chromium reported: the header names the encoding, the body is text.
       expect(encodingOf(p)).toBe(encoding);
       expect(p.responseBody!.mime).toBe('application/json');
+      expect(p.responseBody!.present).toBe(true);
+      expect(payloads.get('plain')!.responseBody!.present).toBe(true);
       expect(payloads.get('plain')!.responseBody!.mime).toBe('application/json');
       expect(bodies[encoding]).toEqual({ body: sentJson, base64Encoded: false });
       expect(JSON.parse(p.responseBody!.text!)).toEqual({
@@ -655,6 +659,7 @@ describe('NetworkCapturer response bodies recorded from Chromium', () => {
     // Their headers and MIME type are kept as Chromium reported them.
     expect(encodingOf(payloads.get('unknown-encoding')!)).toBe('x-custom');
     expect(payloads.get('unknown-encoding')!.responseBody!.mime).toBe('application/json');
+    for (const id of ['unknown-encoding', 'blob-gzip']) expect(payloads.get(id)!.responseBody!.present).toBe(true);
     expect(encodingOf(payloads.get('blob-gzip')!)).toBe('gzip');
     expect(payloads.get('blob-gzip')!.responseBody!.mime).toBe('application/octet-stream');
   });

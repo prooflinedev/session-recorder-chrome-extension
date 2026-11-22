@@ -353,28 +353,33 @@ test('keeps the JSON body of gzip and brotli responses', async ({
       tabId,
     });
     expect(started.ok).toBe(true);
-    await page.waitForTimeout(800);
-    await page.evaluate(async () => {
-      for (const path of ['/api/gzip', '/api/br']) await (await fetch(path)).text();
-    });
-    // The page's fetch() does not wait for the recorder's own Network.getResponseBody
-    // call, so poll the recorded events until both bodies are in (or the recorder
-    // reports degraded mode) before stopping. Bounded, so a regression still fails.
-    const capture = async () => {
-      const { events } = await dispatch<EventsRes>(background, {
-        kind: 'events/get',
-        sessionId: started.session!.id,
+    // Stop the recording even if a fetch or the capture poll fails, so the session
+    // is finalized before the browser is torn down.
+    try {
+      await page.waitForTimeout(800);
+      await page.evaluate(async () => {
+        for (const path of ['/api/gzip', '/api/br']) await (await fetch(path)).text();
       });
-      if (events.some((e) => /Deep capture unavailable/.test(e.payload?.text ?? ''))) return 'degraded';
-      const done = ['/api/gzip', '/api/br'].every((path) =>
-        events.some(
-          (e) => e.type === 'net-request' && e.payload?.url === origin + path && e.payload?.responseBody,
-        ),
-      );
-      return done ? 'captured' : 'waiting';
-    };
-    await expect.poll(capture, { timeout: 10_000 }).not.toBe('waiting');
-    await dispatch(background, { kind: 'session/stop' });
+      // The page's fetch() does not wait for the recorder's own Network.getResponseBody
+      // call, so poll the recorded events until both bodies are in (or the recorder
+      // reports degraded mode) before stopping. Bounded, so a regression still fails.
+      const capture = async () => {
+        const { events } = await dispatch<EventsRes>(background, {
+          kind: 'events/get',
+          sessionId: started.session!.id,
+        });
+        if (events.some((e) => /Deep capture unavailable/.test(e.payload?.text ?? ''))) return 'degraded';
+        const done = ['/api/gzip', '/api/br'].every((path) =>
+          events.some(
+            (e) => e.type === 'net-request' && e.payload?.url === origin + path && e.payload?.responseBody,
+          ),
+        );
+        return done ? 'captured' : 'waiting';
+      };
+      await expect.poll(capture, { timeout: 10_000 }).not.toBe('waiting');
+    } finally {
+      await dispatch(background, { kind: 'session/stop' });
+    }
 
     const { events } = await dispatch<EventsRes>(background, {
       kind: 'events/get',
