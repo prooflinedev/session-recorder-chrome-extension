@@ -355,3 +355,115 @@ describe('redactUrl', () => {
     expect(out).toBe(`https://x.com/p?api%5Fkey=${REDACTED}&z=1`);
   });
 });
+
+describe('default rules for cloud signed URLs, API keys and URL passwords', () => {
+  it('masks the signature of an Azure storage (SAS) link', () => {
+    const out = redactUrl(
+      'https://acct.blob.core.windows.net/c/report.pdf?sv=2022-11-02&se=2026-12-01&sr=b&sp=rw&sig=FAKE%2Bsas%3D',
+      EMPTY_RULES,
+    );
+    expect(out).toBe(
+      `https://acct.blob.core.windows.net/c/report.pdf?sv=2022-11-02&se=2026-12-01&sr=b&sp=rw&sig=${REDACTED}`,
+    );
+  });
+
+  it('masks a Google API key passed as key=', () => {
+    const out = redactUrl(
+      'https://maps.googleapis.com/maps/api/geocode/json?address=Berlin&key=AIzaSyFAKEKEY',
+      EMPTY_RULES,
+    );
+    expect(out).toBe(
+      `https://maps.googleapis.com/maps/api/geocode/json?address=Berlin&key=${REDACTED}`,
+    );
+  });
+
+  it('masks Signature= in CloudFront and older S3 signed links', () => {
+    expect(
+      redactUrl(
+        'https://d111.cloudfront.net/v.mp4?Expires=1700000000&Signature=FAKE~cf&Key-Pair-Id=K2JCJMDEHXQW5F',
+        EMPTY_RULES,
+      ),
+    ).toBe(
+      `https://d111.cloudfront.net/v.mp4?Expires=1700000000&Signature=${REDACTED}&Key-Pair-Id=K2JCJMDEHXQW5F`,
+    );
+    expect(
+      redactUrl(
+        'https://b.s3.amazonaws.com/k?AWSAccessKeyId=AKIAFAKE&Expires=1700000000&Signature=FAKEv2',
+        EMPTY_RULES,
+      ),
+    ).toBe(
+      `https://b.s3.amazonaws.com/k?AWSAccessKeyId=AKIAFAKE&Expires=1700000000&Signature=${REDACTED}`,
+    );
+  });
+
+  it('matches these names only as whole parameter names', () => {
+    const url = 'https://x.com/p?keyword=shoes&monkey=1&hotkey=k&sigma=2&signature_version=4';
+    expect(redactUrl(url, EMPTY_RULES)).toBe(url);
+  });
+
+  it('masks the password in user:password@ and keeps the user name', () => {
+    expect(redactUrl('https://admin:hunter2@internal.example.com/api', EMPTY_RULES)).toBe(
+      `https://admin:${REDACTED}@internal.example.com/api`,
+    );
+    expect(redactUrl('wss://bot:p%40ss@chat.example.com:8443/ws?room=1', EMPTY_RULES)).toBe(
+      `wss://bot:${REDACTED}@chat.example.com:8443/ws?room=1`,
+    );
+  });
+
+  it('masks the password and the query secrets in the same URL', () => {
+    expect(redactUrl('https://u:pw@x.com/p?token=t&page=2#top', EMPTY_RULES)).toBe(
+      `https://u:${REDACTED}@x.com/p?token=${REDACTED}&page=2#top`,
+    );
+  });
+
+  it('leaves URLs without a password unchanged', () => {
+    for (const url of [
+      'https://admin@internal.example.com/api',
+      'https://x.com:8080/users/@ada?q=1',
+      'https://x.com/p?next=https://a:b@c.com', // not this URL's user info
+      'mailto:ada@example.com',
+    ]) {
+      expect(redactUrl(url, EMPTY_RULES)).toBe(url);
+    }
+  });
+
+  it('masks a URL password that Chrome echoes in a console error', () => {
+    const input =
+      "TypeError: Failed to execute 'fetch' on 'Window': Request cannot be constructed from a URL that includes credentials: https://admin:hunter2@internal.example.com/api";
+    expect(redactUrlsInText(input, EMPTY_RULES)).toBe(
+      `TypeError: Failed to execute 'fetch' on 'Window': Request cannot be constructed from a URL that includes credentials: https://admin:${REDACTED}@internal.example.com/api`,
+    );
+  });
+
+  it('masks private keys and one-time codes in JSON bodies', () => {
+    const input = JSON.stringify({
+      type: 'service_account',
+      client_email: 'bot@proj.iam.gserviceaccount.com',
+      private_key: '-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n',
+      privateKey: 'FAKE',
+      otp: '123456',
+    });
+    const { text, redacted } = redactBody(input, 'application/json', EMPTY_RULES);
+    expect(redacted).toBe(true);
+    expect(JSON.parse(text)).toEqual({
+      type: 'service_account',
+      client_email: 'bot@proj.iam.gserviceaccount.com',
+      private_key: REDACTED,
+      privateKey: REDACTED,
+      otp: REDACTED,
+    });
+  });
+
+  it('masks a one-time code in a form body', () => {
+    const { text } = redactBody('otp=123456&remember=1', undefined, EMPTY_RULES);
+    expect(text).toBe(`otp=${REDACTED}&remember=1`);
+  });
+
+  it('keeps ordinary "key" and "sig" fields in bodies (issue keys, flag keys)', () => {
+    const input = '{"key":"PROJ-123","sig":"v2","keyword":"login"}';
+    expect(redactBody(input, 'application/json', EMPTY_RULES)).toEqual({
+      text: input,
+      redacted: false,
+    });
+  });
+});
