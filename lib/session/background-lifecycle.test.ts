@@ -390,6 +390,12 @@ function fakeChrome() {
       createDocumentGate = h.gate();
       return createDocumentGate;
     },
+    /** An offscreen document that outlived a service-worker restart, still recording. */
+    openSurvivingDocument(running: { audio?: boolean; video?: boolean }) {
+      docId++;
+      offscreenOpen = true;
+      Object.assign(recorders, running);
+    },
     holdTabsGet(tabId: number) {
       const g = h.gate();
       tabsGetGates.set(tabId, g);
@@ -943,6 +949,36 @@ describe('background lifecycle: rehydrate', () => {
     expect((await getState()).session.id).toBe('ses_live');
     expect(fake.attachLog).not.toContain(11);
     await stop();
+  });
+
+  it("a mic start abandoned during Stop doesn't close the document under Stop's video flush", async () => {
+    // The offscreen document outlived the service worker and is still
+    // recording video, while rehydrate() starts with both recorder flags off.
+    fake.openSurvivingDocument({ video: true });
+    await boot();
+    await until(() => fake.attachLog.includes(22), 'rehydrate to re-attach');
+    const { STORAGE_KEYS: K } = await import('@/lib/session/settings');
+    fake.setPrefs({ [K.micGranted]: true });
+    const micReply = fake.holdOffscreen('audio/start');
+    const toggled = call({ kind: 'mic/toggle', on: true });
+    await until(() => fake.offscreenMsgs.includes('audio/start'), 'the mic start');
+
+    const videoFlush = fake.holdOffscreen('video/stop'); // Stop's video handshake
+    const stopped = stop();
+    await until(() => fake.offscreenMsgs.includes('video/stop'), "Stop's video flush");
+    micReply.open(); // the mic start answers while Stop is flushing the video
+    await drain();
+    videoFlush.open();
+    expect(await stopped).toEqual({ ok: true });
+    await toggled;
+    await drain();
+
+    const log = fake.offscreenLog;
+    // The video's stop handshake completed before anything closed the document.
+    expect(log).toContain('video/stop:done');
+    expect(log.indexOf('video/stop:done')).toBeLessThan(log.indexOf('close'));
+    expect(fake.recorders()).toMatchObject({ audio: false, video: false });
+    expect(fake.offscreenOpen()).toBe(false);
   });
 });
 

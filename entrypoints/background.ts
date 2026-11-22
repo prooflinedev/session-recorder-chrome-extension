@@ -2083,6 +2083,10 @@ class Orchestrator {
    */
   private async abandonOffscreenStart(stopKind?: 'audio/stop' | 'video/stop'): Promise<void> {
     if (stopKind) await this.sendToOffscreen({ kind: stopKind });
+    // A Stop still running flushes both recorders before it closes the
+    // document; after rehydrate() the flags are off even while one records,
+    // so wait for that Stop rather than close the document under its flush.
+    await this.stopping?.run.catch(() => {});
     if (!this.micOn && !this.videoOn) await this.closeOffscreen().catch(() => {});
   }
 
