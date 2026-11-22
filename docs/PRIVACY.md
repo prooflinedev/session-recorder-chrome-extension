@@ -40,28 +40,29 @@ explicitly publish the selected report to Proofline or your Cloudflare Pages pro
 
 Redaction is on by default. For supported structured capture fields, the extension
 masks authorization headers, token-like fields in JSON and URL-encoded form bodies
-(including private keys, and one-time codes in a field named exactly `otp`), sensitive
-URL parameters (including the signed-link signatures `sig`, `Signature`,
-`X-Amz-Signature` and `X-Goog-Signature`, and API keys passed as `key`; other names
-need a custom rule), passwords in `user:password@` URLs, and password inputs. Fields in
-multipart form uploads (`multipart/form-data`) are not masked. You can add rules or
-disable redaction per session on the options page. The URL rules apply to network
-request URLs and to web and WebSocket URLs in console messages, browser logs,
-arguments, sources and exception stacks before they are stored.
+(including private keys, and one-time codes in a field named exactly `otp`), the
+same token-like names in URL parameters, passwords in `user:password@` URLs, and
+password inputs. In URLs only, it also masks the signed-link signatures `sig`,
+`Signature`, `X-Amz-Signature` and `X-Goog-Signature`, and API keys passed as `key`;
+a signature under any other name needs a custom rule. Fields in multipart form uploads
+(`multipart/form-data`) are not masked. You can add rules or disable redaction per
+session on the options page. The URL rules apply to network request URLs and to web
+and WebSocket URLs in console messages, browser logs, arguments, sources and exception
+stacks before they are stored.
 
 In console and log text the extension has to guess where each URL ends. A URL ends at
 whitespace, `"`, `<`, `>` or a backtick, and a URL that starts right after `'` also
-ends at the next `'`. If one of these characters is inside a logged URL, everything
-after it is stored unmasked. That can be the whole password (when the character comes
-before the `@`) or every later parameter, such as `sig`. URLs that the browser prints
-itself encode these characters, except `'` in a password and a backtick in a parameter
-value, so this mostly affects raw URL strings that the page logs.
+ends at the next `'`. If one of these characters is inside a logged URL, the rest of
+that URL is stored unmasked: the whole password if the character comes before the `@`,
+or the later parameters, such as `sig`. Browsers encode these characters when they
+print a URL, except a `'` in the user name, password or path and a backtick in a
+parameter value, so this mostly affects raw URL strings that a page logs. (Stack-trace
+lines are read differently: there a URL runs up to its line and column numbers.)
 
-Page addresses (the tab
-URL when recording starts, tab changes and page navigations) are stored as the
-browser reports them, without URL redaction. Screenshots, audio, attached files and other
-arbitrary text may still contain sensitive information. This does not scrub
-recordings or reports saved before the fix.
+Page addresses (the tab URL when recording starts, tab changes and page navigations)
+are stored as the browser reports them, without URL redaction. Screenshots, audio,
+attached files and other arbitrary text may still contain sensitive information.
+This does not scrub recordings or reports saved before the fix.
 
 ## Third-party transcription (optional, off by default)
 
