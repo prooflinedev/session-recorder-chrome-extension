@@ -814,9 +814,11 @@ function truncateTextToBytes(text: string, cap: number): Truncation {
   if (originalSize <= cap) {
     return { text, truncated: false, originalSize };
   }
-  const truncatedText = new TextDecoder('utf-8', { fatal: false }).decode(
-    bytes.subarray(0, cap),
-  );
+  // If the cap falls inside a multi-byte character, back up to that character's
+  // first byte. Decoding the partial bytes would add U+FFFD and go past the cap.
+  let end = cap;
+  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
+  const truncatedText = new TextDecoder('utf-8').decode(bytes.subarray(0, end));
   return { text: truncatedText, truncated: true, originalSize };
 }
 

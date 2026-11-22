@@ -353,6 +353,25 @@ describe('NetworkCapturer binary bodies', () => {
     expect(body.text).toBe(firstBytes(stored, SETTINGS.inlineBodyCapBytes));
   });
 
+  it.each([
+    ['a 3-byte character split by the cap', 'a'.repeat(64 * 1024 - 1) + '✓', 'a'.repeat(64 * 1024 - 1)],
+    ['a 2-byte character split by the cap', 'a'.repeat(64 * 1024 - 1) + 'é', 'a'.repeat(64 * 1024 - 1)],
+    ['a 4-byte character split by the cap', 'a'.repeat(64 * 1024 - 2) + '😀', 'a'.repeat(64 * 1024 - 2)],
+    ['a character that ends exactly at the cap', 'a'.repeat(64 * 1024 - 3) + '✓', 'a'.repeat(64 * 1024 - 3) + '✓'],
+  ])('cuts a decoded gzip preview before %s', async (_case, head, expected) => {
+    const { emitted } = await finishResponse(
+      { 'content-type': 'text/plain', 'content-encoding': 'gzip' },
+      head + 'b'.repeat(100),
+    );
+    const body = payloadOf(emitted[0]!).responseBody!;
+    expect(body.truncated).toBe(true);
+    expect(body.text).toBe(expected);
+    expect(body.text).not.toContain('\uFFFD');
+    expect(new TextEncoder().encode(body.text!).length).toBeLessThanOrEqual(
+      SETTINGS.inlineBodyCapBytes,
+    );
+  });
+
   it('stores no asset for a decoded gzip response over the asset cap', async () => {
     const huge = `{"token":"tok-1","data":"${'x'.repeat(600 * 1024)}"}`;
     expect(new TextEncoder().encode(huge).length).toBeGreaterThan(SETTINGS.assetBodyCapBytes);
