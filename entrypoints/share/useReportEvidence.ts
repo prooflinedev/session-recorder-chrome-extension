@@ -10,6 +10,7 @@ export interface EvidenceItem {
   comments: string[];
 }
 interface State {
+  loading: boolean;
   items: EvidenceItem[];
   diagnostics: SessionEvent[];
   error: string;
@@ -17,11 +18,11 @@ interface State {
 type Action =
   | { type: 'loaded'; items: EvidenceItem[]; diagnostics: SessionEvent[] }
   | { type: 'error'; message: string };
-const initial: State = { items: [], diagnostics: [], error: '' };
+const initial: State = { loading: true, items: [], diagnostics: [], error: '' };
 function reducer(state: State, action: Action): State {
   return action.type === 'loaded'
-    ? { ...initial, items: action.items, diagnostics: action.diagnostics }
-    : { ...state, error: action.message };
+    ? { ...initial, loading: false, items: action.items, diagnostics: action.diagnostics }
+    : { ...state, loading: false, error: action.message };
 }
 /** Owns the lifetime of local attachment URLs; no image leaves this browser. */
 export function useReportEvidence(sessionId: string) {
