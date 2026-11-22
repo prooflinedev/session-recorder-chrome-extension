@@ -42,22 +42,20 @@ Redaction is on by default. For supported structured capture fields, the extensi
 masks authorization headers, token-like fields in JSON and URL-encoded form bodies
 (including private keys, and one-time codes in a field named exactly `otp`), the
 same token-like names in URL parameters, passwords in `user:password@` URLs, and
-password inputs. In URLs only, it also masks the signed-link signatures `sig`,
-`Signature`, `X-Amz-Signature` and `X-Goog-Signature`, and API keys passed as `key`;
-a signature under any other name needs a custom rule. Fields in multipart form uploads
-(`multipart/form-data`) are not masked. You can add rules or disable redaction per
-session on the options page. The URL rules apply to network request URLs and to web
-and WebSocket URLs in console messages, browser logs, arguments, sources and exception
+password inputs. In URLs it also masks the parameters named exactly `sig`, `Signature`,
+`X-Amz-Signature`, `X-Goog-Signature` and `key` (ignoring case), which carry
+signed-link signatures and API keys. You can add rules for other names, or disable
+redaction per session, on the options page. Fields in multipart form uploads
+(`multipart/form-data`) are not masked, and a URL inside another URL's parameter value
+is not checked on its own. The URL rules apply to network request URLs and to web and
+WebSocket URLs in console messages, browser logs, arguments, sources and exception
 stacks before they are stored.
 
-In console and log text the extension has to guess where each URL ends. A URL ends at
-whitespace, `"`, `<`, `>` or a backtick, and a URL that starts right after `'` also
-ends at the next `'`. If one of these characters is inside a logged URL, the rest of
-that URL is stored unmasked: the whole password if the character comes before the `@`,
-or the later parameters, such as `sig`. Browsers encode these characters when they
-print a URL, except a `'` in the user name, password or path and a backtick in a
-parameter value, so this mostly affects raw URL strings that a page logs. (Stack-trace
-lines are read differently: there a URL runs up to its line and column numbers.)
+Finding URLs inside console and log text is a best-effort scan. Unusual characters
+inside a logged URL, such as spaces, quotes, `<`, `>` or backticks, can end the scan
+early, and a password or parameters after that point may then be stored unmasked.
+URLs that the browser prints itself rarely contain these characters, so this mostly
+affects raw URL strings that a page logs.
 
 Page addresses (the tab URL when recording starts, tab changes and page navigations)
 are stored as the browser reports them, without URL redaction. Screenshots, audio,
