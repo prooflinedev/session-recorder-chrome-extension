@@ -431,6 +431,15 @@ describe('default rules for cloud signed URLs, API keys and URL passwords', () =
     );
   });
 
+  it('masks the password when the user name has a raw @ (the last @ ends the user info)', () => {
+    expect(redactUrl('https://ada@corp.example:hunter2@internal.example.com/api', EMPTY_RULES)).toBe(
+      `https://ada@corp.example:${REDACTED}@internal.example.com/api`,
+    );
+    expect(redactUrlsInText('see https://ada@corp.example:hunter2@internal.example.com/api', EMPTY_RULES)).toBe(
+      `see https://ada@corp.example:${REDACTED}@internal.example.com/api`,
+    );
+  });
+
   it('masks the password and the query secrets in the same URL', () => {
     expect(redactUrl('https://u:pw@x.com/p?token=t&page=2#top', EMPTY_RULES)).toBe(
       `https://u:${REDACTED}@x.com/p?token=${REDACTED}&page=2#top`,
@@ -441,6 +450,7 @@ describe('default rules for cloud signed URLs, API keys and URL passwords', () =
     for (const url of [
       'https://admin@internal.example.com/api',
       'https://x.com:8080/users/@ada?q=1',
+      'https://ada@host.example:8443/users/@ada', // user name and port, no password
       'https://x.com/p?next=https://a:b@c.com', // not this URL's user info
       'mailto:ada@example.com',
     ]) {

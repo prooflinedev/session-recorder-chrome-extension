@@ -107,9 +107,10 @@ function buildUrlMatcher(rules: RedactionRules): (name: string) => boolean {
 /**
  * The `user:password@` part of an absolute URL: scheme, user name, then a
  * password running to the last `@` before the path, query or fragment.
+ * Browsers split at that last `@`, so a raw `@` may also be in the user name.
  * Browsers read `\` as `/` in http(s) and ws(s) URLs, so it also ends the part.
  */
-const URL_PASSWORD = /^([a-z][a-z\d+.-]*:\/\/[^/?#:@\\]*):([^/?#\\]+)@/i;
+const URL_PASSWORD = /^([a-z][a-z\d+.-]*:\/\/[^/?#:\\]*):([^/?#\\]+)@/i;
 
 /** Mask the password in `scheme://user:password@host`, keeping the user name. */
 function redactUrlPassword(url: string): string {
