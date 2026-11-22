@@ -320,6 +320,21 @@ describe('renderReport', () => {
     expect(lines[start + 1 + body.split('\n').length]).toBe('`````');
   });
 
+  it('keeps the language tag on a widened fence', () => {
+    // A JSON body whose string holds a Markdown code block (three backticks).
+    const body = '{"markdown":"```js\\nlet x = 1;\\n```"}';
+    const input = buildSession();
+    const events = input.events.map((e) =>
+      e.type === 'net-request' && e.payload.responseBody
+        ? ({ ...e, payload: { ...e.payload, responseBody: { present: true, mime: 'application/json', text: body } } } as SessionEvent)
+        : e,
+    );
+    const lines = renderReport({ ...input, events }).split('\n');
+    const at = lines.indexOf(body);
+    expect(lines[at - 1]).toBe('````json');
+    expect(lines[at + 1]).toBe('````');
+  });
+
   it('keeps the usual three-backtick fence for a body without backticks', () => {
     const lines = renderReport(buildSession()).split('\n');
     const at = lines.indexOf('{"error":"boom"}');
