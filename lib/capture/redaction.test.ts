@@ -396,6 +396,25 @@ describe('default rules for cloud signed URLs, API keys and URL passwords', () =
     );
   });
 
+  it('masks X-Amz-Signature and X-Goog-Signature in AWS and Google Cloud V4 signed links', () => {
+    expect(
+      redactUrl(
+        'https://b.s3.amazonaws.com/k?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAFAKE%2F20261123%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-SignedHeaders=host&X-Amz-Signature=FAKEv4',
+        EMPTY_RULES,
+      ),
+    ).toBe(
+      `https://b.s3.amazonaws.com/k?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=${REDACTED}&X-Amz-SignedHeaders=host&X-Amz-Signature=${REDACTED}`,
+    );
+    expect(
+      redactUrl(
+        'https://storage.googleapis.com/b/o?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-SignedHeaders=host&X-Goog-Signature=FAKEgcs',
+        EMPTY_RULES,
+      ),
+    ).toBe(
+      `https://storage.googleapis.com/b/o?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-SignedHeaders=host&X-Goog-Signature=${REDACTED}`,
+    );
+  });
+
   it('matches these names only as whole parameter names', () => {
     const url = 'https://x.com/p?keyword=shoes&monkey=1&hotkey=k&sigma=2&signature_version=4';
     expect(redactUrl(url, EMPTY_RULES)).toBe(url);
@@ -462,15 +481,18 @@ describe('default rules for cloud signed URLs, API keys and URL passwords', () =
 
   it("ends an unquoted URL where the next 'https:// URL starts", () => {
     expect(
-      redactUrlsInText("Redirect https://a.test/?token=1'https://b.test/?page=2' failed", EMPTY_RULES),
-    ).toBe(`Redirect https://a.test/?token=${REDACTED}'https://b.test/?page=2' failed`);
+      redactUrlsInText("Redirect https://a.test/?token=1'https://b.test/?token=2&page=2' failed", EMPTY_RULES),
+    ).toBe(`Redirect https://a.test/?token=${REDACTED}'https://b.test/?token=${REDACTED}&page=2' failed`);
   });
 
   it('does not mistake a backslash path with @ for a password', () => {
     // Browsers read \ as / in http(s) and ws(s) URLs, so 8443\team is port + path.
     const url = 'https://example.com:8443\\team@docs';
     expect(redactUrl(url, EMPTY_RULES)).toBe(url);
-    expect(redactUrlsInText(`see ${url}`, EMPTY_RULES)).toBe(`see ${url}`);
+    // The scan must also go on past the \ path, to the query after it.
+    expect(redactUrlsInText(`see ${url}?token=s&page=2`, EMPTY_RULES)).toBe(
+      `see ${url}?token=${REDACTED}&page=2`,
+    );
   });
 
   it('masks a one-time code passed as otp= in a URL', () => {

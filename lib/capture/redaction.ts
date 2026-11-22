@@ -41,10 +41,17 @@ export const DEFAULT_EXACT_KEYS: readonly string[] = ['otp'];
 
 /**
  * Query-param names that carry a credential in signed links and API calls:
- * Azure SAS `sig`, CloudFront and S3 v2 `Signature`, Google API `key`. These are
- * URL-only: in JSON bodies `key` usually names an issue or a feature flag.
+ * Azure SAS `sig`, CloudFront and S3 v2 `Signature`, AWS and Google Cloud V4
+ * `X-Amz-Signature` / `X-Goog-Signature`, Google API `key`. These are URL-only:
+ * in JSON bodies `key` usually names an issue or a feature flag.
  */
-export const DEFAULT_EXACT_URL_PARAMS: readonly string[] = ['sig', 'signature', 'key'];
+export const DEFAULT_EXACT_URL_PARAMS: readonly string[] = [
+  'sig',
+  'signature',
+  'x-amz-signature',
+  'x-goog-signature',
+  'key',
+];
 
 /**
  * Compile a set of extra regex source strings into predicates. Invalid patterns
