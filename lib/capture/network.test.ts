@@ -395,32 +395,44 @@ describe('NetworkCapturer binary bodies', () => {
     expect(body.text).toBe(firstBytes(redacted, SETTINGS.inlineBodyCapBytes));
   });
 
-  it.each(['application/octet-stream', 'application/x-protobuf', 'text/event-stream'])(
-    'still replaces a gzip-encoded %s response body with a marker',
-    async (contentType) => {
+  // The content-type and control-character checks must not depend on the header:
+  // each case runs with and without Content-Encoding.
+  const withAndWithoutGzip = (cases: string[]) =>
+    cases.flatMap((c) => [[c, 'gzip'], [c, '']] as [string, string][]);
+
+  it.each(withAndWithoutGzip(['application/octet-stream', 'application/x-protobuf', 'text/event-stream']))(
+    'still replaces a %s response body with a marker (content-encoding "%s")',
+    async (contentType, enc) => {
       const { emitted } = await finishResponse(
-        { 'content-type': contentType, 'content-encoding': 'gzip' },
+        { 'content-type': contentType, ...(enc ? { 'content-encoding': enc } : {}) },
         'readable-but-binary-typed',
       );
       const body = payloadOf(emitted[0]!).responseBody!;
-      expect(body.text).toBe('«binary body — 25 bytes, gzip, not shown»');
+      expect(body.text).toBe(`«binary body — 25 bytes${enc ? ', ' + enc : ''}, not shown»`);
       expect(body.originalSize).toBe(25);
     },
   );
 
-  it('still replaces a gzip-encoded text body full of control characters', async () => {
-    const { emitted } = await finishResponse(
-      { 'content-type': 'text/plain', 'content-encoding': 'gzip' },
-      String.fromCharCode(1).repeat(10) + 'marker-text-payload',
-    );
-    const body = payloadOf(emitted[0]!).responseBody!;
-    expect(body.text).toContain('binary body');
-    expect(body.text).not.toContain('marker-text-payload');
-  });
+  it.each(['gzip', ''])(
+    'still replaces a text body full of control characters (content-encoding "%s")',
+    async (enc) => {
+      const { emitted } = await finishResponse(
+        { 'content-type': 'text/plain', ...(enc ? { 'content-encoding': enc } : {}) },
+        String.fromCharCode(1).repeat(10) + 'marker-text-payload',
+      );
+      const body = payloadOf(emitted[0]!).responseBody!;
+      expect(body.text).toBe(`«binary body — 29 bytes${enc ? ', ' + enc : ''}, not shown»`);
+      expect(body.text).not.toContain('marker-text-payload');
+    },
+  );
 
   it('replaces a decoded gzip response that cannot be redacted with a marker', async () => {
     // Nested deeper than the recursive redactor can go; JSON.parse still succeeds.
-    const deep = '{"token":"tok-deep","d":' + '['.repeat(20000) + '1' + ']'.repeat(20000) + '}';
+    // About 80 KB: over the inline cap and under the asset cap, so a raw copy would
+    // be stored if the failure fell through.
+    const deep = '{"token":"tok-deep","d":' + '['.repeat(40000) + '1' + ']'.repeat(40000) + '}';
+    expect(deep.length).toBeGreaterThan(SETTINGS.inlineBodyCapBytes);
+    expect(deep.length).toBeLessThan(SETTINGS.assetBodyCapBytes);
     const { emitted, storeBodyAsset } = await finishResponse(
       { 'content-type': 'application/json', 'content-encoding': 'gzip' },
       deep,
@@ -604,6 +616,8 @@ describe('NetworkCapturer response bodies recorded from Chromium', () => {
       const p = payloads.get(encoding)!;
       // What Chromium reported: the header names the encoding, the body is text.
       expect(encodingOf(p)).toBe(encoding);
+      expect(p.responseBody!.mime).toBe('application/json');
+      expect(payloads.get('plain')!.responseBody!.mime).toBe('application/json');
       expect(bodies[encoding]).toEqual({ body: sentJson, base64Encoded: false });
       expect(JSON.parse(p.responseBody!.text!)).toEqual({
         error: 'card_declined',
@@ -640,6 +654,7 @@ describe('NetworkCapturer response bodies recorded from Chromium', () => {
     }
     // Their headers and MIME type are kept as Chromium reported them.
     expect(encodingOf(payloads.get('unknown-encoding')!)).toBe('x-custom');
+    expect(payloads.get('unknown-encoding')!.responseBody!.mime).toBe('application/json');
     expect(encodingOf(payloads.get('blob-gzip')!)).toBe('gzip');
     expect(payloads.get('blob-gzip')!.responseBody!.mime).toBe('application/octet-stream');
   });
