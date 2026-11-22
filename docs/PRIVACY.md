@@ -40,12 +40,14 @@ explicitly publish the selected report to Proofline or your Cloudflare Pages pro
 
 Redaction is on by default. For supported structured capture fields, the extension
 masks authorization headers, token-like JSON/form fields (including private
-keys and one-time codes), sensitive URL parameters (including signed-link
-signatures such as Azure `sig` and API keys passed as `key`), passwords in
-`user:password@` URLs, and password inputs. You can add rules or disable
-redaction per session on the options page. The same URL parameter rules apply to web and
-WebSocket URLs in console messages, browser logs, arguments, sources and exception
-stacks before they are stored. Screenshots, audio, attached files and other
+keys, and one-time codes in a field named exactly `otp`), sensitive URL parameters
+(including signed-link signatures such as Azure `sig` and API keys passed as `key`),
+passwords in `user:password@` URLs, and password inputs. You can add rules or disable
+redaction per session on the options page. The URL rules apply to network request
+URLs and to web and WebSocket URLs in console messages, browser logs, arguments,
+sources and exception stacks before they are stored. Page addresses (the tab URL
+when recording starts, tab changes and page navigations) are stored as the browser
+reports them, without URL redaction. Screenshots, audio, attached files and other
 arbitrary text may still contain sensitive information. This does not scrub
 recordings or reports saved before the fix.
 
