@@ -45,11 +45,12 @@ same token-like names in URL parameters, passwords in `user:password@` URLs, and
 password inputs. In URLs it also masks the parameters named exactly `sig`, `Signature`,
 `X-Amz-Signature`, `X-Goog-Signature` and `key` (ignoring case), which carry
 signed-link signatures and API keys. You can add rules for other names, or disable
-redaction per session, on the options page. Fields in multipart form uploads
-(`multipart/form-data`) are not masked, and a URL inside another URL's parameter value
-is not checked on its own. The URL rules apply to network request URLs and to web and
-WebSocket URLs in console messages, browser logs, arguments, sources and exception
-stacks before they are stored.
+redaction per session, on the options page. Multipart form uploads
+(`multipart/form-data`) are not parsed into fields, so don't rely on their fields being
+masked, and a URL inside another URL's parameter value is not checked on its own. The
+URL rules apply to network request URLs and to web and WebSocket URLs in console
+messages, browser logs, arguments, sources and exception stacks before they are stored.
+They don't apply to URLs inside other header values, such as a redirect's `Location`.
 
 Finding URLs inside console and log text is a best-effort scan. Unusual characters
 inside a logged URL, such as spaces, quotes, `<`, `>` or backticks, can end the scan

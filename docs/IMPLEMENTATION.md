@@ -114,7 +114,7 @@ walk(node):
 ```
 
   for non-JSON, run a regex pass over `key=value` pairs with sensitive keys (form-urlencoded).
-- `redactUrl(url)`: apply the same patterns over the query params
+- `redactUrl(url)`: apply the same patterns over the query params, plus URL-only exact names (`sig`, `signature`, `x-amz-signature`, `x-goog-signature`, `key`) that bodies don't use, and mask the password in `user:password@`. See `docs/PRIVACY.md` for the full list.
 - the network assembler applies redaction before `recordEvent`, so raw secrets never reach IndexedDB. Custom rules merge with the defaults (the Phase 8 options UI).
 
 ### 2.4 Console and exceptions

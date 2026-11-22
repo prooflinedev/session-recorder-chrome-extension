@@ -193,7 +193,7 @@ session-2026-07-05-1432/
 - request and response headers such as `authorization`, `cookie`, `set-cookie`, and `x-api-key` become `«redacted»`
 - we redact body fields matching `/token|secret|password|api[-_]?key|session/i` in JSON (recursively) and in form data
 - we never capture password input values, and we mask input fields matching sensitive-name rules
-- we mask URL query params matching the same patterns
+- we mask URL query params matching the same patterns, plus URL-only names such as `sig` and `key` (see `docs/PRIVACY.md`), and the password in `user:password@` URLs
 - the options page lets you add custom rules (header names, JSON field regexes, URL patterns) on top of the defaults. A per-session "capture raw" toggle is available with a warning
 - we apply redaction at capture time, so raw secrets never touch disk
 
