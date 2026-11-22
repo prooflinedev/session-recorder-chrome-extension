@@ -76,8 +76,44 @@ function buildUrlMatcher(rules: RedactionRules): (name: string) => boolean {
 }
 
 /**
- * Return a new header array with blocklisted (and custom) header values masked.
- * Comparison is case-insensitive on the header name. Input is never mutated.
+ * Header-name segments that mark a credential. Matched against whole segments
+ * (the name split on `-` and `_`), never substrings, so `:authority`, `author`
+ * and `x-idempotency-key` are left alone. This is deliberately separate from
+ * DEFAULT_KEY_PATTERN, which is a substring regex tuned for JSON/form keys.
+ */
+const SECRET_HEADER_SEGMENTS: ReadonlySet<string> = new Set([
+  'token', 'tokens', 'secret', 'secrets', 'password', 'passwd',
+  'credential', 'credentials', 'bearer', 'jwt', 'apikey',
+  'session', 'auth', 'authorization', 'authentication',
+]);
+
+/** Segments that make a following `key` segment a credential (`x-goog-api-key`). */
+const KEY_QUALIFIERS: ReadonlySet<string> = new Set([
+  'api', 'secret', 'private', 'access', 'subscription', 'app',
+]);
+
+/**
+ * True when a header NAME looks like it carries a credential
+ * (`X-CSRF-Token`, `X-Amz-Security-Token`, `X-Goog-Api-Key`, ...).
+ * Case-insensitive. Pseudo-headers (`:authority`) and `access-control-*` CORS
+ * headers are never secret-bearing.
+ */
+export function isSecretHeaderName(name: string): boolean {
+  const lower = name.toLowerCase();
+  if (lower.startsWith(':') || lower.startsWith('access-control-')) return false;
+  const segments = lower.split(/[-_]+/).filter(Boolean);
+  return segments.some(
+    (seg, i) =>
+      SECRET_HEADER_SEGMENTS.has(seg) ||
+      (seg === 'key' && i > 0 && KEY_QUALIFIERS.has(segments[i - 1]!)),
+  );
+}
+
+/**
+ * Return a new header array with secret-bearing header values masked: the
+ * default blocklist, custom names from the rules, and any name that
+ * `isSecretHeaderName` recognises. Comparison is case-insensitive on the header
+ * name. Input is never mutated.
  */
 export function redactHeaders(
   headers: NetHeader[],
@@ -88,7 +124,7 @@ export function redactHeaders(
     ...rules.headerNames.map((n) => n.toLowerCase()),
   ]);
   return headers.map((h) =>
-    blocked.has(h.name.toLowerCase())
+    blocked.has(h.name.toLowerCase()) || isSecretHeaderName(h.name)
       ? { name: h.name, value: REDACTED }
       : { name: h.name, value: h.value },
   );

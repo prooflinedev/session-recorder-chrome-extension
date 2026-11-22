@@ -9,6 +9,7 @@ import {
   DEFAULT_KEY_PATTERN,
   REDACTED,
   buildKeyMatcher,
+  isSecretHeaderName,
   redactBody,
   redactHeaders,
   redactUrl,
@@ -353,5 +354,54 @@ describe('redactUrl', () => {
   it('matches param names after url-decoding', () => {
     const out = redactUrl('https://x.com/p?api%5Fkey=v&z=1', EMPTY_RULES);
     expect(out).toBe(`https://x.com/p?api%5Fkey=${REDACTED}&z=1`);
+  });
+});
+
+describe('redactHeaders — secret-bearing header names', () => {
+  const MASK = [
+    'X-CSRF-Token', 'X-XSRF-Token', 'X-Amz-Security-Token', 'X-Goog-Api-Key',
+    'X-Access-Token', 'x-amz-security-token', 'Ocp-Apim-Subscription-Key',
+    'X_Api_Key', 'ApiKey', 'X-Session-Id', 'X-Auth-Foo', 'Authorization',
+    'X-App-Secret', 'X-Private-Key', 'X-Id-Jwt',
+  ];
+  const KEEP = [
+    ':authority', ':method', ':path', ':scheme', ':status',
+    'access-control-allow-credentials', 'Access-Control-Allow-Headers',
+    'Content-Type', 'Content-Length', 'User-Agent', 'Host', 'Origin',
+    'X-Request-Id', 'X-Correlation-Id', 'traceparent', 'ETag', 'Cache-Control',
+    'Sec-Fetch-Mode', 'sec-ch-ua', 'Sec-WebSocket-Key', 'Sec-WebSocket-Accept',
+    'X-Idempotency-Key', 'X-Cache-Key', 'X-RateLimit-Remaining', 'Retry-After',
+    'X-Author', 'Authority',
+  ];
+
+  it.each(MASK)('masks %s', (name) => {
+    expect(isSecretHeaderName(name)).toBe(true);
+    const [out] = redactHeaders([{ name, value: 'FAKE-secret-value' }], EMPTY_RULES);
+    expect(out).toEqual({ name, value: REDACTED });
+  });
+
+  it.each(KEEP)('keeps %s', (name) => {
+    expect(isSecretHeaderName(name)).toBe(false);
+    const [out] = redactHeaders([{ name, value: 'visible' }], EMPTY_RULES);
+    expect(out).toEqual({ name, value: 'visible' });
+  });
+
+  it('lets a custom rule mask a name the matcher would keep', () => {
+    const [out] = redactHeaders(
+      [{ name: ':authority', value: 'internal.example.com' }],
+      rules({ headerNames: [':Authority'] }),
+    );
+    expect(out?.value).toBe(REDACTED);
+  });
+
+  it('masks both casings when HTTP/1 and HTTP/2 variants are merged', () => {
+    const out = redactHeaders(
+      [
+        { name: 'X-CSRF-Token', value: 'FAKE-a' },
+        { name: 'x-csrf-token', value: 'FAKE-a' },
+      ],
+      EMPTY_RULES,
+    );
+    expect(out.map((h) => h.value)).toEqual([REDACTED, REDACTED]);
   });
 });

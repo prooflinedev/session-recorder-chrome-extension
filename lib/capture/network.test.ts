@@ -651,3 +651,28 @@ describe('NetworkCapturer redirects', () => {
     expect(emitted).toHaveLength(0);
   });
 });
+
+describe('NetworkCapturer header redaction (end to end through emitRequest)', () => {
+  it('does not emit secret-bearing headers outside the exact blocklist', () => {
+    const { cap, emitted } = makeCapturer();
+    const rid = 'h-1';
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: rid,
+      request: {
+        url: 'https://app.example.com/api/me',
+        method: 'GET',
+        headers: {
+          'X-CSRF-Token': 'FAKE-csrf-7f3a91',
+          'X-Amz-Security-Token': 'FAKE-amz-91d0e5',
+          'X-Request-Id': 'req-123',
+        },
+      },
+      type: 'Fetch',
+    });
+    cap.handle(1, 'Network.loadingFailed', { requestId: rid, errorText: 'net::ERR_FAILED' });
+    const json = JSON.stringify(emitted);
+    expect(json).not.toContain('FAKE-csrf-7f3a91');
+    expect(json).not.toContain('FAKE-amz-91d0e5');
+    expect(json).toContain('req-123');
+  });
+});
