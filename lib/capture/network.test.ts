@@ -440,7 +440,7 @@ describe('NetworkCapturer binary bodies', () => {
       deep,
     );
     const body = payloadOf(emitted[0]!).responseBody!;
-    expect(body.present).toBe(true);
+    expect(body).toMatchObject({ present: true, base64: false, truncated: false });
     expect(body.text).toBe(`«body not shown — ${deep.length} bytes, could not be redacted»`);
     expect(body.text).not.toContain('tok-deep');
     expect(storeBodyAsset).not.toHaveBeenCalled();
@@ -471,6 +471,7 @@ describe('NetworkCapturer binary bodies', () => {
     expect(storeBodyAsset).not.toHaveBeenCalled();
     expect(emitted).toHaveLength(1);
     const body = payloadOf(emitted[0]!).requestBody!;
+    expect(body).toMatchObject({ present: true, base64: false, truncated: false });
     expect(body.text).toBe(`«body not shown — ${deep.length} bytes, could not be redacted»`);
     expect(body.text).not.toContain('tok-deep');
   });

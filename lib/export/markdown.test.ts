@@ -305,9 +305,9 @@ describe('renderReport', () => {
   });
 
   it('fences a body longer than any backtick run inside it', () => {
-    // The longest run (four) comes before a shorter one, so sizing the fence from
-    // the last run instead of the longest would fail.
-    const body = 'before\n````\n## injected heading\n```\nafter';
+    // The longest run (four) sits between two shorter ones, so sizing the fence from
+    // the first or the last run instead of the longest would fail.
+    const body = 'before\n```\n## injected heading\n````\nmore\n```\nafter';
     const input = buildSession();
     const events = input.events.map((e) =>
       e.type === 'net-request' && e.payload.responseBody
