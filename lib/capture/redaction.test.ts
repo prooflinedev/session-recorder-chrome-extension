@@ -152,6 +152,97 @@ describe('redactHeaders', () => {
     redactHeaders(headers, rules({ headerNames: ['x-custom'] }));
     expect(headers).toEqual(snapshot);
   });
+
+  it('applies the URL rules to headers whose value is a URL', () => {
+    const out = redactHeaders([
+      { name: 'Location', value: 'https://files.example/r.pdf?id=7&token=LOC_SECRET' },
+      { name: 'content-location', value: '/r.pdf?access_token=CL_SECRET' },
+      { name: 'Referer', value: 'https://app.example/invite?invite_token=REF_SECRET#top' },
+      { name: 'Refresh', value: '0; url=/next?session=REFRESH_SECRET' },
+    ], EMPTY_RULES);
+    expect(out).toEqual([
+      { name: 'Location', value: `https://files.example/r.pdf?id=7&token=${REDACTED}` },
+      { name: 'content-location', value: `/r.pdf?access_token=${REDACTED}` },
+      { name: 'Referer', value: `https://app.example/invite?invite_token=${REDACTED}#top` },
+      { name: 'Refresh', value: `0; url=/next?session=${REDACTED}` },
+    ]);
+  });
+
+  it('keeps the quotes around a quoted Refresh target', () => {
+    const out = redactHeaders([
+      { name: 'Refresh', value: "5; URL='/next?token=SQ_SECRET'" },
+      { name: 'Refresh', value: '0;url="https://a.example/n?id=1&token=DQ_SECRET"' },
+      { name: 'Refresh', value: '30' },
+      { name: 'Refresh', value: "0; url='/next?token=SUF_SECRET' extra" },
+    ], EMPTY_RULES);
+    expect(out.map((h) => h.value)).toEqual([
+      `5; URL='/next?token=${REDACTED}'`,
+      `0;url="https://a.example/n?id=1&token=${REDACTED}"`,
+      '30',
+      `0; url='/next?token=${REDACTED}' extra`,
+    ]);
+  });
+
+  it('handles long Refresh values in linear time', () => {
+    const pad = ' '.repeat(200_000);
+    const t0 = performance.now();
+    const out = redactHeaders([
+      { name: 'Refresh', value: `${pad}x` },
+      { name: 'Refresh', value: `0;url=${pad}x` },
+      { name: 'Refresh', value: `0;url='${'a'.repeat(200_000)}` },
+      { name: 'Refresh', value: `0;url=a${pad}b?token=LONG_SECRET` },
+    ], EMPTY_RULES);
+    expect(performance.now() - t0).toBeLessThan(1000);
+    expect(out.map((h) => h.value)).toEqual([
+      `${pad}x`,
+      `0;url=${pad}x`,
+      `0;url='${'a'.repeat(200_000)}`,
+      `0;url=a${pad}b?token=${REDACTED}`,
+    ]);
+  });
+
+  it('masks a Refresh target written without url=, as browsers accept it', () => {
+    const out = redactHeaders([
+      { name: 'Refresh', value: '5; /next?token=BARE_SECRET' },
+      { name: 'Refresh', value: "0, 'https://a.example/n?session=BQ_SECRET'" },
+    ], EMPTY_RULES);
+    expect(out.map((h) => h.value)).toEqual([
+      `5; /next?token=${REDACTED}`,
+      `0, 'https://a.example/n?session=${REDACTED}'`,
+    ]);
+  });
+
+  it('masks a whole blocklisted URL-valued header, not only its params', () => {
+    const out = redactHeaders(
+      [{ name: 'Location', value: 'https://files.example/private/r.pdf?token=X' }],
+      rules({ headerNames: ['location'] }),
+    );
+    expect(out[0]!.value).toBe(REDACTED);
+  });
+
+  it('uses custom URL param patterns for URL-valued headers', () => {
+    const out = redactHeaders(
+      [
+        { name: 'Location', value: 'https://acct.blob.core.windows.net/c/f.pdf?sp=r&sig=SAS_SECRET' },
+        { name: 'Refresh', value: '0; url=/f.pdf?sp=r&sig=SAS_SECRET' },
+        { name: 'Refresh', value: "0; url='/f.pdf?sp=r&sig=SAS_SECRET'" },
+      ],
+      rules({ urlParamPatterns: ['^sig$'] }),
+    );
+    expect(out.map((h) => h.value)).toEqual([
+      `https://acct.blob.core.windows.net/c/f.pdf?sp=r&sig=${REDACTED}`,
+      `0; url=/f.pdf?sp=r&sig=${REDACTED}`,
+      `0; url='/f.pdf?sp=r&sig=${REDACTED}'`,
+    ]);
+  });
+
+  it('leaves URL rules off headers that are not URLs', () => {
+    const out = redactHeaders(
+      [{ name: 'X-Note', value: 'see /x?token=NOT_A_URL_HEADER' }],
+      EMPTY_RULES,
+    );
+    expect(out[0]!.value).toBe('see /x?token=NOT_A_URL_HEADER');
+  });
 });
 
 describe('redactBody — JSON', () => {

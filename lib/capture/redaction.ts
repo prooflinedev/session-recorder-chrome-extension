@@ -76,8 +76,51 @@ function buildUrlMatcher(rules: RedactionRules): (name: string) => boolean {
 }
 
 /**
- * Return a new header array with blocklisted (and custom) header values masked.
- * Comparison is case-insensitive on the header name. Input is never mutated.
+ * Headers whose value is a URL. They get the same query-param rules as request
+ * URLs, so a redirect to a signed link does not keep the secret that the next
+ * hop's URL already masks. `refresh` is handled by `redactRefresh`.
+ */
+const URL_VALUED_HEADERS = new Set(['location', 'content-location', 'referer']);
+
+/**
+ * `Refresh: 5; url='/next?token=…'`: mask only the URL, keeping the delay and
+ * the optional quotes around the target.
+ */
+function redactRefresh(value: string, rules: RedactionRules): string {
+  // Plain string parsing, not one big regex: header values can be long and a
+  // backtracking pattern made a 100,000-character value take minutes.
+  // Same order as HTML's refresh parsing: delay, optional `;` or `,`, optional
+  // `url=`, then the target (bare targets like `5; /next?token=…` count too).
+  let start = 0;
+  const skip = (re: RegExp) => {
+    while (start < value.length && re.test(value[start]!)) start++;
+  };
+  skip(/\s/);
+  skip(/[\d.]/);
+  skip(/\s/);
+  if (value[start] === ';' || value[start] === ',') start++;
+  skip(/\s/);
+  if (value.slice(start, start + 3).toLowerCase() === 'url') {
+    let eq = start + 3;
+    while (eq < value.length && /\s/.test(value[eq]!)) eq++;
+    if (value[eq] === '=') {
+      start = eq + 1;
+      skip(/\s/);
+    }
+  }
+  const quote = value[start];
+  const close = quote === "'" || quote === '"' ? value.indexOf(quote, start + 1) : -1;
+  if (close !== -1) {
+    // Mask only up to the first matching quote; keep it and anything after it.
+    return `${value.slice(0, start + 1)}${redactUrl(value.slice(start + 1, close), rules)}${value.slice(close)}`;
+  }
+  return `${value.slice(0, start)}${redactUrl(value.slice(start), rules)}`;
+}
+
+/**
+ * Return a new header array with blocklisted (and custom) header values masked
+ * and URL rules applied to URL-valued headers. Comparison is case-insensitive
+ * on the header name. Input is never mutated.
  */
 export function redactHeaders(
   headers: NetHeader[],
@@ -87,11 +130,13 @@ export function redactHeaders(
     ...DEFAULT_HEADER_BLOCKLIST,
     ...rules.headerNames.map((n) => n.toLowerCase()),
   ]);
-  return headers.map((h) =>
-    blocked.has(h.name.toLowerCase())
-      ? { name: h.name, value: REDACTED }
-      : { name: h.name, value: h.value },
-  );
+  return headers.map((h) => {
+    const name = h.name.toLowerCase();
+    if (blocked.has(name)) return { name: h.name, value: REDACTED };
+    if (URL_VALUED_HEADERS.has(name)) return { name: h.name, value: redactUrl(h.value, rules) };
+    if (name === 'refresh') return { name: h.name, value: redactRefresh(h.value, rules) };
+    return { name: h.name, value: h.value };
+  });
 }
 
 /** Recursively clone a parsed JSON value, masking values under matching keys. */

@@ -474,6 +474,26 @@ describe('NetworkCapturer redirects', () => {
     },
   );
 
+  it('masks a signed redirect target in the Location header like the next hop URL', () => {
+    const { cap, emitted } = makeCapturer();
+    const target = 'https://files.example/report.pdf?id=7&token=LOC_SECRET';
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'dl',
+      request: { method: 'GET', url: 'https://app.example/download/7', headers: {} },
+    });
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'dl',
+      request: { method: 'GET', url: target, headers: {} },
+      redirectResponse: { status: 302, headers: { Location: target } },
+    });
+    expect(emitted).toHaveLength(1);
+    const hop = payloadOf(emitted[0]!);
+    expect(hop.status).toBe(302);
+    expect(header(hop.responseHeaders, 'location'))
+      .toBe('https://files.example/report.pdf?id=7&token=«redacted»');
+    expect(JSON.stringify(emitted)).not.toContain('LOC_SECRET');
+  });
+
   it('keeps available extra headers when a request fails without responseReceived', () => {
     const { cap, emitted } = makeCapturer();
     cap.handle(1, 'Network.requestWillBeSent', {
