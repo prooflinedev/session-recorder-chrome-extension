@@ -76,11 +76,30 @@ function buildUrlMatcher(rules: RedactionRules): (name: string) => boolean {
 }
 
 /**
- * Headers whose value is (or, for `refresh`, ends with) a URL. They get the
- * same query-param rules as request URLs, so a redirect to a signed link does
- * not keep the secret that the next hop's URL already masks.
+ * Headers whose value is a URL. They get the same query-param rules as request
+ * URLs, so a redirect to a signed link does not keep the secret that the next
+ * hop's URL already masks. `refresh` is handled by `redactRefresh`.
  */
-const URL_VALUED_HEADERS = new Set(['location', 'content-location', 'referer', 'refresh']);
+const URL_VALUED_HEADERS = new Set(['location', 'content-location', 'referer']);
+
+/**
+ * `Refresh: 5; url='/next?token=…'`: mask only the URL, keeping the delay and
+ * the optional quotes around the target.
+ */
+function redactRefresh(value: string, rules: RedactionRules): string {
+  // Plain string parsing, not one big regex: header values can be long and a
+  // backtracking pattern made a 100,000-character value take minutes.
+  const at = value.search(/url\s*=/i);
+  if (at === -1) return value;
+  let start = value.indexOf('=', at) + 1;
+  while (start < value.length && /\s/.test(value[start]!)) start++;
+  const end = value.trimEnd().length;
+  const quote = value[start];
+  if ((quote === "'" || quote === '"') && end - start >= 2 && value[end - 1] === quote) {
+    return `${value.slice(0, start + 1)}${redactUrl(value.slice(start + 1, end - 1), rules)}${value.slice(end - 1)}`;
+  }
+  return `${value.slice(0, start)}${redactUrl(value.slice(start), rules)}`;
+}
 
 /**
  * Return a new header array with blocklisted (and custom) header values masked
@@ -99,6 +118,7 @@ export function redactHeaders(
     const name = h.name.toLowerCase();
     if (blocked.has(name)) return { name: h.name, value: REDACTED };
     if (URL_VALUED_HEADERS.has(name)) return { name: h.name, value: redactUrl(h.value, rules) };
+    if (name === 'refresh') return { name: h.name, value: redactRefresh(h.value, rules) };
     return { name: h.name, value: h.value };
   });
 }

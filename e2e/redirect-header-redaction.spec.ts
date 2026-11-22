@@ -86,6 +86,11 @@ test('masks secrets in redirect Location and Referer headers in the export', asy
   const entry = har.log.entries.find((e: any) => e.request.url.endsWith('/redirect-probe'));
   expect(entry, 'HAR has the redirect hop').toBeTruthy();
   expect(entry.response.redirectURL).toBe(MASKED_TARGET);
+  const refEntry = har.log.entries.find((e: any) => e.request.url.endsWith('/referer-probe'));
+  expect(refEntry, 'HAR has the referer probe').toBeTruthy();
+  expect(header(refEntry.request.headers, 'referer')).toBe(
+    'http://localhost:5319/?session_token=«redacted»',
+  );
 
   for (const file of ['/network.har', '/session.json', '/report.md']) {
     const body = text(file);
