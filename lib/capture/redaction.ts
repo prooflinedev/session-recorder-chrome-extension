@@ -110,7 +110,7 @@ function redactJsonValue(
   }
   if (value !== null && typeof value === 'object') {
     let redacted = false;
-    const obj: Record<string, unknown> = {};
+    const obj = Object.create(null) as Record<string, unknown>;
     for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
       if (matcher(key)) {
         obj[key] = REDACTED;
