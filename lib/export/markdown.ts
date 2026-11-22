@@ -453,6 +453,13 @@ function renderEvent(
   }
 }
 
+const PENDING_NOTE = 'Pending: the request had not finished when recording stopped.';
+
+/** `PENDING`, prefixed by the status when response headers had arrived. */
+function pendingStatus(p: { status?: number }): string {
+  return p.status != null ? `${p.status} PENDING` : 'PENDING';
+}
+
 function renderNetRequest(
   e: Extract<SessionEvent, { type: 'net-request' }>,
   input: RenderInput,
@@ -462,13 +469,16 @@ function renderNetRequest(
   const p = e.payload;
   const status = p.failed
     ? `FAILED${p.failureReason ? ` (${p.failureReason})` : ''}`
-    : p.status != null
-      ? String(p.status)
-      : '—';
+    : p.pending
+      ? pendingStatus(p)
+      : p.status != null
+        ? String(p.status)
+        : '—';
   const path = urlPath(p.url);
   const ws = p.websocket ? ' [ws]' : '';
   lines.push('');
   lines.push(`${clock} 🌐 ${status} ${p.method} ${escapeInline(path)}${ws}`);
+  if (p.pending) lines.push(`> ${PENDING_NOTE}`);
 
   // Collapsed repeated requests take precedence — the body was thrown away.
   if (p.collapsed) {
@@ -606,7 +616,13 @@ function renderAppendices(
     lines.push('');
     for (const e of nets) {
       const p = e.payload;
-      const status = p.failed ? 'FAIL' : p.status != null ? String(p.status) : '—';
+      const status = p.failed
+        ? 'FAIL'
+        : p.pending
+          ? pendingStatus(p)
+          : p.status != null
+            ? String(p.status)
+            : '—';
       lines.push(
         `- [${formatClock(e.t)}] ${status} ${p.method} ${escapeInline(p.url)}`,
       );

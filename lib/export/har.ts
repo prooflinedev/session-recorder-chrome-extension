@@ -13,6 +13,7 @@ import type {
 } from '@/lib/session/types';
 
 const PARTIAL = 'Body cut short at capture or by the export level.';
+const PENDING = 'Pending: the request had not finished when recording stopped.';
 
 /** Returns null when there are no requests. */
 export function buildHar(session: Session, events: SessionEvent[]): object | null {
@@ -38,6 +39,7 @@ function entry(session: Session, t: number, p: NetRequestPayload): object {
     p.collapsed &&
     `Shown once for ${p.collapsed.count} similar requests ` +
       `(statuses: ${p.collapsed.statuses.join(', ')}).`;
+  const comment = [collapsed, p.pending && PENDING].filter(Boolean).join(' ');
 
   return {
     startedDateTime: new Date(started).toISOString(),
@@ -89,7 +91,8 @@ function entry(session: Session, t: number, p: NetRequestPayload): object {
         data: f.text ?? '',
       })),
     }),
-    ...(collapsed && { comment: collapsed }),
+    ...(comment && { comment }),
+    ...(p.pending && { _pending: true }),
   };
 }
 

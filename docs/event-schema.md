@@ -198,6 +198,7 @@ bodies before emit.
 | `initiator`      | `string` (optional)     | Initiator type or description. |
 | `failed`         | `boolean` (optional)    | True when the request failed with a network error. Scores highest. |
 | `failureReason`  | `string` (optional)     | CDP failure reason when `failed`. |
+| `pending`        | `true` (optional)       | The request had not finished when recording stopped. The fields that had arrived (status, headers, request body) are kept, `timing.durationMs` is absent, and the event is placed at the request's start time. |
 | `fromCache`      | `boolean` (optional)    | Served from cache. |
 | `mime`           | `string` (optional)     | Response MIME type. |
 | `websocket`      | `boolean` (optional)    | True for WebSocket connections. |

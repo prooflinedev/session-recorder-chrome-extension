@@ -92,6 +92,13 @@ export class ScreenshotScheduler {
   /** Last stored screenshot's average-hash per tab, for dedup. */
   private readonly lastHashByTab = new Map<number, string>();
 
+  /**
+   * Advanced by `reset()`. A capture started before a reset belongs to the
+   * session that has since ended, so it is dropped rather than stored or
+   * emitted into whatever session is current when it finishes.
+   */
+  private generation = 0;
+
   constructor(deps: ScreenshotDeps) {
     this.deps = deps;
   }
@@ -129,8 +136,9 @@ export class ScreenshotScheduler {
       ) {
         fire = true;
       } else if (e.type === 'net-request') {
+        // A pending request is flushed at stop: not a moment to capture now.
         const status = e.payload.status;
-        if (typeof status === 'number' && status >= 400) fire = true;
+        if (typeof status === 'number' && status >= 400 && !e.payload.pending) fire = true;
       }
       if (!fire) return;
 
@@ -146,6 +154,7 @@ export class ScreenshotScheduler {
     trigger: ScreenshotTrigger,
     contextText?: string,
   ): Promise<void> {
+    const generation = this.generation;
     try {
       const settings = this.deps.getSettings();
       const { data } = await this.deps.captureScreenshot(
@@ -205,7 +214,9 @@ export class ScreenshotScheduler {
         return; // near-duplicate — drop without storing or emitting
       }
 
+      if (generation !== this.generation) return;
       const { assetId } = await this.deps.storeScreenshot(storeBase64);
+      if (generation !== this.generation) return;
       this.deps.emit({
         type: 'screenshot',
         tabId,
@@ -224,8 +235,12 @@ export class ScreenshotScheduler {
     }
   }
 
-  /** Clear pending timers and dedup state (session end / tab teardown). */
+  /**
+   * Clear pending timers and dedup state (session start and end), and drop
+   * any capture still in flight.
+   */
   reset(): void {
+    this.generation += 1;
     for (const timer of this.debounceTimers.values()) {
       clearTimeout(timer);
     }

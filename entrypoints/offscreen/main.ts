@@ -151,10 +151,30 @@ async function handleStop(): Promise<void> {
     if (resolve) resolve();
   }
   // 'pause': stay stopped; recorder is left inactive until resume.
+
+  const done = flushDone;
+  flushing = null;
+  flushDone = null;
+  done?.();
 }
 
 /** Resolves the pending full-stop once its final segment has been delivered. */
 let stopFlushResolve: (() => void) | null = null;
+
+/**
+ * Settles once the segment the recorder was last stopped for (a rotation, a
+ * pause, or the final stop) has been delivered. A stop must not answer, and
+ * the document must not close, while one is outstanding.
+ */
+let flushing: Promise<void> | null = null;
+let flushDone: (() => void) | null = null;
+
+/** Stop the recorder for `reason`; `handleStop` delivers its segment. */
+function stopRecorder(rec: MediaRecorder, reason: StopReason): void {
+  stopReason = reason;
+  if (!flushing) flushing = new Promise<void>((resolve) => (flushDone = resolve));
+  rec.stop();
+}
 
 /** Restart the batch rotation timer at the cadence the current mode needs. */
 function scheduleRotation(): void {
@@ -179,8 +199,7 @@ function handleDictation(on: boolean): void {
 function rotateSegment(): void {
   if (state !== 'recording') return;
   if (!recorder || recorder.state !== 'recording') return;
-  stopReason = 'segment';
-  recorder.stop();
+  stopRecorder(recorder, 'segment');
 }
 
 function startLevelLoop(): void {
@@ -494,9 +513,12 @@ async function handleStart(
     streaming = await startStreaming(transcription);
   }
 
-  startRecorder();
+  // Paused (or stopped) while the stream was connecting: don't record now;
+  // handleResume starts the recorder.
+  const now = state as RecState; // may have changed while connecting
+  if (now === 'recording') startRecorder();
   dictating = dictation;
-  if (!streaming) {
+  if (!streaming && now !== 'idle') {
     narrationSegmentMs = transcription?.managed ? MANAGED_SEGMENT_MS : SEGMENT_MS;
     scheduleRotation();
   }
@@ -507,10 +529,7 @@ function handlePause(): void {
   if (state !== 'recording') return;
   state = 'paused';
   stopLevelLoop();
-  if (recorder && recorder.state === 'recording') {
-    stopReason = 'pause';
-    recorder.stop();
-  }
+  if (recorder && recorder.state === 'recording') stopRecorder(recorder, 'pause');
 }
 
 function handleResume(): void {
@@ -520,7 +539,19 @@ function handleResume(): void {
   startLevelLoop();
 }
 
-async function handleStopControl(): Promise<void> {
+/** The stop in progress; overlapping stops share it. */
+let stopping: Promise<void> | null = null;
+
+function handleStopControl(): Promise<void> {
+  if (!stopping) {
+    stopping = stopAll().finally(() => {
+      stopping = null;
+    });
+  }
+  return stopping;
+}
+
+async function stopAll(): Promise<void> {
   if (streamSocket?.readyState === WebSocket.OPEN) {
     flushingStream = true;
     await new Promise<void>(resolve => {
@@ -531,9 +562,11 @@ async function handleStopControl(): Promise<void> {
       catch { finish(); }
     });
   }
+  // A rotation or pause segment still being delivered lands first.
+  while (flushing) await flushing;
   if (state === 'idle') {
     teardown();
-    return Promise.resolve();
+    return;
   }
   // Prevent the cadence timer from racing the shutdown.
   if (segmentTimer !== null) {
@@ -545,16 +578,15 @@ async function handleStopControl(): Promise<void> {
   const rec = recorder;
   if (rec && rec.state === 'recording') {
     // Resolve only once handleStop has emitted + delivered the final segment.
-    return new Promise<void>((resolve) => {
+    await new Promise<void>((resolve) => {
       stopFlushResolve = resolve;
       state = 'idle';
-      stopReason = 'stop';
-      rec.stop();
+      stopRecorder(rec, 'stop');
     });
+    return;
   }
   // Paused: recorder is already inactive, nothing left to flush.
   teardown();
-  return Promise.resolve();
 }
 
 chrome.runtime.onMessage.addListener((raw, _sender, sendResponse) => {

@@ -46,7 +46,7 @@ export interface NetworkDeps {
 /** In-flight accumulation for a single request or WebSocket. */
 interface PartialRequest {
   requestId: string;
-  /** Tab that owns this request; needed to emit still-open sockets on flush. */
+  /** Tab that owns this request; needed to emit still-open records on flush. */
   tabId?: number;
   method?: string;
   url?: string;
@@ -68,12 +68,15 @@ interface PartialRequest {
   requestExtraReceived?: boolean;
   responseExtraReceived?: boolean;
   completed?: { tabId: number; extra: RequestCompletion };
+  /** loadingFinished arrived; the response body fetch may still be running. */
+  finished?: boolean;
 }
 
 interface RequestCompletion {
   responseBody?: NetBody;
   failed?: boolean;
   failureReason?: string;
+  pending?: boolean;
 }
 
 interface HttpChain {
@@ -107,12 +110,16 @@ export class NetworkCapturer {
   private readonly emitQueue = new Map<string, Promise<void>>();
   /** Bumped on reset so deferred emits from a previous recording are dropped. */
   private generation = 0;
+  /** HTTP requestIds already flushed on stop; their late CDP events are ignored. */
+  private readonly flushed = new Set<string>();
 
   constructor(private readonly deps: NetworkDeps) {}
 
   /** Route a `Network.*` CDP event. Never throws. */
   handle(tabId: number, method: string, params: Record<string, unknown>): void {
     try {
+      const requestId = asString(params.requestId);
+      if (requestId !== undefined && this.flushed.has(requestId)) return;
       switch (method) {
         case 'Network.requestWillBeSent':
           this.onRequestWillBeSent(tabId, params);
@@ -158,23 +165,57 @@ export class NetworkCapturer {
     this.pending.clear();
     this.httpChains.clear();
     this.emitQueue.clear();
+    this.flushed.clear();
     this.generation++;
   }
 
   /**
-   * Emit every still-pending WebSocket record with its accumulated frames, then
-   * drop it from `pending`. Called by the background on session stop: a socket
-   * that never fired `webSocketClosed` would otherwise be lost entirely (with
-   * all of its frames). In-flight normal requests are left untouched — only
-   * WebSockets are flushed here. A record flushed this way is removed from
-   * `pending`, so a later `webSocketClosed` will not double-emit it.
+   * Emit everything still open when recording stops. Called by the background
+   * after the debugger is detached, so no further CDP events can arrive.
+   *
+   * WebSockets: every still-pending socket is emitted with its accumulated
+   * frames, so a socket that never fired `webSocketClosed` is not lost. A
+   * record flushed this way is removed from `pending`, so a later
+   * `webSocketClosed` will not double-emit it.
+   *
+   * HTTP: every hop of every open chain is emitted in order, with whatever had
+   * arrived. A completed hop still waiting on ExtraInfo is emitted as is; a hop
+   * whose body fetch is still running is emitted without a body; a hop with no
+   * terminal event is emitted with `pending: true`, stamped at its start time.
+   * Fragments without a request are dropped.
+   * Flushed requestIds ignore any later CDP event.
+   *
+   * The returned promise settles once queued emits (bodies still being stored)
+   * have landed.
    */
-  flushOpen(): void {
+  flushOpen(): Promise<void> {
     for (const [requestId, p] of Array.from(this.pending.entries())) {
       if (p.websocket !== true) continue;
       this.pending.delete(requestId);
       this.emitRequest(p.tabId ?? -1, p, {});
     }
+
+    for (const [requestId, chain] of Array.from(this.httpChains.entries())) {
+      this.httpChains.delete(requestId);
+      this.pending.delete(requestId);
+      this.flushed.add(requestId);
+      for (const p of chain.hops) {
+        if (p.hasExtraInfo === false) continue;
+        this.takeExtraInfo(p, chain);
+      }
+      for (const p of chain.hops) {
+        if (!p.url) continue;
+        if (p.completed) {
+          this.emitRequest(p.completed.tabId, p, p.completed.extra);
+        } else if (p.finished) {
+          this.emitRequest(p.tabId ?? -1, p, { responseBody: { present: false } });
+        } else {
+          this.emitRequest(p.tabId ?? -1, p, { pending: true });
+        }
+      }
+    }
+
+    return Promise.all(this.emitQueue.values()).then(() => undefined);
   }
 
   // --------------------------------------------------------------------------
@@ -200,6 +241,7 @@ export class NetworkCapturer {
     }
 
     const p = this.ensureHttp(requestId);
+    p.tabId = tabId;
 
     const request = asRecord(params.request);
     if (request) {
@@ -268,6 +310,7 @@ export class NetworkCapturer {
       const p = this.pending.get(requestId);
       if (!p) return;
       this.pending.delete(requestId);
+      p.finished = true;
 
       if (
         p.timing &&
@@ -359,18 +402,7 @@ export class NetworkCapturer {
     for (const p of chain.hops) {
       if (p.hasExtraInfo === undefined && !p.completed) break;
       if (p.hasExtraInfo === false) continue;
-      if (!p.requestExtraReceived && chain.requests.length) {
-        mergeHeaders(p.reqHeaders, asRecord(chain.requests.shift()!.headers));
-        p.requestExtraReceived = true;
-      }
-      if (!p.responseExtraReceived && chain.responses.length) {
-        const info = chain.responses.shift()!;
-        mergeHeaders(p.respHeaders, asRecord(info.headers));
-        if (typeof info.statusCode === 'number' && p.status === undefined) {
-          p.status = info.statusCode;
-        }
-        p.responseExtraReceived = true;
-      }
+      this.takeExtraInfo(p, chain);
       if (p.hasExtraInfo && (!p.requestExtraReceived || !p.responseExtraReceived)) {
         break;
       }
@@ -391,6 +423,22 @@ export class NetworkCapturer {
       !this.pending.has(requestId)
     ) {
       this.httpChains.delete(requestId);
+    }
+  }
+
+  /** Merge the next queued ExtraInfo headers into a hop that lacks them. */
+  private takeExtraInfo(p: PartialRequest, chain: HttpChain): void {
+    if (!p.requestExtraReceived && chain.requests.length) {
+      mergeHeaders(p.reqHeaders, asRecord(chain.requests.shift()!.headers));
+      p.requestExtraReceived = true;
+    }
+    if (!p.responseExtraReceived && chain.responses.length) {
+      const info = chain.responses.shift()!;
+      mergeHeaders(p.respHeaders, asRecord(info.headers));
+      if (typeof info.statusCode === 'number' && p.status === undefined) {
+        p.status = info.statusCode;
+      }
+      p.responseExtraReceived = true;
     }
   }
 
@@ -634,6 +682,7 @@ export class NetworkCapturer {
       payload.failed = true;
       if (extra.failureReason) payload.failureReason = extra.failureReason;
     }
+    if (extra.pending) payload.pending = true;
     if (p.fromCache) payload.fromCache = true;
     if (p.mime) payload.mime = p.mime;
     if (p.websocket) {
@@ -678,7 +727,12 @@ export class NetworkCapturer {
 
   private finishEmit(tabId: number, payload: NetRequestPayload): void {
     try {
-      this.deps.emit({ type: 'net-request', tabId, payload });
+      const raw: RawEvent = { type: 'net-request', tabId, payload };
+      // A pending request has no completion moment; place it where it started.
+      if (payload.pending && payload.timing) {
+        raw.at = Math.max(payload.timing.startedAt, this.deps.sessionStart());
+      }
+      this.deps.emit(raw);
     } catch {
       /* funnel errors must not propagate back into the CDP listener */
     }
