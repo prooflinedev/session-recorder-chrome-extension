@@ -185,6 +185,10 @@ class Orchestrator {
   private lastAnnotationShot: string | undefined;
   /** Set only on the last error, surfaced in broadcast state. */
   private lastError: string | undefined;
+  /** The event-save failure shown in `lastError`, cleared once a write succeeds. */
+  private saveError: string | undefined;
+  /** Dropped events already noted in the recording. */
+  private notedDrops = 0;
   /** The most recently stopped session, kept in state until dismissed/replaced. */
   private lastStopped: Session | null = null;
   /** Synchronous guard so concurrent rehydrate() calls don't double-run. */
@@ -416,7 +420,7 @@ class Orchestrator {
     this.lastActiveSessionTab = tabId;
     this.lastAnnotationShot = undefined;
     this.lastError = undefined;
-    this.writer = new EventWriter();
+    this.writer = this.createWriter();
     this.network.reset();
     this.console.reset();
     this.screenshots.reset();
@@ -2056,7 +2060,7 @@ class Orchestrator {
       this.recent = [];
       this.lastError = undefined;
       this.lastAnnotationShot = undefined;
-      this.writer = new EventWriter();
+      this.writer = this.createWriter();
       this.network.reset();
       this.console.reset();
       this.screenshots.reset();
@@ -2160,6 +2164,45 @@ class Orchestrator {
 
   private stopHeartbeat(): void {
     void chrome.alarms.clear(HEARTBEAT_ALARM);
+  }
+
+  /**
+   * The batched event writer for a new or rehydrated session. Failed saves
+   * show a retrying error until a write succeeds; events dropped meanwhile
+   * are noted in the recording so the report states the gap.
+   */
+  private createWriter(): EventWriter {
+    this.saveError = undefined;
+    this.notedDrops = 0;
+    const writer = new EventWriter({
+      onError: (error) => {
+        if (this.writer !== writer) return;
+        const message = `Some recording events could not be saved (${errMessage(error)}). Retrying…`;
+        if (this.lastError === message) return;
+        this.saveError = message;
+        this.lastError = message;
+        this.broadcastState();
+      },
+      onFlush: () => {
+        if (this.writer !== writer) return;
+        const dropped = writer.dropped - this.notedDrops;
+        if (dropped > 0) {
+          this.notedDrops = writer.dropped;
+          this.recordEvent({
+            type: 'session-note',
+            payload: {
+              kind: 'warning',
+              text: `${dropped} recorded events could not be saved while storage was unavailable and are missing from this recording.`,
+            },
+          });
+        }
+        if (this.saveError === undefined) return;
+        if (this.lastError === this.saveError) this.lastError = undefined;
+        this.saveError = undefined;
+        this.broadcastState();
+      },
+    });
+    return writer;
   }
 
   private async persistSession(): Promise<void> {
