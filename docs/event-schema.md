@@ -213,6 +213,7 @@ bodies before emit.
 - `originalSize` is the original size in bytes, before truncation
 - `assetId` is the id of the full body, stored as a `net-body` asset when it overflowed the inline cap
 - `base64` is true when `text` is base64 (a binary body)
+- For multipart request bodies, Chrome's `Network.getRequestPostData` omits uploaded file bytes; available non-file fields can still be captured.
 
 `WsFrame` is `{ dir: 'sent' | 'recv'; opcode: number; ts: number; text?: string; truncated?: boolean }`. `ts` is milliseconds from session start.
 
