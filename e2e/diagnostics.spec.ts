@@ -26,6 +26,7 @@ test('searches and filters all saved diagnostics without changing the recording'
         store.put({ id: `diagnostic-${i}`, sessionId: id, t: 10000 + i, importance: 1, type: 'net-request', payload: { requestId: `req-${i}`, method: 'GET', url: `https://api.example.test/items/${i}`, status: i === 0 ? null : i === 119 ? 503 : 200, requestHeaders: [], responseHeaders: [], responseBody: {present: true, text: i === 119 ? 'Unique response needle' : 'ok'} } });
       }
       store.put({id: 'diagnostic-error', sessionId: id, t: 12000, importance: 10, type: 'error', payload: {message: 'Checkout crashed', stack: 'Error: "checkout" failed in hidden raw details', origin: 'exception'}});
+      store.put({id: 'diagnostic-error-unquoted', sessionId: id, t: 12500, importance: 10, type: 'error', payload: {message: 'Payment failed', stack: 'Error: checkout failed in unquoted raw details', origin: 'exception'}});
       store.put({id: 'diagnostic-console', sessionId: id, t: 13000, importance: 1, type: 'console', payload: {level: 'warn', text: 'Retrying "checkout"'}});
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
@@ -68,7 +69,8 @@ test('searches and filters all saved diagnostics without changing the recording'
   await quotedRawMatch.locator('summary').click();
   await expect(quotedRawMatch.locator('pre')).toContainText('hidden raw details');
   await search.fill('checkout');
-  await expect(workspace.locator('.diagnostic-event')).toContainText('Checkout crashed');
+  await expect(workspace.locator('.diagnostic-event')).toHaveCount(2);
+  await expect(workspace.locator('.diagnostic-event').filter({hasText: 'Checkout crashed'})).toHaveCount(1);
   await type.selectOption('all');
   await search.fill('');
   await workspace.getByRole('button', {name: 'Show more events'}).click();
