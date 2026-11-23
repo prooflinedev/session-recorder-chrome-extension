@@ -385,6 +385,8 @@ describe('redactUrl', () => {
       'https://x.com/#/settings/profile',
       'https://x.com/p#page=2&view=grid',
       'https://x.com/p#:~:text=hello',
+      'https://x.com/guide#authentication:~:text=Rotate%20keys',
+      'https://x.com/p#token:~:text=hello',
       'https://x.com/p?q=1#',
     ]) {
       expect(redactUrl(url, EMPTY_RULES)).toBe(url);
@@ -409,12 +411,19 @@ describe('redactHeaders — URL-valued headers', () => {
     ]);
   });
 
-  it('keeps URL-valued headers without secrets readable', () => {
+  it('keeps URL-valued headers without secrets readable, without mutating the input', () => {
     const headers: NetHeader[] = [
       { name: 'Location', value: 'https://app.example.com/dashboard?tab=2' },
-      { name: 'Referer', value: 'https://app.example.com/' },
+      { name: 'Referer', value: 'https://app.example.com/docs#authentication:~:text=keys' },
     ];
-    expect(redactHeaders(headers, EMPTY_RULES)).toEqual(headers);
+    const snapshot = structuredClone(headers);
+    expect(redactHeaders(headers, EMPTY_RULES)).toEqual(snapshot);
+    expect(headers).toEqual(snapshot);
+  });
+
+  it('masks a secret anchor param but keeps a trailing text directive', () => {
+    const out = redactUrl('https://x.com/cb#access_token=a-1:~:text=Welcome', EMPTY_RULES);
+    expect(out).toBe(`https://x.com/cb#access_token=${REDACTED}:~:text=Welcome`);
   });
 
   it('still fully masks a URL-valued header named in the custom blocklist', () => {

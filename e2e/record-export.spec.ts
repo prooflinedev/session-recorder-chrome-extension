@@ -310,6 +310,13 @@ test('redacts tokens in page, route and tab URLs, through to the exported report
   const started = await dispatch<StartRes>(background, { kind: 'session/start', tabId });
   expect(started.ok).toBe(true);
   const sessionId = started.session!.id;
+  // The starting page is stored redacted before anything navigates over it.
+  type SessionMeta = { initialUrl: string; tabs: Array<{ role: string; url: string }> };
+  const atStart = await dispatch<{ session: SessionMeta }>(background, { kind: 'session/getState' });
+  expect(atStart.session.initialUrl).toBe('http://localhost:5319/?token=«redacted»&page=2');
+  expect(atStart.session.tabs.find((t) => t.role === 'primary')?.url).toBe(
+    'http://localhost:5319/?token=«redacted»&page=2',
+  );
   await page.waitForTimeout(800);
 
   // An OAuth implicit-flow / magic-link callback: tokens in query and fragment.
@@ -325,38 +332,42 @@ test('redacts tokens in page, route and tab URLs, through to the exported report
     }),
   ]);
   await popup.waitForLoadState();
+
+  // Each callback records on its own schedule: wait until every expected event
+  // has arrived, redacted but still readable, before stopping the session.
+  const expected: Array<[string, string]> = [
+    ['nav', 'http://localhost:5319/?api_key=«redacted»&page=3#access_token=«redacted»&refresh_token=«redacted»&type=magiclink'],
+    ['spa-route', 'http://localhost:5319/#/reset?token=«redacted»&step=2'],
+    ['spa-route', 'http://localhost:5319/#id_token=«redacted»&view=grid'],
+    ['tab-opened', 'http://localhost:5319/?session=«redacted»&lang=en'],
+  ];
   await expect
     .poll(async () => {
       const { events } = await dispatch<EventsRes>(background, { kind: 'events/get', sessionId });
-      return events.some((e) => e.type === 'tab-opened');
+      return expected.filter(
+        ([type, url]) => !events.some((e) => e.type === type && e.payload?.url === url),
+      );
     })
-    .toBe(true);
-  await page.waitForTimeout(500);
+    .toEqual([]);
 
   await dispatch(background, { kind: 'session/stop' });
 
   const { events } = await dispatch<EventsRes>(background, { kind: 'events/get', sessionId });
-  const urls = events
-    .filter((e) => ['nav', 'spa-route', 'tab-opened'].includes(e.type))
-    .map((e) => String(e.payload?.url));
-  // The navigation evidence is still there and still readable…
-  expect(urls).toContain(
-    'http://localhost:5319/?api_key=«redacted»&page=3#access_token=«redacted»&refresh_token=«redacted»&type=magiclink',
-  );
-  expect(urls).toContain('http://localhost:5319/#/reset?token=«redacted»&step=2');
-  expect(urls).toContain('http://localhost:5319/#id_token=«redacted»&view=grid');
-  expect(urls).toContain('http://localhost:5319/?session=«redacted»&lang=en');
   // …and no secret survives anywhere in the events or the session record.
   expect(JSON.stringify(events)).not.toContain('leak-');
-  const session = await dispatch<{ session: unknown }>(background, { kind: 'session/get', sessionId });
-  const sessionJson = JSON.stringify(session);
-  expect(sessionJson).toContain('?token=«redacted»&page=2');
-  expect(sessionJson).not.toContain('leak-');
+  const stored = await dispatch<{ session: SessionMeta }>(background, { kind: 'session/get', sessionId });
+  expect(stored.session.initialUrl).toBe('http://localhost:5319/?token=«redacted»&page=2');
+  expect(stored.session.tabs.find((t) => t.role === 'adopted')?.url).toBe(
+    'http://localhost:5319/?session=«redacted»&lang=en',
+  );
+  expect(JSON.stringify(stored)).not.toContain('leak-');
 
   // Export the Full report through the real UI and check what a reader would get.
   const workspace = await context.newPage();
   await workspace.goto(extUrl(extensionId, `share.html?session=${sessionId}`));
-  const opened = context.waitForEvent('page');
+  // session/stop opens its own workspace tab too: take the popup of this page,
+  // not whichever new page appears first.
+  const opened = workspace.waitForEvent('popup');
   await workspace.getByRole('link', { name: 'Full timeline' }).click();
   const sp = await opened;
   await sp.evaluate(() => {
