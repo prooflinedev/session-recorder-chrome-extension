@@ -2,7 +2,7 @@ import { ProoflineBrand } from '@/lib/ui/ProoflineBrand';
 import { FilingProgress } from './FilingProgress';
 import { configuredRepositories } from '@/lib/sharing/settings';
 import { GitHubIcon } from '@/lib/ui/GitHubIcon';
-import React, { useReducer } from 'react';
+import React, { useReducer, useState } from 'react';
 import {
   ChevronDown,
   ChevronRight,
@@ -25,6 +25,7 @@ import {
 } from '@/lib/sharing/draft';
 import { useShareReport } from './useShareReport';
 import { useReportEvidence, type EvidenceItem } from './useReportEvidence';
+import { Diagnostics } from './Diagnostics';
 
 const params = new URLSearchParams(location.search);
 const sessionId = params.get('session') ?? '';
@@ -259,6 +260,7 @@ function IssueDraft({ share }: { share: ShareModel }) {
 }
 function Evidence() {
   const { items, diagnostics, error } = useReportEvidence(sessionId);
+  const [diagnosticsOpened, setDiagnosticsOpened] = useState(false);
   const lead = items.find((item) => item.label === 'Annotation') ?? items[0];
   const others = items.filter((item) => item !== lead);
   return (
@@ -292,18 +294,12 @@ function Evidence() {
         </details>
       )}
       {!!diagnostics.length && (
-        <details className="report-disclosure">
+        <details className="report-disclosure" onToggle={(e) => { if (e.currentTarget.open) setDiagnosticsOpened(true); }}>
           <summary>
             Technical details <span>{diagnostics.length} events</span>
             <ChevronDown size={14} />
           </summary>
-          <p className="muted">
-            Console and network events captured during this recording.
-          </p>
-          <pre className="diagnostic-data">
-            {JSON.stringify(diagnostics.slice(0, 100), null, 2)}
-          </pre>
-          {diagnostics.length > 100 && <a href={recordingUrl()}>View all events</a>}
+          {diagnosticsOpened && <Diagnostics events={diagnostics} />}
         </details>
       )}
     </section>
