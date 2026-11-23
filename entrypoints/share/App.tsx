@@ -25,6 +25,7 @@ import {
 } from '@/lib/sharing/draft';
 import { useShareReport } from './useShareReport';
 import { useReportEvidence, type EvidenceItem } from './useReportEvidence';
+import { Diagnostics } from './Diagnostics';
 
 const params = new URLSearchParams(location.search);
 const sessionId = params.get('session') ?? '';
@@ -297,13 +298,7 @@ function Evidence() {
             Technical details <span>{diagnostics.length} events</span>
             <ChevronDown size={14} />
           </summary>
-          <p className="muted">
-            Console and network events captured during this recording.
-          </p>
-          <pre className="diagnostic-data">
-            {JSON.stringify(diagnostics.slice(0, 100), null, 2)}
-          </pre>
-          {diagnostics.length > 100 && <a href={recordingUrl()}>View all events</a>}
+          <Diagnostics events={diagnostics} />
         </details>
       )}
     </section>

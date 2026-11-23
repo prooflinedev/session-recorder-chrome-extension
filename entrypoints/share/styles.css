@@ -530,3 +530,44 @@
 @media (max-width: 480px) { .filing-screen { padding: 24px 16px; } .filing-progress { padding: 24px; } }
 @media (prefers-reduced-motion: reduce) { .filing-activity * { animation: none; } }
 .filing-stages .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+
+.diagnostics-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 12px 0;
+}
+.diagnostics-controls label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  flex: 1 1 180px;
+}
+.diagnostics-controls input,
+.diagnostics-controls select {
+  min-width: 0;
+  width: 100%;
+  padding: 8px;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font: inherit;
+}
+.diagnostics-count { color: var(--muted); }
+.diagnostic-event { border-top: 1px solid var(--line); }
+.diagnostic-event > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 9px 0;
+  cursor: pointer;
+  list-style: none;
+}
+.diagnostic-event > summary::-webkit-details-marker { display: none; }
+.diagnostic-event > summary::before { content: '▸'; color: var(--muted); }
+.diagnostic-event[open] > summary::before { content: '▾'; }
+.diagnostic-event time, .diagnostic-kind { color: var(--muted); flex: none; }
+.diagnostic-summary { min-width: 0; overflow-wrap: anywhere; }
+.diagnostic-event .diagnostic-data { margin: 0 0 10px; }
+.diagnostics-more { margin-top: 12px; }
