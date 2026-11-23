@@ -455,6 +455,14 @@ describe('redactHeaders — URL-valued headers', () => {
     ]);
   });
 
+  it('keeps CRLF separators between repeated header URLs', () => {
+    const out = redactHeaders(
+      [{ name: 'Location', value: 'https://a.example.com/p?token=t-1\r\nhttps://b.example.com/q' }],
+      EMPTY_RULES,
+    );
+    expect(out[0]!.value).toBe(`https://a.example.com/p?token=${REDACTED}\r\nhttps://b.example.com/q`);
+  });
+
   it('applies custom url param patterns to URL-valued headers', () => {
     const out = redactHeaders(
       [{ name: 'Location', value: 'https://app.example.com/cb?code=c-1&state=s#otp=o-2' }],

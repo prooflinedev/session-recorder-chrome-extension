@@ -104,10 +104,11 @@ export function redactHeaders(
     if (URL_VALUED_HEADERS.has(name)) {
       // DevTools joins repeated headers with newlines: mask each URL on its own
       // line, so one value's parameters can't swallow or hide the next URL.
+      // Separators (`\n` or `\r\n`) are kept as they were.
       const value = h.value
-        .split('\n')
-        .map((line) => redactUrl(line, rules))
-        .join('\n');
+        .split(/(\r?\n)/)
+        .map((part, i) => (i % 2 === 1 ? part : redactUrl(part, rules)))
+        .join('');
       return { name: h.name, value };
     }
     return { name: h.name, value: h.value };
