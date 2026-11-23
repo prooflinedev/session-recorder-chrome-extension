@@ -28,6 +28,17 @@ export const DEFAULT_HEADER_BLOCKLIST: string[] = [
 ];
 
 /**
+ * Headers whose value is a URL. They stay readable, but their query and fragment
+ * parameters get the same masking as a request URL: a redirect's `Location` can
+ * carry an OAuth token, and `Referer` repeats the previous page's address.
+ */
+const URL_VALUED_HEADERS: ReadonlySet<string> = new Set([
+  'location',
+  'content-location',
+  'referer',
+]);
+
+/**
  * Keys (JSON/form) whose values are considered sensitive by default.
  */
 export const DEFAULT_KEY_PATTERN: RegExp =
@@ -87,11 +98,12 @@ export function redactHeaders(
     ...DEFAULT_HEADER_BLOCKLIST,
     ...rules.headerNames.map((n) => n.toLowerCase()),
   ]);
-  return headers.map((h) =>
-    blocked.has(h.name.toLowerCase())
-      ? { name: h.name, value: REDACTED }
-      : { name: h.name, value: h.value },
-  );
+  return headers.map((h) => {
+    const name = h.name.toLowerCase();
+    if (blocked.has(name)) return { name: h.name, value: REDACTED };
+    if (URL_VALUED_HEADERS.has(name)) return { name: h.name, value: redactUrl(h.value, rules) };
+    return { name: h.name, value: h.value };
+  });
 }
 
 /** Recursively clone a parsed JSON value, masking values under matching keys. */
@@ -232,27 +244,13 @@ export function redactBody(
   return { text, redacted: false };
 }
 
-/**
- * Redact matching query-param VALUES in a URL while preserving the rest of its
- * structure (scheme/host/path/hash/param order/encoding). Works on absolute and
- * relative URLs; a URL without a query string is returned unchanged.
- */
-export function redactUrl(url: string, rules: RedactionRules): string {
-  const matcher = buildUrlMatcher(rules);
-
-  const hashIdx = url.indexOf('#');
-  const hash = hashIdx === -1 ? '' : url.slice(hashIdx);
-  const base = hashIdx === -1 ? url : url.slice(0, hashIdx);
-
-  const qIdx = base.indexOf('?');
-  if (qIdx === -1) return url;
-
-  const head = base.slice(0, qIdx);
-  const query = base.slice(qIdx + 1);
-  if (query.length === 0) return url;
-
+/** Mask matching `k=v` values in an `&`-separated parameter list, keeping its encoding. */
+function redactParams(
+  params: string,
+  matcher: (name: string) => boolean,
+): { text: string; changed: boolean } {
   let changed = false;
-  const parts = query.split('&').map((part) => {
+  const parts = params.split('&').map((part) => {
     const eq = part.indexOf('=');
     if (eq === -1) return part; // flag param, no value to redact
     const rawKey = part.slice(0, eq);
@@ -262,8 +260,46 @@ export function redactUrl(url: string, rules: RedactionRules): string {
     }
     return part;
   });
+  return { text: parts.join('&'), changed };
+}
 
-  return changed ? `${head}?${parts.join('&')}${hash}` : url;
+/**
+ * Mask parameters carried in a URL fragment. OAuth implicit and hybrid flows
+ * (and the magic links of Supabase, Auth0 and others) return
+ * `#access_token=…&refresh_token=…`; hash routers put a query after the route,
+ * as in `#/reset?token=…`. A plain anchor such as `#section` has no `=` and is
+ * returned unchanged.
+ */
+function redactFragment(fragment: string, matcher: (name: string) => boolean): string {
+  const q = fragment.indexOf('?');
+  if (q !== -1) {
+    const r = redactParams(fragment.slice(q + 1), matcher);
+    return r.changed ? `${fragment.slice(0, q + 1)}${r.text}` : fragment;
+  }
+  if (!fragment.includes('=')) return fragment;
+  const r = redactParams(fragment, matcher);
+  return r.changed ? r.text : fragment;
+}
+
+/**
+ * Redact matching parameter VALUES in a URL's query string and fragment while
+ * preserving the rest of its structure (scheme/host/path/param order/encoding).
+ * Works on absolute and relative URLs; a URL with nothing to mask is returned
+ * unchanged.
+ */
+export function redactUrl(url: string, rules: RedactionRules): string {
+  const matcher = buildUrlMatcher(rules);
+
+  const hashIdx = url.indexOf('#');
+  const hash = hashIdx === -1 ? '' : url.slice(hashIdx + 1);
+  const base = hashIdx === -1 ? url : url.slice(0, hashIdx);
+  const redactedHash = hashIdx === -1 ? '' : `#${redactFragment(hash, matcher)}`;
+
+  const qIdx = base.indexOf('?');
+  if (qIdx === -1 || qIdx === base.length - 1) return `${base}${redactedHash}`;
+
+  const r = redactParams(base.slice(qIdx + 1), matcher);
+  return `${base.slice(0, qIdx + 1)}${r.text}${redactedHash}`;
 }
 
 /** Apply the same URL rules to web/socket URLs embedded in browser diagnostics. */

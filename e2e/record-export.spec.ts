@@ -295,3 +295,85 @@ test('never records secrets typed into key, code, PIN and phrase fields', async 
   }
   expect(JSON.stringify(events)).not.toContain('leak-');
 });
+
+test('redacts tokens in page, route and tab URLs, through to the exported report', async ({
+  context,
+  background,
+  extensionId,
+}) => {
+  // The tab is already on a password-reset link when recording starts.
+  const page = await context.newPage();
+  await page.goto('/?token=leak-start&page=2');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Demo');
+
+  const tabId = await tabIdForUrl(background, 'http://localhost:5319');
+  const started = await dispatch<StartRes>(background, { kind: 'session/start', tabId });
+  expect(started.ok).toBe(true);
+  const sessionId = started.session!.id;
+  await page.waitForTimeout(800);
+
+  // An OAuth implicit-flow / magic-link callback: tokens in query and fragment.
+  await page.goto('/?api_key=leak-query&page=3#access_token=leak-access&refresh_token=leak-refresh&type=magiclink');
+  // A hash-router route with a query, then a fragment-only update.
+  await page.evaluate(() => history.pushState({}, '', '/#/reset?token=leak-route&step=2'));
+  await page.evaluate(() => { location.hash = 'id_token=leak-hash&view=grid'; });
+  // A tab the recorded app opens is adopted with its URL.
+  const [popup] = await Promise.all([
+    context.waitForEvent('page'),
+    page.evaluate(() => {
+      window.open(`${location.origin}/?session=leak-tab&lang=en`, '_blank', 'noopener');
+    }),
+  ]);
+  await popup.waitForLoadState();
+  await expect
+    .poll(async () => {
+      const { events } = await dispatch<EventsRes>(background, { kind: 'events/get', sessionId });
+      return events.some((e) => e.type === 'tab-opened');
+    })
+    .toBe(true);
+  await page.waitForTimeout(500);
+
+  await dispatch(background, { kind: 'session/stop' });
+
+  const { events } = await dispatch<EventsRes>(background, { kind: 'events/get', sessionId });
+  const urls = events
+    .filter((e) => ['nav', 'spa-route', 'tab-opened'].includes(e.type))
+    .map((e) => String(e.payload?.url));
+  // The navigation evidence is still there and still readable…
+  expect(urls).toContain(
+    'http://localhost:5319/?api_key=«redacted»&page=3#access_token=«redacted»&refresh_token=«redacted»&type=magiclink',
+  );
+  expect(urls).toContain('http://localhost:5319/#/reset?token=«redacted»&step=2');
+  expect(urls).toContain('http://localhost:5319/#id_token=«redacted»&view=grid');
+  expect(urls).toContain('http://localhost:5319/?session=«redacted»&lang=en');
+  // …and no secret survives anywhere in the events or the session record.
+  expect(JSON.stringify(events)).not.toContain('leak-');
+  const session = await dispatch<{ session: unknown }>(background, { kind: 'session/get', sessionId });
+  const sessionJson = JSON.stringify(session);
+  expect(sessionJson).toContain('?token=«redacted»&page=2');
+  expect(sessionJson).not.toContain('leak-');
+
+  // Export the Full report through the real UI and check what a reader would get.
+  const workspace = await context.newPage();
+  await workspace.goto(extUrl(extensionId, `share.html?session=${sessionId}`));
+  const opened = context.waitForEvent('page');
+  await workspace.getByRole('link', { name: 'Full timeline' }).click();
+  const sp = await opened;
+  await sp.evaluate(() => {
+    (window as any).__dl = null;
+    chrome.downloads.download = (async (opts: { url: string; filename: string }) => {
+      const buf = await fetch(opts.url).then((r) => r.arrayBuffer());
+      (window as any).__dl = { name: opts.filename, bytes: Array.from(new Uint8Array(buf)) };
+      return 1;
+    }) as typeof chrome.downloads.download;
+  });
+  await sp.getByRole('button', { name: 'Full', exact: true }).click();
+  await sp.getByRole('button', { name: /Download .zip/i }).click();
+  await sp.waitForFunction(() => (window as any).__dl !== null, undefined, { timeout: 20_000 });
+  const dl = (await sp.evaluate(() => (window as any).__dl)) as { bytes: number[] };
+  const files = unzipSync(Uint8Array.from(dl.bytes));
+  const text = Object.values(files).map((f) => new TextDecoder().decode(f)).join('\n');
+  const report = new TextDecoder().decode(files[Object.keys(files).find((k) => k.endsWith('/report.md'))!]!);
+  expect(report).toContain('access_token=«redacted»');
+  expect(text).not.toContain('leak-');
+});
