@@ -441,6 +441,20 @@ describe('redactHeaders — URL-valued headers', () => {
     expect(out).toBe(`https://x.com/cb#access_token=${REDACTED}:~:text=Welcome`);
   });
 
+  it('masks each URL of a repeated header joined with newlines', () => {
+    const out = redactHeaders(
+      [
+        { name: 'Location', value: 'https://a.example.com/p?x=1\nhttps://b.example.com/q?token=t-1' },
+        { name: 'Content-Location', value: 'https://a.example.com/p?token=t-2\nhttps://b.example.com/q?y=2' },
+      ],
+      EMPTY_RULES,
+    );
+    expect(out).toEqual([
+      { name: 'Location', value: `https://a.example.com/p?x=1\nhttps://b.example.com/q?token=${REDACTED}` },
+      { name: 'Content-Location', value: `https://a.example.com/p?token=${REDACTED}\nhttps://b.example.com/q?y=2` },
+    ]);
+  });
+
   it('applies custom url param patterns to URL-valued headers', () => {
     const out = redactHeaders(
       [{ name: 'Location', value: 'https://app.example.com/cb?code=c-1&state=s#otp=o-2' }],

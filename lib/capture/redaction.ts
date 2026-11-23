@@ -101,7 +101,15 @@ export function redactHeaders(
   return headers.map((h) => {
     const name = h.name.toLowerCase();
     if (blocked.has(name)) return { name: h.name, value: REDACTED };
-    if (URL_VALUED_HEADERS.has(name)) return { name: h.name, value: redactUrl(h.value, rules) };
+    if (URL_VALUED_HEADERS.has(name)) {
+      // DevTools joins repeated headers with newlines: mask each URL on its own
+      // line, so one value's parameters can't swallow or hide the next URL.
+      const value = h.value
+        .split('\n')
+        .map((line) => redactUrl(line, rules))
+        .join('\n');
+      return { name: h.name, value };
+    }
     return { name: h.name, value: h.value };
   });
 }
