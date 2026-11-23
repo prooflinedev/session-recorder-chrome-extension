@@ -53,6 +53,10 @@ interface PartialRequest {
   reqHeaders: Record<string, string>;
   respHeaders: Record<string, string>;
   requestBodyText?: string;
+  /** CDP confirmed a body exists, even if it could not be recovered. */
+  requestBodyExpected?: boolean;
+  /** Keep the hop queued until getRequestPostData settles. */
+  requestBodyPending?: boolean;
   status?: number;
   statusText?: string;
   mime?: string;
@@ -209,7 +213,14 @@ export class NetworkCapturer {
       if (url) p.url = url;
       mergeHeaders(p.reqHeaders, asRecord(request.headers));
       const postData = asString(request.postData);
-      if (postData !== undefined) p.requestBodyText = postData;
+      if (postData !== undefined) {
+        p.requestBodyExpected = true;
+        p.requestBodyText = postData;
+      } else if (request.hasPostData === true) {
+        // CDP omits postData from requestWillBeSent when it exceeds the
+        // notification's size limit. Recover it while the request is live.
+        this.fetchRequestBody(tabId, p);
+      }
     }
 
     const initiator = asRecord(params.initiator);
@@ -226,6 +237,45 @@ export class NetworkCapturer {
     if (typeof params.timestamp === 'number') p.startMonotonic = params.timestamp;
     p.timing = { startedAt: Math.round(wallTime) };
     this.drainHttp(requestId);
+  }
+
+  /**
+   * Recover a request body that CDP confirmed exists but omitted from
+   * requestWillBeSent. Start this as soon as the request appears: redirects
+   * reuse requestId, so waiting until the next hop can retrieve the wrong body.
+   */
+  private fetchRequestBody(tabId: number, p: PartialRequest): void {
+    if (p.requestBodyPending || p.requestBodyText !== undefined) return;
+    p.requestBodyExpected = true;
+    p.requestBodyPending = true;
+    const generation = this.generation;
+
+    let bodyRequest: Promise<Record<string, unknown>>;
+    try {
+      bodyRequest = this.deps.send(tabId, 'Network.getRequestPostData', {
+        requestId: p.requestId,
+      });
+    } catch {
+      p.requestBodyPending = false;
+      return;
+    }
+
+    void bodyRequest
+      .then((result) => {
+        if (generation !== this.generation) return;
+        if (!this.httpChains.get(p.requestId)?.hops.includes(p)) return;
+        const postData = asString(result.postData);
+        if (postData !== undefined) p.requestBodyText = postData;
+      })
+      .catch(() => {
+        // The request may have ended before Chrome could return its body.
+      })
+      .finally(() => {
+        if (generation !== this.generation) return;
+        if (!this.httpChains.get(p.requestId)?.hops.includes(p)) return;
+        p.requestBodyPending = false;
+        this.drainHttp(p.requestId);
+      });
   }
 
   private onRequestExtraInfo(params: Record<string, unknown>): void {
@@ -379,6 +429,7 @@ export class NetworkCapturer {
       const p = chain.hops[0]!;
       if (
         !p.completed ||
+        p.requestBodyPending ||
         (p.hasExtraInfo && (!p.requestExtraReceived || !p.responseExtraReceived))
       ) break;
       chain.hops.shift();
@@ -626,6 +677,10 @@ export class NetworkCapturer {
           mime: reqContentType ?? 'application/octet-stream',
         };
       }
+    } else if (p.requestBodyExpected) {
+      // Preserve the distinction between no request body and one Chrome
+      // reported but could not return, so reports do not silently imply empty.
+      payload.requestBody = { present: false };
     }
     if (extra.responseBody) payload.responseBody = extra.responseBody;
     if (p.timing) payload.timing = p.timing;
