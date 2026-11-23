@@ -421,9 +421,28 @@ describe('redactHeaders — URL-valued headers', () => {
     expect(headers).toEqual(snapshot);
   });
 
+  it('treats a ? inside a fragment value as part of the value, not a router query', () => {
+    expect(redactUrl('https://x.com/cb#access_token=a-1&redirect=/next?x=1', EMPTY_RULES)).toBe(
+      `https://x.com/cb#access_token=${REDACTED}&redirect=/next?x=1`,
+    );
+    expect(redactUrl('https://x.com/cb#state=a?b&id_token=i-1', EMPTY_RULES)).toBe(
+      `https://x.com/cb#state=a?b&id_token=${REDACTED}`,
+    );
+  });
+
   it('masks a secret anchor param but keeps a trailing text directive', () => {
     const out = redactUrl('https://x.com/cb#access_token=a-1:~:text=Welcome', EMPTY_RULES);
     expect(out).toBe(`https://x.com/cb#access_token=${REDACTED}:~:text=Welcome`);
+  });
+
+  it('applies custom url param patterns to URL-valued headers', () => {
+    const out = redactHeaders(
+      [{ name: 'Location', value: 'https://app.example.com/cb?code=c-1&state=s#otp=o-2' }],
+      rules({ urlParamPatterns: ['^code$', '^otp$'] }),
+    );
+    expect(out).toEqual([
+      { name: 'Location', value: `https://app.example.com/cb?code=${REDACTED}&state=s#otp=${REDACTED}` },
+    ]);
   });
 
   it('still fully masks a URL-valued header named in the custom blocklist', () => {

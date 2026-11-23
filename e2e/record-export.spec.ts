@@ -335,8 +335,10 @@ test('redacts tokens in page, route and tab URLs, through to the exported report
 
   // Each callback records on its own schedule: wait until every expected event
   // has arrived, redacted but still readable, before stopping the session.
+  const callbackUrl =
+    'http://localhost:5319/?api_key=«redacted»&page=3#access_token=«redacted»&refresh_token=«redacted»&type=magiclink';
   const expected: Array<[string, string]> = [
-    ['nav', 'http://localhost:5319/?api_key=«redacted»&page=3#access_token=«redacted»&refresh_token=«redacted»&type=magiclink'],
+    ['nav', callbackUrl],
     ['spa-route', 'http://localhost:5319/#/reset?token=«redacted»&step=2'],
     ['spa-route', 'http://localhost:5319/#id_token=«redacted»&view=grid'],
     ['tab-opened', 'http://localhost:5319/?session=«redacted»&lang=en'],
@@ -360,6 +362,8 @@ test('redacts tokens in page, route and tab URLs, through to the exported report
   expect(stored.session.tabs.find((t) => t.role === 'adopted')?.url).toBe(
     'http://localhost:5319/?session=«redacted»&lang=en',
   );
+  // The registry followed the primary tab to its last committed navigation.
+  expect(stored.session.tabs.find((t) => t.role === 'primary')?.url).toBe(callbackUrl);
   expect(JSON.stringify(stored)).not.toContain('leak-');
 
   // Export the Full report through the real UI and check what a reader would get.
@@ -385,6 +389,7 @@ test('redacts tokens in page, route and tab URLs, through to the exported report
   const files = unzipSync(Uint8Array.from(dl.bytes));
   const text = Object.values(files).map((f) => new TextDecoder().decode(f)).join('\n');
   const report = new TextDecoder().decode(files[Object.keys(files).find((k) => k.endsWith('/report.md'))!]!);
-  expect(report).toContain('access_token=«redacted»');
+  // Every navigation reaches the report whole: masked, not dropped or truncated.
+  for (const [, url] of expected) expect(report).toContain(url.replace('http://localhost:5319', ''));
   expect(text).not.toContain('leak-');
 });

@@ -276,14 +276,15 @@ function redactFragment(fragment: string, matcher: (name: string) => boolean): s
   // read as a key containing "auth".
   const d = fragment.indexOf(':~:');
   if (d !== -1) return `${redactFragment(fragment.slice(0, d), matcher)}${fragment.slice(d)}`;
+  const eq = fragment.indexOf('=');
+  if (eq === -1) return fragment;
+  // `?` starts a hash-router query only when it comes before the first `=`
+  // (`#/reset?token=…`). After that it is part of a value, as in
+  // `#access_token=…&redirect=/next?x=1`, and the whole fragment is parameters.
   const q = fragment.indexOf('?');
-  if (q !== -1) {
-    const r = redactParams(fragment.slice(q + 1), matcher);
-    return r.changed ? `${fragment.slice(0, q + 1)}${r.text}` : fragment;
-  }
-  if (!fragment.includes('=')) return fragment;
-  const r = redactParams(fragment, matcher);
-  return r.changed ? r.text : fragment;
+  const start = q !== -1 && q < eq ? q + 1 : 0;
+  const r = redactParams(fragment.slice(start), matcher);
+  return r.changed ? `${fragment.slice(0, start)}${r.text}` : fragment;
 }
 
 /**
