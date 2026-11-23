@@ -652,7 +652,6 @@ describe('NetworkCapturer redirects', () => {
   });
 });
 
-
 describe('NetworkCapturer omitted request bodies', () => {
   it('recovers and redacts a body omitted from requestWillBeSent', async () => {
     const postData = '{"token":"POST_SECRET","name":"Ada"}';
