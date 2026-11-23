@@ -187,56 +187,76 @@ export async function storageEstimate(): Promise<{
  * In-memory buffer for events, flushed to IndexedDB in batches. Auto-flushes
  * when `maxBatch` events are buffered or after `flushMs` of inactivity, so the
  * background funnel never blocks on a write per event.
+ *
+ * A failed write does not stop later writes: its events go back to the front
+ * of the buffer and the next flush retries them. While writes keep failing,
+ * at most `maxPending` events wait; the oldest beyond that are dropped and
+ * counted in `dropped`.
  */
 export class EventWriter {
   private buffer: SessionEvent[] = [];
   private timer: ReturnType<typeof setTimeout> | undefined;
   private readonly flushMs: number;
   private readonly maxBatch: number;
+  private readonly maxPending: number;
+  private readonly write: (events: SessionEvent[]) => Promise<void>;
   private readonly onFlush: ((n: number) => void) | undefined;
-  /** Serializes flushes so batches are written in order. */
+  private readonly onError: ((error: unknown, pending: number) => void) | undefined;
+  /** Serializes flushes so batches are written in order. Never rejects. */
   private chain: Promise<void> = Promise.resolve();
+  /** True after a failed write; retries then wait for the idle timer. */
+  private failing = false;
+  private droppedCount = 0;
 
   constructor(opts?: {
     flushMs?: number;
     maxBatch?: number;
+    /** Most events kept while writes are failing (default 5000). */
+    maxPending?: number;
+    /** Persists a batch (default `appendEvents`). */
+    write?: (events: SessionEvent[]) => Promise<void>;
     onFlush?: (n: number) => void;
+    /** Called after a failed write with the number of events still waiting. */
+    onError?: (error: unknown, pending: number) => void;
   }) {
     this.flushMs = opts?.flushMs ?? 1000;
     this.maxBatch = opts?.maxBatch ?? 50;
+    this.maxPending = opts?.maxPending ?? 5000;
+    this.write = opts?.write ?? appendEvents;
     this.onFlush = opts?.onFlush;
+    this.onError = opts?.onError;
+  }
+
+  /** Events dropped because too many were waiting for storage to recover. */
+  get dropped(): number {
+    return this.droppedCount;
   }
 
   /** Buffer an event; auto-flush when full, else arm the idle timer. */
   add(e: SessionEvent): void {
     this.buffer.push(e);
-    if (this.buffer.length >= this.maxBatch) {
-      void this.flush();
+    if (this.buffer.length >= this.maxBatch && !this.failing) {
+      this.flushInBackground();
     } else if (this.timer === undefined) {
       this.timer = setTimeout(() => {
         this.timer = undefined;
-        void this.flush();
+        this.flushInBackground();
       }, this.flushMs);
     }
   }
 
-  /** Force-write all buffered events now. */
+  /**
+   * Write all buffered events after any earlier write settles. Rejects if
+   * this write fails; the events stay buffered for the next flush.
+   */
   flush(): Promise<void> {
     if (this.timer !== undefined) {
       clearTimeout(this.timer);
       this.timer = undefined;
     }
-    if (this.buffer.length === 0) return this.chain;
-
-    const batch = this.buffer;
-    this.buffer = [];
-
-    this.chain = this.chain
-      .then(() => appendEvents(batch))
-      .then(() => {
-        this.onFlush?.(batch.length);
-      });
-    return this.chain;
+    const run = this.chain.then(() => this.writeBuffered());
+    this.chain = run.catch(() => {});
+    return run;
   }
 
   size(): number {
@@ -249,6 +269,32 @@ export class EventWriter {
       clearTimeout(this.timer);
       this.timer = undefined;
     }
-    void this.flush();
+    this.flushInBackground();
+  }
+
+  /** Flush without a caller to handle failure; `onError` reports it. */
+  private flushInBackground(): void {
+    this.flush().catch(() => {});
+  }
+
+  private async writeBuffered(): Promise<void> {
+    if (this.buffer.length === 0) return;
+    const batch = this.buffer;
+    this.buffer = [];
+    try {
+      await this.write(batch);
+    } catch (error) {
+      this.failing = true;
+      this.buffer = batch.concat(this.buffer);
+      const excess = this.buffer.length - this.maxPending;
+      if (excess > 0) {
+        this.buffer.splice(0, excess);
+        this.droppedCount += excess;
+      }
+      this.onError?.(error, this.buffer.length);
+      throw error;
+    }
+    this.failing = false;
+    this.onFlush?.(batch.length);
   }
 }
