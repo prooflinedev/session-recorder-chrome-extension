@@ -6,15 +6,21 @@ test('searches diagnostics captured from a real recording', async ({ context, ba
   const tabId = await tabIdForUrl(background, 'http://localhost:5319');
   const start = await dispatch<{ok: boolean; session: {id: string}}>(background, {kind: 'session/start', tabId});
   expect(start.ok).toBe(true);
-  await page.waitForTimeout(500);
   await page.evaluate(async () => {
     console.warn('Live browser diagnostic zebra');
     try { await fetch('/live-diagnostic-probe-xyz'); } catch { /* request can fail */ }
   });
-  await page.waitForTimeout(1000);
+  let captureStatus = '';
+  await expect.poll(async () => {
+    const {events} = await dispatch<{events: Array<{type: string; payload: Record<string, unknown>}>}>(background, {kind: 'events/get', sessionId: start.session.id});
+    if (events.some(e => e.type === 'session-note' && String(e.payload.text).includes('Deep capture unavailable'))) return (captureStatus = 'unavailable');
+    const consoleSeen = events.some(e => e.type === 'console' && JSON.stringify(e.payload).includes('Live browser diagnostic zebra'));
+    const requestSeen = events.some(e => e.type === 'net-request' && JSON.stringify(e.payload).includes('live-diagnostic-probe-xyz'));
+    return (captureStatus = consoleSeen && requestSeen ? 'captured' : 'waiting');
+  }, {timeout: 15000}).not.toBe('waiting');
   await dispatch(background, {kind: 'session/stop'});
   const recorded = await dispatch<{events: Array<{type: string; payload: Record<string, unknown>}>}>(background, {kind: 'events/get', sessionId: start.session.id});
-  test.skip(recorded.events.some(e => e.type === 'session-note' && String(e.payload.text).includes('Deep capture unavailable')), 'Chrome debugger is unavailable in this environment');
+  test.skip(captureStatus === 'unavailable', 'Chrome debugger is unavailable in this environment');
   expect(recorded.events.some(e => e.type === 'console' && JSON.stringify(e.payload).includes('Live browser diagnostic zebra'))).toBe(true);
   expect(recorded.events.some(e => e.type === 'net-request' && JSON.stringify(e.payload).includes('live-diagnostic-probe-xyz'))).toBe(true);
   const report = await context.newPage();

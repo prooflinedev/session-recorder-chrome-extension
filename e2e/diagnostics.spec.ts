@@ -26,13 +26,14 @@ test('searches and filters all saved diagnostics without changing the recording'
         store.put({ id: `diagnostic-${i}`, sessionId: id, t: 10000 + i, importance: 1, type: 'net-request', payload: { requestId: `req-${i}`, method: 'GET', url: `https://api.example.test/items/${i}`, status: i === 119 ? 503 : 200, requestHeaders: [], responseHeaders: [], responseBody: {present: true, text: i === 119 ? 'Unique response needle' : 'ok'} } });
       }
       store.put({id: 'diagnostic-error', sessionId: id, t: 12000, importance: 10, type: 'error', payload: {message: 'Checkout crashed', origin: 'exception'}});
-      store.put({id: 'diagnostic-console', sessionId: id, t: 13000, importance: 1, type: 'console', payload: {level: 'warn', text: 'Retrying checkout'}});
+      store.put({id: 'diagnostic-console', sessionId: id, t: 13000, importance: 1, type: 'console', payload: {level: 'warn', text: 'Retrying "checkout"'}});
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
     db.close();
   }, sessionId);
   await workspace.goto(extUrl(extensionId, `share.html?session=${sessionId}`));
+  await expect(workspace.getByRole('searchbox', {name: 'Search diagnostics'})).toHaveCount(0);
   await workspace.getByText('Technical details', { exact: false }).click();
   const search = workspace.getByRole('searchbox', {name: 'Search diagnostics'});
   const type = workspace.getByLabel('Event type');
@@ -49,9 +50,10 @@ test('searches and filters all saved diagnostics without changing the recording'
   await expect(event.locator('pre')).toContainText('Unique response needle');
   await type.selectOption('console');
   await expect(workspace.getByText('No matching diagnostics.')).toBeVisible();
-  await search.fill('checkout');
+  await search.fill('"checkout"');
   await expect(workspace.locator('.diagnostic-event')).toHaveCount(1);
-  await expect(workspace.locator('.diagnostic-event')).toContainText('Retrying checkout');
+  await expect(workspace.locator('.diagnostic-event')).toContainText('Retrying "checkout"');
+  await search.fill('checkout');
   await type.selectOption('error');
   await expect(workspace.locator('.diagnostic-event')).toContainText('Checkout crashed');
   await type.selectOption('all');
@@ -63,4 +65,8 @@ test('searches and filters all saved diagnostics without changing the recording'
   await workspace.reload();
   await workspace.getByText('Technical details', {exact: false}).click();
   await expect(workspace.locator('.diagnostics-count')).toContainText(`${total} of ${total} events match`);
+  await workspace.getByRole('searchbox', {name: 'Search diagnostics'}).fill('Unique response needle');
+  const savedEvent = workspace.locator('.diagnostic-event').filter({hasText: '/items/119'});
+  await savedEvent.locator('summary').click();
+  await expect(savedEvent.locator('pre')).toContainText('Unique response needle');
 });

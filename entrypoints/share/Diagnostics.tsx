@@ -6,6 +6,16 @@ type DiagnosticEvent = Extract<SessionEvent, { type: 'error' | 'console' | 'net-
 type Category = 'all' | DiagnosticEvent['type'];
 const PAGE_SIZE = 50;
 
+/** Search unescaped values as well as field names, matching text shown in rows. */
+function containsText(value: unknown, term: string): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value !== 'object') return String(value).toLocaleLowerCase().includes(term);
+  if (Array.isArray(value)) return value.some((item) => containsText(item, term));
+  return Object.entries(value).some(([key, item]) =>
+    key.toLocaleLowerCase().includes(term) || containsText(item, term),
+  );
+}
+
 function summary(event: DiagnosticEvent): string {
   if (event.type === 'error') return event.payload.message;
   if (event.type === 'console') return `${event.payload.level}: ${event.payload.text}`;
@@ -20,13 +30,12 @@ export function Diagnostics({ events }: { events: SessionEvent[] }): React.JSX.E
   const [limit, setLimit] = useState(PAGE_SIZE);
   const indexed = useMemo(() => events.flatMap((event) => {
     if (event.type !== 'error' && event.type !== 'console' && event.type !== 'net-request') return [];
-    const detail = JSON.stringify(event, null, 2);
-    return [{ event, detail, search: detail.toLocaleLowerCase() }];
+    return [event];
   }), [events]);
   const matches = useMemo(() => {
     const term = query.trim().toLocaleLowerCase();
-    return indexed.filter(({ event, search }) =>
-      (category === 'all' || event.type === category) && (!term || search.includes(term)),
+    return indexed.filter((event) =>
+      (category === 'all' || event.type === category) && (!term || containsText(event, term)),
     );
   }, [indexed, query, category]);
 
@@ -49,10 +58,10 @@ export function Diagnostics({ events }: { events: SessionEvent[] }): React.JSX.E
       <p className="diagnostics-count" role="status">{matches.length} of {indexed.length} events match{matches.length > limit ? ` · showing ${limit}` : ''}</p>
       {matches.length === 0 && <p className="muted">No matching diagnostics. Try another search or event type.</p>}
       <div className="diagnostics-list">
-        {matches.slice(0, limit).map(({ event, detail }) => (
+        {matches.slice(0, limit).map((event) => (
           <details className="diagnostic-event" key={event.id}>
             <summary><time>{formatClock(event.t)}</time><span className="diagnostic-kind">{event.type === 'net-request' ? 'Network' : event.type === 'console' ? 'Console' : 'Error'}</span><span className="diagnostic-summary">{summary(event)}</span></summary>
-            <pre className="diagnostic-data">{detail}</pre>
+            <pre className="diagnostic-data">{JSON.stringify(event, null, 2)}</pre>
           </details>
         ))}
       </div>
