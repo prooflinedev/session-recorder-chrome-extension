@@ -354,4 +354,130 @@ describe('redactUrl', () => {
     const out = redactUrl('https://x.com/p?api%5Fkey=v&z=1', EMPTY_RULES);
     expect(out).toBe(`https://x.com/p?api%5Fkey=${REDACTED}&z=1`);
   });
+  it('redacts OAuth tokens returned in the fragment', () => {
+    const out = redactUrl(
+      'https://app.example.com/callback#access_token=at-1&token_type=bearer&expires_in=3600&refresh_token=rt-2&type=magiclink',
+      EMPTY_RULES,
+    );
+    expect(out).toBe(
+      `https://app.example.com/callback#access_token=${REDACTED}&token_type=${REDACTED}&expires_in=3600&refresh_token=${REDACTED}&type=magiclink`,
+    );
+  });
+
+  it('redacts the query of a hash-router fragment, keeping the route', () => {
+    const out = redactUrl('https://x.com/#/reset?token=t-1&step=2', EMPTY_RULES);
+    expect(out).toBe(`https://x.com/#/reset?token=${REDACTED}&step=2`);
+  });
+
+  it('redacts the query and the fragment of the same URL', () => {
+    const out = redactUrl('https://x.com/cb?session=s-1&q=1#id_token=i-2', EMPTY_RULES);
+    expect(out).toBe(`https://x.com/cb?session=${REDACTED}&q=1#id_token=${REDACTED}`);
+  });
+
+  it('applies custom url param patterns to the fragment', () => {
+    const out = redactUrl('https://x.com/p#code=c-1&state=s', rules({ urlParamPatterns: ['^code$'] }));
+    expect(out).toBe(`https://x.com/p#code=${REDACTED}&state=s`);
+  });
+
+  it('leaves anchors and fragments without secret params unchanged', () => {
+    for (const url of [
+      'https://x.com/docs#install',
+      'https://x.com/#/settings/profile',
+      'https://x.com/p#page=2&view=grid',
+      'https://x.com/p#:~:text=hello',
+      'https://x.com/guide#authentication:~:text=Rotate%20keys',
+      'https://x.com/p#token:~:text=hello',
+      'https://x.com/p?q=1#',
+    ]) {
+      expect(redactUrl(url, EMPTY_RULES)).toBe(url);
+    }
+  });
+});
+
+describe('redactHeaders — URL-valued headers', () => {
+  it('masks secret params inside Location, Content-Location and Referer', () => {
+    const out = redactHeaders(
+      [
+        { name: 'Location', value: 'https://app.example.com/cb#access_token=at-1&state=xyz' },
+        { name: 'content-location', value: '/download?api_key=k-1' },
+        { name: 'Referer', value: 'https://app.example.com/reset?token=t-1&lang=en' },
+      ],
+      EMPTY_RULES,
+    );
+    expect(out).toEqual([
+      { name: 'Location', value: `https://app.example.com/cb#access_token=${REDACTED}&state=xyz` },
+      { name: 'content-location', value: `/download?api_key=${REDACTED}` },
+      { name: 'Referer', value: `https://app.example.com/reset?token=${REDACTED}&lang=en` },
+    ]);
+  });
+
+  it('keeps URL-valued headers without secrets readable, without mutating the input', () => {
+    const headers: NetHeader[] = [
+      { name: 'Location', value: 'https://app.example.com/dashboard?tab=2' },
+      { name: 'Referer', value: 'https://app.example.com/docs#authentication:~:text=keys' },
+    ];
+    const snapshot = structuredClone(headers);
+    expect(redactHeaders(headers, EMPTY_RULES)).toEqual(snapshot);
+    expect(headers).toEqual(snapshot);
+  });
+
+  it('treats a ? inside a fragment value as part of the value, not a router query', () => {
+    expect(redactUrl('https://x.com/cb#access_token=a-1&redirect=/next?x=1', EMPTY_RULES)).toBe(
+      `https://x.com/cb#access_token=${REDACTED}&redirect=/next?x=1`,
+    );
+    expect(redactUrl('https://x.com/cb#state=a?b&id_token=i-1', EMPTY_RULES)).toBe(
+      `https://x.com/cb#state=a?b&id_token=${REDACTED}`,
+    );
+  });
+
+  it('masks the whole value when it contains :~: that is not a text directive', () => {
+    expect(redactUrl('https://x.com/cb#access_token=abc:~:def&state=s', EMPTY_RULES)).toBe(
+      `https://x.com/cb#access_token=${REDACTED}&state=s`,
+    );
+  });
+
+  it('masks a secret anchor param but keeps a trailing text directive', () => {
+    const out = redactUrl('https://x.com/cb#access_token=a-1:~:text=Welcome', EMPTY_RULES);
+    expect(out).toBe(`https://x.com/cb#access_token=${REDACTED}:~:text=Welcome`);
+  });
+
+  it('masks each URL of a repeated header joined with newlines', () => {
+    const out = redactHeaders(
+      [
+        { name: 'Location', value: 'https://a.example.com/p?x=1\nhttps://b.example.com/q?token=t-1' },
+        { name: 'Content-Location', value: 'https://a.example.com/p?token=t-2\nhttps://b.example.com/q?y=2' },
+      ],
+      EMPTY_RULES,
+    );
+    expect(out).toEqual([
+      { name: 'Location', value: `https://a.example.com/p?x=1\nhttps://b.example.com/q?token=${REDACTED}` },
+      { name: 'Content-Location', value: `https://a.example.com/p?token=${REDACTED}\nhttps://b.example.com/q?y=2` },
+    ]);
+  });
+
+  it('keeps CRLF separators between repeated header URLs', () => {
+    const out = redactHeaders(
+      [{ name: 'Location', value: 'https://a.example.com/p?token=t-1\r\nhttps://b.example.com/q' }],
+      EMPTY_RULES,
+    );
+    expect(out[0]!.value).toBe(`https://a.example.com/p?token=${REDACTED}\r\nhttps://b.example.com/q`);
+  });
+
+  it('applies custom url param patterns to URL-valued headers', () => {
+    const out = redactHeaders(
+      [{ name: 'Location', value: 'https://app.example.com/cb?code=c-1&state=s#otp=o-2' }],
+      rules({ urlParamPatterns: ['^code$', '^otp$'] }),
+    );
+    expect(out).toEqual([
+      { name: 'Location', value: `https://app.example.com/cb?code=${REDACTED}&state=s#otp=${REDACTED}` },
+    ]);
+  });
+
+  it('still fully masks a URL-valued header named in the custom blocklist', () => {
+    const out = redactHeaders(
+      [{ name: 'Referer', value: 'https://internal.example.com/p' }],
+      rules({ headerNames: ['referer'] }),
+    );
+    expect(out).toEqual([{ name: 'Referer', value: REDACTED }]);
+  });
 });

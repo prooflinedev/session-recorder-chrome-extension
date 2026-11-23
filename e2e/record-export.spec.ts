@@ -295,3 +295,107 @@ test('never records secrets typed into key, code, PIN and phrase fields', async 
   }
   expect(JSON.stringify(events)).not.toContain('leak-');
 });
+
+test('redacts tokens in page, route and tab URLs, through to the exported report', async ({
+  context,
+  background,
+  extensionId,
+}) => {
+  // The tab is already on a password-reset link when recording starts.
+  const page = await context.newPage();
+  await page.goto('/?token=leak-start&page=2');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Demo');
+
+  const tabId = await tabIdForUrl(background, 'http://localhost:5319');
+  const started = await dispatch<StartRes>(background, { kind: 'session/start', tabId });
+  expect(started.ok).toBe(true);
+  const sessionId = started.session!.id;
+  // The starting page is stored redacted before anything navigates over it.
+  type SessionMeta = { initialUrl: string; tabs: Array<{ role: string; url: string }> };
+  const atStart = await dispatch<{ session: SessionMeta }>(background, { kind: 'session/getState' });
+  expect(atStart.session.initialUrl).toBe('http://localhost:5319/?token=«redacted»&page=2');
+  expect(atStart.session.tabs.find((t) => t.role === 'primary')?.url).toBe(
+    'http://localhost:5319/?token=«redacted»&page=2',
+  );
+  await page.waitForTimeout(800);
+
+  // An OAuth implicit-flow / magic-link callback: tokens in query and fragment.
+  await page.goto('/?api_key=leak-query&page=3#access_token=leak-access&refresh_token=leak-refresh&type=magiclink');
+  // A hash-router route with a query, then a fragment-only update.
+  await page.evaluate(() => history.pushState({}, '', '/#/reset?token=leak-route&step=2'));
+  await page.evaluate(() => { location.hash = 'id_token=leak-hash&view=grid'; });
+  // A tab the recorded app opens is adopted with its URL.
+  const [popup] = await Promise.all([
+    context.waitForEvent('page'),
+    page.evaluate(() => {
+      window.open(`${location.origin}/?session=leak-tab&lang=en`, '_blank', 'noopener');
+    }),
+  ]);
+  await popup.waitForLoadState();
+
+  // Each callback records on its own schedule: wait until every expected event
+  // has arrived, redacted but still readable, before stopping the session.
+  const callbackUrl =
+    'http://localhost:5319/?api_key=«redacted»&page=3#access_token=«redacted»&refresh_token=«redacted»&type=magiclink';
+  const expected: Array<[string, string]> = [
+    ['nav', callbackUrl],
+    ['spa-route', 'http://localhost:5319/#/reset?token=«redacted»&step=2'],
+    ['spa-route', 'http://localhost:5319/#id_token=«redacted»&view=grid'],
+    ['tab-opened', 'http://localhost:5319/?session=«redacted»&lang=en'],
+  ];
+  await expect
+    .poll(async () => {
+      const { events } = await dispatch<EventsRes>(background, { kind: 'events/get', sessionId });
+      return expected.filter(
+        ([type, url]) => !events.some((e) => e.type === type && e.payload?.url === url),
+      );
+    })
+    .toEqual([]);
+
+  await dispatch(background, { kind: 'session/stop' });
+
+  const { events } = await dispatch<EventsRes>(background, { kind: 'events/get', sessionId });
+  // …and no secret survives anywhere in the events or the session record.
+  expect(JSON.stringify(events)).not.toContain('leak-');
+  const stored = await dispatch<{ session: SessionMeta }>(background, { kind: 'session/get', sessionId });
+  expect(stored.session.initialUrl).toBe('http://localhost:5319/?token=«redacted»&page=2');
+  expect(stored.session.tabs.find((t) => t.role === 'adopted')?.url).toBe(
+    'http://localhost:5319/?session=«redacted»&lang=en',
+  );
+  // The registry followed the primary tab to its last committed navigation.
+  expect(stored.session.tabs.find((t) => t.role === 'primary')?.url).toBe(callbackUrl);
+  expect(JSON.stringify(stored)).not.toContain('leak-');
+
+  // Export the Full report through the real UI and check what a reader would get.
+  const workspace = await context.newPage();
+  await workspace.goto(extUrl(extensionId, `share.html?session=${sessionId}`));
+  // session/stop opens its own workspace tab too: take the popup of this page,
+  // not whichever new page appears first.
+  const opened = workspace.waitForEvent('popup');
+  await workspace.getByRole('link', { name: 'Full timeline' }).click();
+  const sp = await opened;
+  await sp.evaluate(() => {
+    (window as any).__dl = null;
+    chrome.downloads.download = (async (opts: { url: string; filename: string }) => {
+      const buf = await fetch(opts.url).then((r) => r.arrayBuffer());
+      (window as any).__dl = { name: opts.filename, bytes: Array.from(new Uint8Array(buf)) };
+      return 1;
+    }) as typeof chrome.downloads.download;
+  });
+  await sp.getByRole('button', { name: 'Full', exact: true }).click();
+  await sp.getByRole('button', { name: /Download .zip/i }).click();
+  await sp.waitForFunction(() => (window as any).__dl !== null, undefined, { timeout: 20_000 });
+  const dl = (await sp.evaluate(() => (window as any).__dl)) as { bytes: number[] };
+  const files = unzipSync(Uint8Array.from(dl.bytes));
+  const text = Object.values(files).map((f) => new TextDecoder().decode(f)).join('\n');
+  const report = new TextDecoder().decode(files[Object.keys(files).find((k) => k.endsWith('/report.md'))!]!);
+  // A Full export, with every navigation in its own timeline heading, whole:
+  // masked, not dropped or truncated.
+  expect(report).toContain('**Verbosity level:** L0');
+  const headings = report.split('\n').filter((l) => l.startsWith('## '));
+  const label: Record<string, string> = { nav: 'NAV', 'spa-route': 'ROUTE', 'tab-opened': 'TAB OPENED' };
+  for (const [type, url] of expected) {
+    expect(headings.some((h) => h.includes(` ${label[type]}`) && h.includes(` ${url}`))).toBe(true);
+  }
+  expect(text).not.toContain('leak-');
+});
