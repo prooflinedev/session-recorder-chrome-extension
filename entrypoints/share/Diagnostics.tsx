@@ -8,7 +8,8 @@ const PAGE_SIZE = 50;
 
 /** Search unescaped values as well as field names, matching text shown in rows. */
 function containsText(value: unknown, term: string): boolean {
-  if (value === null || value === undefined) return false;
+  if (value === undefined) return false;
+  if (value === null) return 'null'.includes(term);
   if (typeof value !== 'object') return String(value).toLocaleLowerCase().includes(term);
   if (Array.isArray(value)) return value.some((item) => containsText(item, term));
   return Object.entries(value).some(([key, item]) =>
@@ -24,7 +25,17 @@ function summary(event: DiagnosticEvent): string {
   return `${p.method} ${p.url} — ${status}`;
 }
 
-export function Diagnostics({ events }: { events: SessionEvent[] }): React.JSX.Element {
+const DiagnosticRow = React.memo(function DiagnosticRow({ event }: { event: DiagnosticEvent }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details className="diagnostic-event" onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary><time>{formatClock(event.t)}</time><span className="diagnostic-kind">{event.type === 'net-request' ? 'Network' : event.type === 'console' ? 'Console' : 'Error'}</span><span className="diagnostic-summary">{summary(event)}</span></summary>
+      {open && <pre className="diagnostic-data">{JSON.stringify(event, null, 2)}</pre>}
+    </details>
+  );
+});
+
+export const Diagnostics = React.memo(function Diagnostics({ events }: { events: SessionEvent[] }): React.JSX.Element {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<Category>('all');
   const [limit, setLimit] = useState(PAGE_SIZE);
@@ -35,7 +46,10 @@ export function Diagnostics({ events }: { events: SessionEvent[] }): React.JSX.E
   const matches = useMemo(() => {
     const term = query.trim().toLocaleLowerCase();
     return indexed.filter((event) =>
-      (category === 'all' || event.type === category) && (!term || containsText(event, term)),
+      (category === 'all' || event.type === category) &&
+      (!term || summary(event).toLocaleLowerCase().includes(term) ||
+        (event.type === 'net-request' && 'network'.includes(term)) ||
+        formatClock(event.t).includes(term) || containsText(event, term)),
     );
   }, [indexed, query, category]);
 
@@ -58,14 +72,9 @@ export function Diagnostics({ events }: { events: SessionEvent[] }): React.JSX.E
       <p className="diagnostics-count" role="status">{matches.length} of {indexed.length} events match{matches.length > limit ? ` · showing ${limit}` : ''}</p>
       {matches.length === 0 && <p className="muted">No matching diagnostics. Try another search or event type.</p>}
       <div className="diagnostics-list">
-        {matches.slice(0, limit).map((event) => (
-          <details className="diagnostic-event" key={event.id}>
-            <summary><time>{formatClock(event.t)}</time><span className="diagnostic-kind">{event.type === 'net-request' ? 'Network' : event.type === 'console' ? 'Console' : 'Error'}</span><span className="diagnostic-summary">{summary(event)}</span></summary>
-            <pre className="diagnostic-data">{JSON.stringify(event, null, 2)}</pre>
-          </details>
-        ))}
+        {matches.slice(0, limit).map((event) => <DiagnosticRow key={event.id} event={event} />)}
       </div>
       {matches.length > limit && <button type="button" className="text-action diagnostics-more" onClick={() => setLimit((n) => n + PAGE_SIZE)}>Show more events</button>}
     </div>
   );
-}
+});
