@@ -651,3 +651,140 @@ describe('NetworkCapturer redirects', () => {
     expect(emitted).toHaveLength(0);
   });
 });
+
+
+describe('NetworkCapturer omitted request bodies', () => {
+  it('recovers and redacts a body omitted from requestWillBeSent', async () => {
+    const postData = '{"token":"POST_SECRET","name":"Ada"}';
+    const send = vi.fn(async (_tabId: number, method: string) => {
+      if (method === 'Network.getRequestPostData') return { postData };
+      if (method === 'Network.getResponseBody') {
+        return { body: '{"ok":true}', base64Encoded: false };
+      }
+      return {};
+    });
+    const { cap, emitted } = makeCapturer({ send });
+
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'large-post',
+      request: {
+        method: 'POST',
+        url: 'https://api.example.com/users',
+        headers: { 'content-type': 'application/json' },
+        hasPostData: true,
+      },
+      type: 'XHR',
+    });
+    cap.handle(1, 'Network.responseReceived', {
+      requestId: 'large-post',
+      response: {
+        status: 422,
+        headers: { 'content-type': 'application/json' },
+        mimeType: 'application/json',
+      },
+    });
+    cap.handle(1, 'Network.loadingFinished', { requestId: 'large-post' });
+
+    await vi.waitFor(() => expect(emitted).toHaveLength(1));
+
+    const payload = payloadOf(emitted[0]!);
+    expect(send).toHaveBeenCalledWith(1, 'Network.getRequestPostData', {
+      requestId: 'large-post',
+    });
+    expect(payload.requestBody?.present).toBe(true);
+    expect(JSON.parse(payload.requestBody!.text!)).toEqual({
+      token: '«redacted»',
+      name: 'Ada',
+    });
+    expect(payload.requestBody!.text).not.toContain('POST_SECRET');
+  });
+
+  it('waits for omitted request data before emitting a failed request', async () => {
+    let resolvePostData!: (value: Record<string, unknown>) => void;
+    const send = vi.fn(
+      (_tabId: number, method: string): Promise<Record<string, unknown>> => {
+        if (method === 'Network.getRequestPostData') {
+          return new Promise((resolve) => {
+            resolvePostData = resolve;
+          });
+        }
+        return Promise.resolve({});
+      },
+    );
+    const { cap, emitted } = makeCapturer({ send });
+
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'failed-post',
+      request: {
+        method: 'POST',
+        url: 'https://api.example.com/orders',
+        headers: { 'content-type': 'application/json' },
+        hasPostData: true,
+      },
+      type: 'XHR',
+    });
+    cap.handle(1, 'Network.loadingFailed', {
+      requestId: 'failed-post',
+      errorText: 'net::ERR_FAILED',
+    });
+
+    expect(emitted).toHaveLength(0);
+    resolvePostData({ postData: '{"orderId":"ord-1"}' });
+    await vi.waitFor(() => expect(emitted).toHaveLength(1));
+
+    const payload = payloadOf(emitted[0]!);
+    expect(payload.failed).toBe(true);
+    expect(payload.requestBody?.text).toBe('{"orderId":"ord-1"}');
+  });
+
+  it('marks a known request body unavailable if CDP cannot retrieve it', async () => {
+    const send = vi.fn(async () => {
+      throw new Error('No resource with given identifier found');
+    });
+    const { cap, emitted } = makeCapturer({ send });
+
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'unavailable-post',
+      request: {
+        method: 'POST',
+        url: 'https://api.example.com/upload',
+        headers: {},
+        hasPostData: true,
+      },
+      type: 'XHR',
+    });
+    cap.handle(1, 'Network.loadingFailed', {
+      requestId: 'unavailable-post',
+      errorText: 'net::ERR_FAILED',
+    });
+
+    await vi.waitFor(() => expect(emitted).toHaveLength(1));
+    expect(payloadOf(emitted[0]!).requestBody).toEqual({ present: false });
+  });
+
+  it('does not fetch again when requestWillBeSent already includes postData', () => {
+    const send = vi.fn(async () => ({}));
+    const { cap, emitted } = makeCapturer({ send });
+
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'inline-post',
+      request: {
+        method: 'POST',
+        url: 'https://api.example.com/users',
+        headers: { 'content-type': 'application/json' },
+        postData: '{"name":"Ada"}',
+        hasPostData: true,
+      },
+      type: 'XHR',
+    });
+    cap.handle(1, 'Network.loadingFailed', {
+      requestId: 'inline-post',
+      errorText: 'net::ERR_FAILED',
+    });
+
+    expect(send).not.toHaveBeenCalledWith(1, 'Network.getRequestPostData', {
+      requestId: 'inline-post',
+    });
+    expect(payloadOf(emitted[0]!).requestBody?.text).toBe('{"name":"Ada"}');
+  });
+});
