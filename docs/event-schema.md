@@ -206,7 +206,7 @@ bodies before emit.
 | `bodyShape`      | `{ request?: string; response?: string }` (optional) | The trimmer sets this when it reduces a body to a JSON shape summary. |
 
 `NetBody` is `{ present, mime?, text?, truncated?, originalSize?, assetId?, base64? }`:
-- `present` is whether a body exists. It is false when the CDP body was evicted.
+- `present` is whether body content was captured. It is false when CDP reports a body but cannot return it; this can happen when a response body was evicted or an omitted request body cannot be recovered with `Network.getRequestPostData`.
 - `mime` is the body MIME type
 - `text` is the body text, possibly truncated or redacted
 - `truncated` is true when `text` was cut to the inline cap
