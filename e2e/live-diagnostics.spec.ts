@@ -43,5 +43,5 @@ test('searches diagnostics captured from a real recording', async ({ context, ba
   await expect(report.getByText('No matching diagnostics.', {exact: false})).toBeVisible();
   await search.fill('');
   await filter.selectOption('all');
-  await expect(report.locator('.diagnostic-event').first()).toBeVisible();
+  await expect(report.locator('.diagnostic-event').filter({hasText: 'Live browser diagnostic zebra'})).toBeVisible();
 });

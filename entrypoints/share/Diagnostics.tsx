@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { formatClock } from '@/lib/export/markdown';
 import type { SessionEvent } from '@/lib/session/types';
 
@@ -39,6 +39,8 @@ export const Diagnostics = React.memo(function Diagnostics({ events }: { events:
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<Category>('all');
   const [limit, setLimit] = useState(PAGE_SIZE);
+  const listRef = useRef<HTMLDivElement>(null);
+  const focusIndex = useRef<number | null>(null);
   const indexed = useMemo(() => events.flatMap((event) => {
     if (event.type !== 'error' && event.type !== 'console' && event.type !== 'net-request') return [];
     return [event];
@@ -52,6 +54,17 @@ export const Diagnostics = React.memo(function Diagnostics({ events }: { events:
         formatClock(event.t).includes(term) || containsText(event, term)),
     );
   }, [indexed, query, category]);
+
+  useLayoutEffect(() => {
+    if (focusIndex.current === null) return;
+    listRef.current?.querySelectorAll<HTMLElement>('.diagnostic-event > summary')[focusIndex.current]?.focus();
+    focusIndex.current = null;
+  }, [limit]);
+
+  const showMore = () => {
+    focusIndex.current = limit;
+    setLimit(Math.min(limit + PAGE_SIZE, matches.length));
+  };
 
   return (
     <div className="diagnostics">
@@ -71,10 +84,10 @@ export const Diagnostics = React.memo(function Diagnostics({ events }: { events:
       </div>
       <p className="diagnostics-count" role="status">{matches.length} of {indexed.length} events match{matches.length > limit ? ` · showing ${limit}` : ''}</p>
       {matches.length === 0 && <p className="muted">No matching diagnostics. Try another search or event type.</p>}
-      <div className="diagnostics-list">
+      <div className="diagnostics-list" ref={listRef}>
         {matches.slice(0, limit).map((event) => <DiagnosticRow key={event.id} event={event} />)}
       </div>
-      {matches.length > limit && <button type="button" className="text-action diagnostics-more" onClick={() => setLimit((n) => n + PAGE_SIZE)}>Show more events</button>}
+      {matches.length > limit && <button type="button" className="text-action diagnostics-more" onClick={showMore}>Show more events</button>}
     </div>
   );
 });

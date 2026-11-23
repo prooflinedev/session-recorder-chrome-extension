@@ -23,7 +23,7 @@ test('searches and filters all saved diagnostics without changing the recording'
       const tx = db.transaction('events', 'readwrite');
       const store = tx.objectStore('events');
       for (let i = 0; i < 120; i++) {
-        store.put({ id: `diagnostic-${i}`, sessionId: id, t: 10000 + i, importance: 1, type: 'net-request', payload: { requestId: `req-${i}`, method: 'GET', url: `https://api.example.test/items/${i}`, status: i === 0 ? null : i === 119 ? 503 : 200, requestHeaders: [], responseHeaders: [], responseBody: {present: true, text: i === 119 ? 'Unique response needle' : 'ok'} } });
+        store.put({ id: `diagnostic-${i}`, sessionId: id, t: 10000 + i, importance: 1, type: 'net-request', payload: { requestId: `req-${i}`, method: 'GET', url: `https://api.example.test/items/${i}`, status: i === 0 ? null : i === 119 ? 503 : 200, requestHeaders: [], responseHeaders: [], responseBody: {present: true, text: i === 119 ? 'Unique response needle' : `Diagnostic response body ${i}`} } });
       }
       store.put({id: 'diagnostic-error', sessionId: id, t: 12000, importance: 10, type: 'error', payload: {message: 'Checkout crashed', stack: 'Error: "checkout" failed in hidden raw details', origin: 'exception'}});
       store.put({id: 'diagnostic-error-unquoted', sessionId: id, t: 12500, importance: 10, type: 'error', payload: {message: 'Payment failed', stack: 'Error: checkout failed in unquoted raw details', origin: 'exception'}});
@@ -73,10 +73,13 @@ test('searches and filters all saved diagnostics without changing the recording'
   await expect(workspace.locator('.diagnostic-event').filter({hasText: 'Checkout crashed'})).toHaveCount(1);
   await type.selectOption('all');
   await search.fill('');
-  await workspace.getByRole('button', {name: 'Show more events'}).click();
+  const showMore = workspace.getByRole('button', {name: 'Show more events'});
+  await showMore.press('Enter');
   await expect(workspace.locator('.diagnostic-event')).toHaveCount(100);
+  await expect(workspace.locator('.diagnostic-event').nth(50).locator('summary')).toBeFocused();
   await workspace.getByRole('button', {name: 'Show more events'}).click();
   await expect(workspace.locator('.diagnostic-event')).toHaveCount(total);
+  await expect(workspace.locator('.diagnostic-event').nth(100).locator('summary')).toBeFocused();
   await workspace.getByText('Technical details', {exact: false}).click();
   await workspace.getByRole('textbox', {name: 'Issue title'}).fill('Updated issue title');
   await workspace.getByText('Technical details', {exact: false}).click();
@@ -84,8 +87,16 @@ test('searches and filters all saved diagnostics without changing the recording'
   await workspace.reload();
   await workspace.getByText('Technical details', {exact: false}).click();
   await expect(workspace.locator('.diagnostics-count')).toContainText(`${total} of ${total} events match`);
-  await workspace.getByRole('searchbox', {name: 'Search diagnostics'}).fill('Unique response needle');
-  const savedEvent = workspace.locator('.diagnostic-event').filter({hasText: '/items/119'});
-  await savedEvent.locator('summary').click();
-  await expect(savedEvent.locator('pre')).toContainText('Unique response needle');
+  const savedSearch = workspace.getByRole('searchbox', {name: 'Search diagnostics'});
+  for (const [query, url, body] of [
+    ['Diagnostic response body 0', '/items/0', 'Diagnostic response body 0'],
+    ['Diagnostic response body 60', '/items/60', 'Diagnostic response body 60'],
+    ['Unique response needle', '/items/119', 'Unique response needle'],
+  ] as const) {
+    await savedSearch.fill(query);
+    const savedEvent = workspace.locator('.diagnostic-event').filter({hasText: url});
+    await expect(savedEvent).toHaveCount(1);
+    await savedEvent.locator('summary').click();
+    await expect(savedEvent.locator('pre')).toContainText(body);
+  }
 });
