@@ -430,6 +430,12 @@ describe('redactHeaders — URL-valued headers', () => {
     );
   });
 
+  it('masks the whole value when it contains :~: that is not a text directive', () => {
+    expect(redactUrl('https://x.com/cb#access_token=abc:~:def&state=s', EMPTY_RULES)).toBe(
+      `https://x.com/cb#access_token=${REDACTED}&state=s`,
+    );
+  });
+
   it('masks a secret anchor param but keeps a trailing text directive', () => {
     const out = redactUrl('https://x.com/cb#access_token=a-1:~:text=Welcome', EMPTY_RULES);
     expect(out).toBe(`https://x.com/cb#access_token=${REDACTED}:~:text=Welcome`);

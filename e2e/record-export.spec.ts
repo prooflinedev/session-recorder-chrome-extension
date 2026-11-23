@@ -389,7 +389,13 @@ test('redacts tokens in page, route and tab URLs, through to the exported report
   const files = unzipSync(Uint8Array.from(dl.bytes));
   const text = Object.values(files).map((f) => new TextDecoder().decode(f)).join('\n');
   const report = new TextDecoder().decode(files[Object.keys(files).find((k) => k.endsWith('/report.md'))!]!);
-  // Every navigation reaches the report whole: masked, not dropped or truncated.
-  for (const [, url] of expected) expect(report).toContain(url.replace('http://localhost:5319', ''));
+  // A Full export, with every navigation in its own timeline heading, whole:
+  // masked, not dropped or truncated.
+  expect(report).toContain('**Verbosity level:** L0');
+  const headings = report.split('\n').filter((l) => l.startsWith('## '));
+  const label: Record<string, string> = { nav: 'NAV', 'spa-route': 'ROUTE', 'tab-opened': 'TAB OPENED' };
+  for (const [type, url] of expected) {
+    expect(headings.some((h) => h.includes(` ${label[type]}`) && h.includes(` ${url}`))).toBe(true);
+  }
   expect(text).not.toContain('leak-');
 });

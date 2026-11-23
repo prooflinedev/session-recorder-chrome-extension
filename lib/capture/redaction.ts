@@ -268,13 +268,14 @@ function redactParams(
  * (and the magic links of Supabase, Auth0 and others) return
  * `#access_token=…&refresh_token=…`; hash routers put a query after the route,
  * as in `#/reset?token=…`. A plain anchor such as `#section` has no `=` and is
- * returned unchanged, as is a `:~:` fragment directive.
+ * returned unchanged, as is a `:~:text=` directive.
  */
 function redactFragment(fragment: string, matcher: (name: string) => boolean): string {
-  // A fragment directive (`:~:text=…`, a browser text highlight) carries search
+  // A text directive (`:~:text=…`, a browser text highlight) carries search
   // text, not a parameter. Keep it verbatim so `#authentication:~:text=…` is not
-  // read as a key containing "auth".
-  const d = fragment.indexOf(':~:');
+  // read as a key containing "auth". Only that directive is recognised: any other
+  // `:~:` stays inside the value it appears in and is masked with it.
+  const d = fragment.indexOf(':~:text=');
   if (d !== -1) return `${redactFragment(fragment.slice(0, d), matcher)}${fragment.slice(d)}`;
   const eq = fragment.indexOf('=');
   if (eq === -1) return fragment;
