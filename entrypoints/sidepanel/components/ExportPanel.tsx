@@ -20,6 +20,8 @@ import { zipFiles } from '@/lib/export/zip';
 import DOMPurify from 'dompurify';
 import { applyLevel } from '@/lib/export/trimmer';
 import { buildReportHtml } from '@/lib/export/report-html';
+import { toAssetMeta } from '@/lib/session/asset-meta';
+import { screenshotRedactionLock } from '@/lib/capture/redaction-lock';
 import { broadcast, onBroadcast, type TokenEstimate } from '@/lib/messaging';
 import type { VerbosityLevel } from '@/lib/session/types';
 import { fileToDataUrl, sessionFolderName } from '../store';
@@ -43,6 +45,7 @@ export function ExportPanel({ sessionId }: ExportPanelProps): React.JSX.Element 
   const [estimates, setEstimates] = useState<TokenEstimate[] | null>(null);
   const [loadError, setLoadError] = useState<string | undefined>();
   const [level, setLevel] = useState<VerbosityLevel>('L1');
+  const [assetVersion, setAssetVersion] = useState(0);
 
   // Follow level changes made in an open report tab, so the two choosers never
   // disagree (the radio onChange broadcasts the same event the other way).
@@ -51,6 +54,9 @@ export function ExportPanel({ sessionId }: ExportPanelProps): React.JSX.Element 
       onBroadcast((evt) => {
         if (evt.kind === 'report/level' && evt.sessionId === sessionId) {
           setLevel(evt.level);
+        }
+        if (evt.kind === 'asset/redaction-updated' && evt.sessionId === sessionId) {
+          setAssetVersion((version) => version + 1);
         }
       }),
     [sessionId],
@@ -82,7 +88,7 @@ export function ExportPanel({ sessionId }: ExportPanelProps): React.JSX.Element 
     return () => {
       cancelled = true;
     };
-  }, [sessionId]);
+  }, [sessionId, assetVersion]);
 
   // Once estimates land, if the selected level is over the limit, nudge to L1.
   useEffect(() => {
@@ -101,6 +107,7 @@ export function ExportPanel({ sessionId }: ExportPanelProps): React.JSX.Element 
     try {
       const session = await getSession(sessionId);
       if (!session) throw new Error('Session not found.');
+      await navigator.locks.request(screenshotRedactionLock(sessionId), { mode: 'exclusive' }, async () => {
       const [events, assets] = await Promise.all([
         getEvents(sessionId),
         getAssets(sessionId),
@@ -111,7 +118,7 @@ export function ExportPanel({ sessionId }: ExportPanelProps): React.JSX.Element 
 
       if (includeHtml) {
         setPhase('Rendering HTML…');
-        const meta = assets.map(({ blob: _b, ...m }) => m);
+        const meta = assets.map(toAssetMeta);
         const ctx = {
           assetsById: new Map(meta.map((m) => [m.id, m])),
           settings: session.settings,
@@ -152,6 +159,7 @@ export function ExportPanel({ sessionId }: ExportPanelProps): React.JSX.Element 
       url = URL.createObjectURL(blob);
       await chrome.downloads.download({ url, filename: `${folder}.zip` });
       setPhase('Downloaded');
+      });
     } catch (err) {
       setBuildError(describe(err));
       setPhase('');

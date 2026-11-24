@@ -19,6 +19,7 @@ import type {
   VerbosityLevel,
 } from '@/lib/session/types';
 import type { TokenEstimate } from '@/lib/messaging';
+import { toAssetMeta } from '@/lib/session/asset-meta';
 import { applyLevel } from './trimmer';
 import type { TrimContext } from './trimmer';
 import { renderManifest, renderReport } from './markdown';
@@ -146,6 +147,7 @@ interface AssetPlan {
  */
 function planAssetPaths(events: SessionEvent[], assets: Asset[]): AssetPlan {
   const known = new Set(assets.map((a) => a.id));
+  const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
   const pathById = new Map<string, string>();
   const used = new Set<string>();
 
@@ -164,14 +166,16 @@ function planAssetPaths(events: SessionEvent[], assets: Asset[]): AssetPlan {
       case 'screenshot':
         assign(e.payload.assetId, () => {
           shotSeq += 1;
-          return `screenshots/${seq(shotSeq)}-${mmss(e.t)}.jpg`;
+          const ext = imageExtension(assetsById.get(e.payload.assetId)?.mime);
+          return `screenshots/${seq(shotSeq)}-${mmss(e.t)}.${ext}`;
         });
         break;
       case 'annotation':
         // Annotation screenshots are always kept.
         assign(e.payload.screenshotAssetId, () => {
           shotSeq += 1;
-          return `screenshots/${seq(shotSeq)}-${mmss(e.t)}.jpg`;
+          const ext = imageExtension(assetsById.get(e.payload.screenshotAssetId ?? '')?.mime);
+          return `screenshots/${seq(shotSeq)}-${mmss(e.t)}.${ext}`;
         });
         break;
       case 'voice-segment':
@@ -213,6 +217,12 @@ function planAssetPaths(events: SessionEvent[], assets: Asset[]): AssetPlan {
   }
 
   return { pathById };
+}
+
+function imageExtension(mime: string | undefined): string {
+  if (mime === 'image/png') return 'png';
+  if (mime === 'image/webp') return 'webp';
+  return 'jpg';
 }
 
 /** Rewrite an event's asset-id references to their zip-relative paths. */
@@ -262,8 +272,7 @@ function mapEventAssets(
 // ---------------------------------------------------------------------------
 
 function toMeta(a: Asset): AssetMeta {
-  const { blob: _blob, ...meta } = a;
-  return meta;
+  return toAssetMeta(a);
 }
 
 function trimContext(

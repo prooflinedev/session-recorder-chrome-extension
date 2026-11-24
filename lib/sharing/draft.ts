@@ -40,6 +40,8 @@ export function publicationReady(publication?: Publication): boolean {
 }
 export interface SavedDraft {
   summaryRequestId?: string;
+  /** Screenshot revision used to generate an existing publication. */
+  publicationRevision?: string;
 
   draft: IssueDraft;
   repository: string;

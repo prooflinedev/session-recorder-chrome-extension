@@ -10,7 +10,7 @@
  * untrusted page content can never execute here). A verbosity selector re-renders
  * the report, and changing the level in the side panel re-renders it too.
  */
-import { getSession, getEvents, getAssets } from '@/lib/storage';
+import { getSession, getEvents, getAssets, getAsset } from '@/lib/storage';
 import { formatClock } from '@/lib/export/markdown';
 import {
   applyLevel,
@@ -24,12 +24,16 @@ import { zipFiles } from '@/lib/export/zip';
 import { sessionFolderName } from '@/lib/util/naming';
 import { broadcast, onBroadcast } from '@/lib/messaging';
 import type {
+  Asset,
   AssetMeta,
   AnnotationShape,
   NetRequestPayload,
   SessionEvent,
   VerbosityLevel,
 } from '@/lib/session/types';
+import { toAssetMeta } from '@/lib/session/asset-meta';
+import { openRedactionEditor } from './redaction-editor';
+import { screenshotRedactionLock } from '@/lib/capture/redaction-lock';
 
 const params = new URLSearchParams(location.search);
 const sessionId = params.get('session');
@@ -51,8 +55,15 @@ let loaded: {
   session: Awaited<ReturnType<typeof getSession>>;
   events: SessionEvent[];
   assetsMeta: AssetMeta[];
+  assets: Asset[];
   mediaUrls: Map<string, string>;
 } | null = null;
+let navigationVideos: Extract<SessionEvent, { type: 'video-segment' }>[] = [];
+let videoPlayers = new Map<string, HTMLVideoElement>();
+
+window.addEventListener('pagehide', () => {
+  loaded?.mediaUrls.forEach((url) => URL.revokeObjectURL(url));
+});
 
 const LEVELS: { id: VerbosityLevel; label: string }[] = [
   { id: 'L0', label: 'Full' },
@@ -112,20 +123,22 @@ async function load(): Promise<void> {
   metaEl.textContent = `${formatClock(duration)} · ${total} events`;
 
   // Object URLs for every renderable media asset (images inline as <img>,
-  // video segments as <video>).
+  // video segments as <video>, and narration as <audio>).
   const mediaUrls = new Map<string, string>();
   for (const a of assets) {
     if (
       a.kind === 'screenshot' ||
+      a.kind === 'audio' ||
       a.kind === 'video' ||
       a.mime.startsWith('image/') ||
+      a.mime.startsWith('audio/') ||
       a.mime.startsWith('video/')
     ) {
       mediaUrls.set(a.id, URL.createObjectURL(a.blob));
     }
   }
-  const assetsMeta: AssetMeta[] = assets.map(({ blob: _b, ...m }) => m);
-  loaded = { session, events, assetsMeta, mediaUrls };
+  const assetsMeta: AssetMeta[] = assets.map(toAssetMeta);
+  loaded = { session, events, assetsMeta, assets, mediaUrls };
   renderLevels();
   render();
 }
@@ -159,6 +172,11 @@ function render(): void {
   };
   // Dictated speech already appears as the annotation it produced.
   const trimmed = trimForLevel(events, level, ctx).filter((e) => !isDictatedSpeech(e));
+  navigationVideos = trimmed.filter(
+    (event): event is Extract<SessionEvent, { type: 'video-segment' }> =>
+      event.type === 'video-segment' && !!mediaUrls.get(event.payload.assetId ?? ''),
+  );
+  videoPlayers = new Map();
 
   const root = el('div');
 
@@ -211,7 +229,7 @@ function render(): void {
         run.push(trimmed[j]! as Extract<SessionEvent, { type: 'voice-segment' }>);
         j += 1;
       }
-      tl.appendChild(run.length >= 2 ? voiceGroup(run) : eventNode(e, mediaUrls));
+      tl.appendChild(run.length >= 2 ? voiceGroup(run, mediaUrls) : eventNode(e, mediaUrls));
       i = j;
     } else {
       tl.appendChild(eventNode(e, mediaUrls));
@@ -219,6 +237,10 @@ function render(): void {
     }
   }
   root.appendChild(tl);
+  const navigationStatus = el('div', 'r-navigation-status');
+  navigationStatus.setAttribute('role', 'status');
+  navigationStatus.setAttribute('aria-live', 'polite');
+  root.appendChild(navigationStatus);
 
   reportEl.replaceChildren(root);
 }
@@ -233,7 +255,62 @@ function setLevel(lv: VerbosityLevel): void {
 // ---- event nodes ----------------------------------------------------------
 
 function clockOf(e: SessionEvent): HTMLElement {
-  return el('span', 'r-time', formatClock(e.t));
+  return clockAt(e.t);
+}
+
+function clockAt(time: number): HTMLElement {
+  if (!findVideoForTime(time)) return el('span', 'r-time', formatClock(time));
+  const button = el('button', 'r-time r-time--jump', formatClock(time));
+  button.type = 'button';
+  button.setAttribute('aria-label', `Jump to video at ${formatClock(time)}`);
+  button.addEventListener('click', () => { void navigateToVideo(time); });
+  return button;
+}
+
+function findVideoForTime(time: number): Extract<SessionEvent, { type: 'video-segment' }> | undefined {
+  return navigationVideos
+    .filter((event) => time >= event.payload.tStart && time <= event.payload.tEnd)
+    .sort((a, b) => b.payload.tStart - a.payload.tStart)[0];
+}
+
+async function navigateToVideo(time: number): Promise<void> {
+  const event = findVideoForTime(time);
+  if (!event) return;
+  const video = videoPlayers.get(event.id);
+  if (!video) return;
+  const status = reportEl.querySelector<HTMLElement>('.r-navigation-status');
+  video.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  try {
+    if (video.readyState < HTMLMediaElement.HAVE_METADATA) {
+      await new Promise<void>((resolve, reject) => {
+        const cleanup = () => {
+          window.clearTimeout(timer);
+          video.removeEventListener('loadedmetadata', onMetadata);
+          video.removeEventListener('error', onError);
+        };
+        const finish = (error?: Error) => {
+          cleanup();
+          if (error) reject(error);
+          else resolve();
+        };
+        const onMetadata = () => finish();
+        const onError = () => finish(new Error(video.error?.message ?? 'Video failed to load.'));
+        const timer = window.setTimeout(() => finish(new Error('Video metadata timed out.')), 10_000);
+        video.addEventListener('loadedmetadata', onMetadata, { once: true });
+        video.addEventListener('error', onError, { once: true });
+        if (video.readyState >= HTMLMediaElement.HAVE_METADATA) finish();
+        else if (video.error) onError();
+      });
+    }
+    const offset = Math.max(0, (time - event.payload.tStart) / 1000);
+    video.currentTime = Number.isFinite(video.duration)
+      ? Math.min(offset, Math.max(0, video.duration - 0.05))
+      : offset;
+    await video.play();
+    if (status) status.textContent = '';
+  } catch {
+    if (status) status.textContent = `Video is available at ${formatClock(time)}. Press Play to continue.`;
+  }
 }
 
 function eventNode(e: SessionEvent, mediaUrls: Map<string, string>): HTMLElement {
@@ -297,25 +374,19 @@ function eventNode(e: SessionEvent, mediaUrls: Map<string, string>): HTMLElement
       return row;
     }
     case 'screenshot':
-      return shotBlock(e.t, mediaUrls.get(e.payload.assetId ?? ''), e.payload.contextText);
+      return shotBlock(e.t, mediaUrls.get(e.payload.assetId ?? ''), e.payload.contextText, e.payload.assetId, isStopped());
     case 'annotation':
-      return annotationBlock(e.t, mediaUrls.get(e.payload.screenshotAssetId ?? ''), e.payload.shapes);
+      return annotationBlock(e.t, mediaUrls.get(e.payload.screenshotAssetId ?? ''), e.payload.shapes, e.payload.screenshotAssetId, isStopped());
     case 'video-segment':
       return videoBlock(
+        e.id,
         e.t,
         mediaUrls.get(e.payload.assetId ?? ''),
         e.payload.tStart,
         e.payload.tEnd,
       );
     case 'voice-segment': {
-      const p = e.payload;
-      const b = el('div', 'r-signal r-voice');
-      b.append(clockOf(e), tag('voice'));
-      const body = el('div');
-      body.appendChild(el('div', 'r-signal__text', p.transcript ?? '(audio)'));
-      if (p.anchorContext) body.appendChild(el('div', 'r-signal__sub', `while ${p.anchorContext}`));
-      b.appendChild(body);
-      return b;
+      return voiceGroup([e], mediaUrls);
     }
     case 'marker': {
       const b = el('div', 'r-signal r-marker');
@@ -366,26 +437,33 @@ function netGroup(run: SessionEvent[]): HTMLElement {
     (e) => e.type === 'net-request' && (e.payload.failed || (typeof e.payload.status === 'number' && e.payload.status >= 400)),
   ).length;
   const wrap = el('div', 'r-netgroup');
-  const details = el('details');
-  const summary = el('summary', 'r-net');
   const line = el('div', 'r-netline');
   line.append(clockOf(run[0]!), tag('net'));
   line.appendChild(el('span', 'r-net__meth', `${run.length} network requests`));
   if (errors > 0) line.appendChild(el('span', 'r-net__status r-err', `${errors} failed`));
-  summary.appendChild(line);
-  details.appendChild(summary);
+  const toggle = el('button', 'r-netgroup__toggle', 'Show requests');
+  toggle.type = 'button';
+  toggle.setAttribute('aria-expanded', 'false');
+  line.appendChild(toggle);
+  wrap.appendChild(line);
   const inner = el('div', 'r-netgroup__list');
+  inner.hidden = true;
   for (const e of run) {
     if (e.type === 'net-request') inner.appendChild(netRow(e.payload, e));
   }
-  details.appendChild(inner);
-  wrap.appendChild(details);
+  toggle.addEventListener('click', () => {
+    inner.hidden = !inner.hidden;
+    toggle.setAttribute('aria-expanded', String(!inner.hidden));
+    toggle.textContent = inner.hidden ? 'Show requests' : 'Hide requests';
+  });
+  wrap.appendChild(inner);
   return wrap;
 }
 
 /** Stitch a run of consecutive voice segments into one narration block. */
 function voiceGroup(
   run: Extract<SessionEvent, { type: 'voice-segment' }>[],
+  mediaUrls: Map<string, string>,
 ): HTMLElement {
   const first = run[0]!;
   const last = run[run.length - 1]!;
@@ -403,9 +481,37 @@ function voiceGroup(
   b.append(clockOf(first), tag('voice'));
   const body = el('div', 'r-voice__body');
   body.appendChild(el('div', 'r-signal__text', text || '(audio)'));
+  if (run.length === 1 && first.payload.anchorContext) {
+    body.appendChild(el('div', 'r-signal__sub', `while ${first.payload.anchorContext}`));
+  }
   const meta = el('div', 'r-voice__meta');
   meta.textContent = `${formatClock(start)}–${formatClock(end)} · ${formatDuration(dur)}`;
   body.appendChild(meta);
+  const audioEvents = run.filter((event) => mediaUrls.has(event.payload.assetId ?? ''));
+  const audioItems = audioEvents.flatMap((event) => {
+    const url = mediaUrls.get(event.payload.assetId ?? '');
+    if (!url) return [];
+
+    const item = el('div', 'r-voice__audio-item');
+    const audioStart = event.payload.tStart ?? event.t;
+    const audioEnd = event.payload.tEnd ?? event.t;
+    if (audioEvents.length > 1) {
+      item.appendChild(
+        el('div', 'r-voice__audio-time', `${formatClock(audioStart)}–${formatClock(audioEnd)}`),
+      );
+    }
+    const player = el('audio', 'r-voice__audio');
+    player.controls = true;
+    player.preload = 'metadata';
+    player.src = url;
+    player.setAttribute(
+      'aria-label',
+      `Narration audio ${formatClock(audioStart)} to ${formatClock(audioEnd)}`,
+    );
+    item.append(player);
+    return [item];
+  });
+  if (audioItems.length > 0) body.append(...audioItems);
   b.appendChild(body);
   return b;
 }
@@ -418,10 +524,14 @@ function formatDuration(ms: number): string {
   return rem ? `${m}m ${rem}s` : `${m}m`;
 }
 
-function shotBlock(t: number, url: string | undefined, ctx?: string): HTMLElement {
+function isStopped(): boolean {
+  return loaded?.session?.status === 'stopped';
+}
+
+function shotBlock(t: number, url: string | undefined, ctx?: string, assetId?: string, editable = false): HTMLElement {
   const b = el('div', 'r-shot');
   const head = el('div', 'r-shot__head');
-  head.append(el('span', 'r-time', formatClock(t)), tag('shot'), el('span', 'r-txt', ctx || 'Screenshot'));
+  head.append(clockAt(t), tag('shot'), el('span', 'r-txt', ctx || 'Screenshot'));
   b.appendChild(head);
   if (url) {
     const img = el('img');
@@ -430,14 +540,15 @@ function shotBlock(t: number, url: string | undefined, ctx?: string): HTMLElemen
     img.loading = 'lazy';
     img.addEventListener('click', () => window.open(url, '_blank'));
     b.appendChild(img);
+    if (editable && assetId) b.appendChild(redactButton(assetId));
   }
   return b;
 }
 
-function annotationBlock(t: number, url: string | undefined, shapes: AnnotationShape[]): HTMLElement {
+function annotationBlock(t: number, url: string | undefined, shapes: AnnotationShape[], assetId?: string, editable = false): HTMLElement {
   const b = el('div', 'r-shot');
   const head = el('div', 'r-shot__head');
-  head.append(el('span', 'r-time', formatClock(t)), tag('annotate'), el('span', 'r-txt', `Annotation (${shapes.length} shape${shapes.length === 1 ? '' : 's'})`));
+  head.append(clockAt(t), tag('annotate'), el('span', 'r-txt', `Annotation (${shapes.length} shape${shapes.length === 1 ? '' : 's'})`));
   b.appendChild(head);
   for (const shape of shapes) {
     if (!shape.text) continue;
@@ -450,12 +561,37 @@ function annotationBlock(t: number, url: string | undefined, shapes: AnnotationS
     img.alt = 'annotation';
     img.addEventListener('click', () => window.open(url, '_blank'));
     b.appendChild(img);
+    if (editable && assetId) b.appendChild(redactButton(assetId));
   }
   return b;
 }
 
+function redactButton(assetId: string): HTMLButtonElement {
+  const button = el('button', 'r-redact-trigger', 'Redact');
+  button.type = 'button';
+  button.setAttribute('aria-label', 'Redact screenshot');
+  button.addEventListener('click', () => {
+    button.disabled = true;
+    void openRedactionEditor(assetId, button, replaceScreenshotAsset).catch((error) => {
+      reportEl.appendChild(el('p', 'r-redact-error', error instanceof Error ? error.message : 'Could not open screenshot editor.'));
+    }).finally(() => { button.disabled = false; });
+  });
+  return button;
+}
+
+function replaceScreenshotAsset(asset: Asset): void {
+  if (!loaded) return;
+  const oldUrl = loaded.mediaUrls.get(asset.id);
+  if (oldUrl) URL.revokeObjectURL(oldUrl);
+  loaded.mediaUrls.set(asset.id, URL.createObjectURL(asset.blob));
+  loaded.assets = loaded.assets.map((current) => current.id === asset.id ? asset : current);
+  loaded.assetsMeta = loaded.assets.map(toAssetMeta);
+  render();
+}
+
 /** Inline playable video segment, styled like a screenshot block. */
 function videoBlock(
+  eventId: string,
   t: number,
   url: string | undefined,
   tStart: number,
@@ -464,7 +600,7 @@ function videoBlock(
   const b = el('div', 'r-shot');
   const head = el('div', 'r-shot__head');
   head.append(
-    el('span', 'r-time', formatClock(t)),
+    clockAt(t),
     tag('video'),
     el('span', 'r-txt', `Video segment ${formatClock(tStart)}–${formatClock(tEnd)}`),
   );
@@ -474,6 +610,7 @@ function videoBlock(
     video.controls = true;
     video.preload = 'metadata';
     video.src = url;
+    videoPlayers.set(eventId, video);
     b.appendChild(video);
   }
   return b;
@@ -530,18 +667,17 @@ downloadBtn.addEventListener('click', async () => {
   const label = downloadBtn.textContent;
   downloadBtn.textContent = 'Preparing…';
   try {
-    const [session, events, assets] = await Promise.all([
-      getSession(sessionId),
-      getEvents(sessionId),
-      getAssets(sessionId),
-    ]);
+    const session = await getSession(sessionId);
     if (!session) return;
-    const files = await buildBundle({ session, events, assets, level });
-    const folder = sessionFolderName(session);
-    const bytes = await zipFiles(files, folder);
-    const url = URL.createObjectURL(new Blob([bytes], { type: 'application/zip' }));
-    await chrome.downloads.download({ url, filename: `${folder}.zip` });
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    await navigator.locks.request(screenshotRedactionLock(sessionId), { mode: 'exclusive' }, async () => {
+      const [events, assets] = await Promise.all([getEvents(sessionId), getAssets(sessionId)]);
+      const files = await buildBundle({ session, events, assets, level });
+      const folder = sessionFolderName(session);
+      const bytes = await zipFiles(files, folder);
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'application/zip' }));
+      await chrome.downloads.download({ url, filename: `${folder}.zip` });
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    });
   } finally {
     downloadBtn.disabled = false;
     downloadBtn.textContent = label;
@@ -552,6 +688,14 @@ downloadBtn.addEventListener('click', async () => {
 onBroadcast((evt) => {
   if (evt.kind === 'report/level' && evt.sessionId === sessionId) {
     setLevel(evt.level);
+  } else if (evt.kind === 'asset/redaction-updated' && evt.sessionId === sessionId) {
+    const current = loaded?.assets.find((asset) => asset.id === evt.assetId);
+    if ((current?.localScreenshotRedaction?.revision ?? 0) >= evt.revision) return;
+    void getAsset(evt.assetId).then((asset) => {
+      if (asset && (loaded?.assets.find((item) => item.id === asset.id)?.localScreenshotRedaction?.revision ?? 0) < (asset.localScreenshotRedaction?.revision ?? 0)) {
+        replaceScreenshotAsset(asset);
+      }
+    });
   }
 });
 

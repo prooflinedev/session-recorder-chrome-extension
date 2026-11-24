@@ -15,6 +15,8 @@ export interface ShareState {
   draft: IssueDraft;
   repository: string;
   publication?: Publication;
+  publicationRevision?: string;
+  evidenceRevision: string;
   loading: boolean;
   preparing: boolean;
   operation: 'idle' | 'summary' | 'publish' | 'check' | 'delete' | 'github' | 'copy';
@@ -31,7 +33,7 @@ export type ShareAction =
   | { type: 'loaded'; session: Session; settings: SharingSettings; saved?: SavedDraft }
   | { type: 'settings'; settings: SharingSettings }
   | { type: 'prepare'; level: VerbosityLevel }
-  | { type: 'prepared'; files: ExportFile[]; evidence: string }
+  | { type: 'prepared'; files: ExportFile[]; evidence: string; evidenceRevision: string }
   | { type: 'draft'; draft: IssueDraft; source?: ShareState['draftSource'] }
   | { type: 'saved'; saved: SavedDraft }
   | { type: 'repository'; repository: string }
@@ -42,7 +44,7 @@ export type ShareAction =
   | { type: 'cancel' }
   | { type: 'error'; message: string }
   | { type: 'finish' }
-  | { type: 'publication'; publication?: Publication };
+  | { type: 'publication'; publication?: Publication; publicationRevision?: string };
 
 export function initialShareState(level: VerbosityLevel): ShareState {
   return {
@@ -52,6 +54,7 @@ export function initialShareState(level: VerbosityLevel): ShareState {
     evidence: '',
     draft: { title: '', body: '' },
     repository: '',
+    evidenceRevision: '',
     loading: true,
     preparing: false,
     operation: 'idle',
@@ -76,6 +79,7 @@ export function shareReducer(state: ShareState, action: ShareAction): ShareState
         draft: action.saved?.draft ?? initialDraft(action.session.name),
         repository: action.saved?.issue?.repository ?? action.saved?.attempt?.repository ?? (action.saved?.repository || preferredRepository(action.settings)),
         publication: action.saved?.publication,
+        publicationRevision: action.saved?.publicationRevision,
         summaryRequestId: action.saved?.summaryRequestId,
         issue: action.saved?.issue,
         attempt: action.saved?.attempt,
@@ -97,6 +101,7 @@ export function shareReducer(state: ShareState, action: ShareAction): ShareState
         ...state,
         files: action.files,
         evidence: action.evidence,
+        evidenceRevision: action.evidenceRevision,
         preparing: false,
       };
     case 'draft':
@@ -134,6 +139,7 @@ export function shareReducer(state: ShareState, action: ShareAction): ShareState
       return {
         ...state,
         publication: action.publication,
+        publicationRevision: action.publicationRevision,
         confirmingDelete: false,
       };
   }

@@ -7,6 +7,7 @@
  */
 import React, { useEffect, useState } from 'react';
 import { getAsset } from '@/lib/storage';
+import { onBroadcast } from '@/lib/messaging';
 
 export function AssetThumb({
   assetId,
@@ -20,14 +21,25 @@ export function AssetThumb({
   useEffect(() => {
     if (!assetId) return;
     let objectUrl: string | null = null;
-    let cancelled = false;
+    let active = true;
     void getAsset(assetId).then((asset) => {
-      if (cancelled || !asset) return;
+      if (!active || !asset) return;
       objectUrl = URL.createObjectURL(asset.blob);
       setUrl(objectUrl);
     });
+    const unsubscribe = onBroadcast((event) => {
+      if (event.kind !== 'asset/redaction-updated' || event.assetId !== assetId) return;
+      void getAsset(assetId).then((asset) => {
+        if (!active || !asset) return;
+        const next = URL.createObjectURL(asset.blob);
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        objectUrl = next;
+        setUrl(next);
+      });
+    });
     return () => {
-      cancelled = true;
+      active = false;
+      unsubscribe();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [assetId]);

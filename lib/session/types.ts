@@ -533,7 +533,22 @@ export interface Asset {
   size: number;
   sha256?: string;
   blob: Blob;
+  /** Local-only screenshot source and mask geometry, omitted from exports. */
+  localScreenshotRedaction?: {
+    originalBlob?: Blob;
+    originalMime?: string;
+    rectangles: RedactionRect[];
+    revision: number;
+  };
 }
 
 /** Asset metadata without the blob, for listings/summaries. */
-export type AssetMeta = Omit<Asset, 'blob'>;
+export type AssetMeta = Omit<Asset, 'blob' | 'localScreenshotRedaction'>;
+
+/** Image-relative coordinates in the inclusive 0..1 range. */
+export interface RedactionRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
