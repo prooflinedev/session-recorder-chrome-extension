@@ -242,6 +242,24 @@ describe('buildOpenApiSpec', () => {
     expect(buildOpenApiSpec(wsEvents, noAssets)).toBeNull();
   });
 
+  it('describes application endpoints whose last segment looks like a collector', () => {
+    const events = netEvents((b) =>
+      b
+        .net('POST', 'https://shop.example.com/api/orders/batch', {
+          status: 200,
+          reqBody: '{"items":[1,2]}',
+          resBody: '{"orderIds":[7]}',
+        })
+        .net('GET', 'https://music.example.com/api/playlists/12/track', {
+          status: 200,
+          resBody: '{"title":"x"}',
+        }),
+    );
+    const paths = Object.keys(buildOpenApiSpec(events, noAssets)?.spec.paths ?? {});
+    expect(paths).toContain('/api/orders/batch');
+    expect(paths.some((p) => p.startsWith('/api/playlists/') && p.endsWith('/track'))).toBe(true);
+  });
+
   it('returns null for sessions with no API traffic at all', () => {
     const events = netEvents((b) => b.nav('https://a/x').click('Go').scroll());
     expect(buildOpenApiSpec(events, noAssets)).toBeNull();

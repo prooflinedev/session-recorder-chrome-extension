@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import { SessionBuilder } from '@/lib/fixtures/session-builder';
 import type { AssetMeta, SessionEvent } from '@/lib/session/types';
-import { applyLevel, type TrimContext } from './trimmer';
+import { applyLevel, isTelemetry, type TrimContext } from './trimmer';
 
 const netEvents = (events: SessionEvent[]) =>
   events.filter(
@@ -89,6 +89,67 @@ describe('trimmer analytics noise', () => {
       );
       expect(healthyIngest).toHaveLength(0);
       expect(urls(out)).toContain('https://app.example.com/api/x');
+    }
+  });
+});
+
+describe('isTelemetry', () => {
+  it.each([
+    // Third-party analytics hosts.
+    'https://www.google-analytics.com/g/collect?v=2',
+    'https://api.segment.io/v1/batch',
+    'https://api2.amplitude.com/2/httpapi',
+    'https://o1.ingest.sentry.io/api/7/envelope/',
+    'https://www.google.com/pagead/1p-conversion/123/',
+    'https://www.facebook.com/tr?id=1&ev=PageView',
+    // First-party collectors on the app's own host.
+    'https://app.example.com/ingest/i/v0/e',
+    'https://app.example.com/ingest/decide?v=3',
+    'https://app.example.com/e/',
+    'https://app.example.com/g/collect?v=2',
+    'https://app.example.com/batch/',
+    'https://app.example.com/posthog/e/',
+    // URLs that do not parse as absolute.
+    'api.segment.io/v1/batch',
+    '/ingest/e?ip=1',
+  ])('treats %s as telemetry', (url) => {
+    expect(isTelemetry({ url })).toBe(true);
+  });
+
+  it.each([
+    // Generic words used as ordinary application routes.
+    'https://shop.example.com/api/orders/batch',
+    'https://music.example.com/api/playlists/12/track',
+    'https://app.example.com/api/v2/collect',
+    'https://www.googleapis.com/batch/drive/v3',
+    'https://app.example.com/api/payments/e/confirm',
+    'https://app.example.com/api/ingest/upload',
+    // Host words in the query string or path are not the host.
+    'https://app.example.com/graphql?fields=user.stats',
+    'https://app.example.com/api/report.metrics',
+    'https://app.example.com/api/search?q=google.com/ads',
+    '/graphql?fields=user.stats',
+  ])('keeps the application request %s', (url) => {
+    expect(isTelemetry({ url })).toBe(false);
+  });
+});
+
+describe('trimmer keeps application requests named like collectors', () => {
+  it('keeps a healthy POST /api/orders/batch at every trimmed level', () => {
+    const b = new SessionBuilder();
+    b.nav('https://shop.example.com/cart', 'Cart');
+    b.net('POST', 'https://shop.example.com/api/orders/batch', {
+      status: 200,
+      reqBody: '{"items":[1,2]}',
+      resBody: '{"orderIds":[]}',
+    });
+    b.net('POST', 'https://shop.example.com/ingest/e', { status: 200 });
+    const { session, events } = b.build();
+    const ctx: TrimContext = { assetsById: new Map(), settings: session.settings };
+    for (const lvl of ['L1', 'L2', 'L3'] as const) {
+      const out = urls(applyLevel(events, lvl, ctx));
+      expect(out).toContain('https://shop.example.com/api/orders/batch');
+      expect(out).not.toContain('https://shop.example.com/ingest/e');
     }
   });
 });
