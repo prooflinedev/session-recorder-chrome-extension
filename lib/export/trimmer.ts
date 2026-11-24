@@ -48,8 +48,12 @@ const LONG_HEX_RE = /^[0-9a-f]{16,}$/i;
 const ANALYTICS_HOST_RE =
   /(^|\.)(google-analytics|googletagmanager|doubleclick|googlesyndication|segment\.(io|com)|mixpanel|amplitude|heap(analytics)?|hotjar|fullstory|mouseflow|clarity\.ms|sentry|bugsnag|datadoghq|newrelic|nr-data|intercom|drift|optimizely|launchdarkly|connect\.facebook|analytics|telemetry|metrics|track(ing)?|stats?)\b/i;
 
-/** Ad and pixel endpoints on general-purpose hosts, tested against `host + path`. */
-const AD_PIXEL_RE = /(^|\.)(google\.com\/(ads|pagead)|facebook\.com\/tr)(\/|$)/i;
+/**
+ * Ad and pixel endpoints on general-purpose hosts, tested against
+ * `hostname + path` (no port), including Facebook's `/tr.php` pixel.
+ */
+const AD_PIXEL_RE =
+  /(^|\.)(google\.com\/(ads|pagead)|facebook\.com\/tr(\.php)?)(\/|$)/i;
 
 /**
  * Analytics vendors named in any path segment, e.g. a first-party proxy at
@@ -62,12 +66,14 @@ const ANALYTICS_VENDOR_PATH_RE =
  * First-party collectors on the app's own host. Their endpoint names are
  * generic words (`collect`, `track`, `batch`, `e`) that applications also use
  * for their own routes (`/api/orders/batch`, `/api/playlists/12/track`), so
- * they count only as the whole path: `/e`, `/i/v0/e`, `/g/collect`, `/batch`.
+ * they count only as the whole path: `/e`, `/i/v0/e`, `/g/collect`, `/batch`,
+ * `/track`. Words such as `capture` or `decide` are not listed: a bare
+ * `/capture` is as likely to be a payment capture as an analytics event.
  * Anything under a leading `/ingest` segment (the usual analytics proxy
  * prefix, e.g. `/ingest/i/v0/e`) is also a collector.
  */
 const COLLECTOR_PATH_RE =
-  /^(\/ingest(\/.*)?|(\/[gjr])?\/collect\/?|\/(e|i\/v0\/e|batch|capture|track|decide)\/?)$/i;
+  /^(\/ingest(\/.*)?|(\/[gjr])?\/collect\/?|\/(e|i\/v0\/e|batch|track)\/?)$/i;
 
 const STATIC_RESOURCE_TYPES = new Set([
   'image',
@@ -325,13 +331,13 @@ export function isTelemetry(p: Pick<NetRequestPayload, 'url'>): boolean {
   let path = p.url;
   try {
     const u = new URL(p.url);
-    host = u.host;
+    host = u.hostname;
     path = u.pathname;
   } catch {
     // Not absolute: split `host/path` by hand, ignoring any query or fragment.
     const bare = p.url.split(/[?#]/, 1)[0] ?? '';
     const slash = bare.indexOf('/');
-    host = slash < 0 ? bare : bare.slice(0, slash);
+    host = (slash < 0 ? bare : bare.slice(0, slash)).replace(/:\d+$/, '');
     path = slash < 0 ? '' : bare.slice(slash);
   }
   if (ANALYTICS_HOST_RE.test(host)) return true;

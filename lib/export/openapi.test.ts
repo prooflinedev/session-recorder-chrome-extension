@@ -255,9 +255,13 @@ describe('buildOpenApiSpec', () => {
           resBody: '{"title":"x"}',
         }),
     );
-    const paths = Object.keys(buildOpenApiSpec(events, noAssets)?.spec.paths ?? {});
-    expect(paths).toContain('/api/orders/batch');
-    expect(paths.some((p) => p.startsWith('/api/playlists/') && p.endsWith('/track'))).toBe(true);
+    const { spec } = buildOpenApiSpec(events, noAssets)!;
+    expect(opAt(spec, '/api/orders/batch', 'post')).toBeTruthy();
+    const trackPath = Object.keys(spec.paths as object).find(
+      (p) => p.startsWith('/api/playlists/') && p.endsWith('/track'),
+    );
+    expect(trackPath).toBeDefined();
+    expect(opAt(spec, trackPath!, 'get')).toBeTruthy();
   });
 
   it('returns null for sessions with no API traffic at all', () => {

@@ -102,6 +102,8 @@ describe('isTelemetry', () => {
     'https://o1.ingest.sentry.io/api/7/envelope/',
     'https://www.google.com/pagead/1p-conversion/123/',
     'https://www.facebook.com/tr?id=1&ev=PageView',
+    'https://www.facebook.com/tr.php?id=1&ev=PageView',
+    'https://www.google.com:8443/pagead/1p-conversion/123/',
     // First-party collectors on the app's own host.
     'https://app.example.com/ingest/i/v0/e',
     'https://app.example.com/ingest/decide?v=3',
@@ -112,6 +114,8 @@ describe('isTelemetry', () => {
     // URLs that do not parse as absolute.
     'api.segment.io/v1/batch',
     '/ingest/e?ip=1',
+    '/batch?x=1',
+    '/batch#fragment',
   ])('treats %s as telemetry', (url) => {
     expect(isTelemetry({ url })).toBe(true);
   });
@@ -129,6 +133,9 @@ describe('isTelemetry', () => {
     'https://app.example.com/api/report.metrics',
     'https://app.example.com/api/search?q=google.com/ads',
     '/graphql?fields=user.stats',
+    // Bare routes that are not exclusively analytics.
+    'https://pay.example.com/capture',
+    'https://flags.example.com/decide',
   ])('keeps the application request %s', (url) => {
     expect(isTelemetry({ url })).toBe(false);
   });

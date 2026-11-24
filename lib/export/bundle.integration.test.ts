@@ -247,10 +247,11 @@ describe('export pipeline keeps application requests named like analytics collec
     for (const level of ['L0', 'L1', 'L2', 'L3'] as VerbosityLevel[]) {
       const files = await buildBundle({ session, events, assets, level });
       const report = files.find((f) => f.path === 'report.md')!.text!;
-      expect(report, `report.md at ${level}`).toContain('/api/orders/batch');
+      expect(report, `report.md at ${level}`).toMatch(/\bPOST \S*\/api\/orders\/batch\b/);
       if (level !== 'L0') expect(report, `report.md at ${level}`).not.toContain('/ingest/e');
       const spec = JSON.parse(files.find((f) => f.path === 'openapi.json')!.text!) as Record<string, any>;
       expect(Object.keys(spec.paths)).toEqual(['/api/orders/batch']);
+      expect(spec.paths['/api/orders/batch'].post, `openapi POST at ${level}`).toBeTruthy();
     }
   });
 });
