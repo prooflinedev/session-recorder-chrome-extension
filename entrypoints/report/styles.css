@@ -419,6 +419,18 @@ body {
   border-radius: 0 8px 8px 0;
 }
 
+.r-voice {
+  align-items: flex-start;
+  background: var(--surface-2);
+  border-left-width: 1px;
+  border-left-color: var(--line);
+}
+
+.r-voice > .r-tag {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
 .r-signal__text {
   color: var(--ink);
   font-weight: 500;
@@ -436,6 +448,7 @@ body {
 
 /* Stitched narration: transcript reads as prose, time range at the end. */
 .r-voice__body {
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -450,6 +463,26 @@ body {
   font-size: 11.5px;
   font-variant-numeric: tabular-nums;
   color: var(--muted);
+}
+
+.r-voice__audio-item {
+  width: min(100%, 420px);
+  margin-top: 8px;
+  min-width: 0;
+}
+
+.r-voice__audio-time {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.r-voice__audio {
+  display: block;
+  width: 100%;
+  height: 40px;
 }
 
 .r-annotation-comment { margin: 12px 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }

@@ -112,13 +112,15 @@ async function load(): Promise<void> {
   metaEl.textContent = `${formatClock(duration)} · ${total} events`;
 
   // Object URLs for every renderable media asset (images inline as <img>,
-  // video segments as <video>).
+  // video segments as <video>, and narration as <audio>).
   const mediaUrls = new Map<string, string>();
   for (const a of assets) {
     if (
       a.kind === 'screenshot' ||
+      a.kind === 'audio' ||
       a.kind === 'video' ||
       a.mime.startsWith('image/') ||
+      a.mime.startsWith('audio/') ||
       a.mime.startsWith('video/')
     ) {
       mediaUrls.set(a.id, URL.createObjectURL(a.blob));
@@ -211,7 +213,7 @@ function render(): void {
         run.push(trimmed[j]! as Extract<SessionEvent, { type: 'voice-segment' }>);
         j += 1;
       }
-      tl.appendChild(run.length >= 2 ? voiceGroup(run) : eventNode(e, mediaUrls));
+      tl.appendChild(run.length >= 2 ? voiceGroup(run, mediaUrls) : eventNode(e, mediaUrls));
       i = j;
     } else {
       tl.appendChild(eventNode(e, mediaUrls));
@@ -308,14 +310,7 @@ function eventNode(e: SessionEvent, mediaUrls: Map<string, string>): HTMLElement
         e.payload.tEnd,
       );
     case 'voice-segment': {
-      const p = e.payload;
-      const b = el('div', 'r-signal r-voice');
-      b.append(clockOf(e), tag('voice'));
-      const body = el('div');
-      body.appendChild(el('div', 'r-signal__text', p.transcript ?? '(audio)'));
-      if (p.anchorContext) body.appendChild(el('div', 'r-signal__sub', `while ${p.anchorContext}`));
-      b.appendChild(body);
-      return b;
+      return voiceGroup([e], mediaUrls);
     }
     case 'marker': {
       const b = el('div', 'r-signal r-marker');
@@ -386,6 +381,7 @@ function netGroup(run: SessionEvent[]): HTMLElement {
 /** Stitch a run of consecutive voice segments into one narration block. */
 function voiceGroup(
   run: Extract<SessionEvent, { type: 'voice-segment' }>[],
+  mediaUrls: Map<string, string>,
 ): HTMLElement {
   const first = run[0]!;
   const last = run[run.length - 1]!;
@@ -403,9 +399,37 @@ function voiceGroup(
   b.append(clockOf(first), tag('voice'));
   const body = el('div', 'r-voice__body');
   body.appendChild(el('div', 'r-signal__text', text || '(audio)'));
+  if (run.length === 1 && first.payload.anchorContext) {
+    body.appendChild(el('div', 'r-signal__sub', `while ${first.payload.anchorContext}`));
+  }
   const meta = el('div', 'r-voice__meta');
   meta.textContent = `${formatClock(start)}–${formatClock(end)} · ${formatDuration(dur)}`;
   body.appendChild(meta);
+  const audioEvents = run.filter((event) => mediaUrls.has(event.payload.assetId ?? ''));
+  const audioItems = audioEvents.flatMap((event) => {
+    const url = mediaUrls.get(event.payload.assetId ?? '');
+    if (!url) return [];
+
+    const item = el('div', 'r-voice__audio-item');
+    const audioStart = event.payload.tStart ?? event.t;
+    const audioEnd = event.payload.tEnd ?? event.t;
+    if (audioEvents.length > 1) {
+      item.appendChild(
+        el('div', 'r-voice__audio-time', `${formatClock(audioStart)}–${formatClock(audioEnd)}`),
+      );
+    }
+    const player = el('audio', 'r-voice__audio');
+    player.controls = true;
+    player.preload = 'metadata';
+    player.src = url;
+    player.setAttribute(
+      'aria-label',
+      `Narration audio ${formatClock(audioStart)} to ${formatClock(audioEnd)}`,
+    );
+    item.append(player);
+    return [item];
+  });
+  if (audioItems.length > 0) body.append(...audioItems);
   b.appendChild(body);
   return b;
 }
