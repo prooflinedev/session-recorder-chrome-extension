@@ -39,18 +39,41 @@ const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const LONG_HEX_RE = /^[0-9a-f]{16,}$/i;
 
-/** Hosts whose traffic is noise for a walkthrough: analytics/telemetry/ads. */
+/**
+ * Hosts whose traffic is noise for a walkthrough: analytics/telemetry/ads.
+ * Tested against the host only, so a query such as `?fields=user.stats` or a
+ * path such as `/report.metrics` cannot make an application request look like
+ * an analytics host.
+ */
 const ANALYTICS_HOST_RE =
-  /(^|\.)(google-analytics|googletagmanager|doubleclick|googlesyndication|google\.com\/(ads|pagead)|segment\.(io|com)|mixpanel|amplitude|heap(analytics)?|hotjar|fullstory|mouseflow|clarity\.ms|sentry|bugsnag|datadoghq|newrelic|nr-data|intercom|drift|optimizely|launchdarkly|facebook\.com\/tr|connect\.facebook|analytics|telemetry|metrics|track(ing)?|stats?)\b/i;
+  /(^|\.)(google-analytics|googletagmanager|doubleclick|googlesyndication|segment\.(io|com)|mixpanel|amplitude|heap(analytics)?|hotjar|fullstory|mouseflow|clarity\.ms|sentry|bugsnag|datadoghq|newrelic|nr-data|intercom|drift|optimizely|launchdarkly|connect\.facebook|analytics|telemetry|metrics|track(ing)?|stats?)\b/i;
 
 /**
- * URL *path* signatures of analytics/telemetry ingest endpoints. These catch
- * first-party / self-hosted collectors (e.g. an app POSTing to `/ingest/i/v0/e`)
- * that `ANALYTICS_HOST_RE` misses because the host is the app's own domain.
- * Matched per path segment so `e` only fires on `/e`, not inside `/version`.
+ * Ad and pixel endpoints on general-purpose hosts, tested against
+ * `hostname + path` (no port), including Facebook's `/tr.php` pixel.
  */
-const ANALYTICS_PATH_RE =
-  /(^|\/)(ingest|collect|track|batch|amplitude|segment|mixpanel|posthog|rudderstack|sentry|datadog|fullstory|hotjar|clarity|intercom|google-analytics|gtag|gtm|doubleclick|e)(\/|$)/i;
+const AD_PIXEL_RE =
+  /(^|\.)(google\.com\/(ads|pagead)|facebook\.com\/tr(\.php)?)(\/|$)/i;
+
+/**
+ * Analytics vendors named in any path segment, e.g. a first-party proxy at
+ * `/posthog/e/`. Vendor names are specific enough to match anywhere.
+ */
+const ANALYTICS_VENDOR_PATH_RE =
+  /(^|\/)(amplitude|segment|mixpanel|posthog|rudderstack|sentry|datadog|fullstory|hotjar|clarity|intercom|google-analytics|gtag|gtm|doubleclick)(\/|$)/i;
+
+/**
+ * First-party collectors on the app's own host. Their endpoint names are
+ * generic words (`collect`, `track`, `batch`, `e`) that applications also use
+ * for their own routes (`/api/orders/batch`, `/api/playlists/12/track`), so
+ * they count only as the whole path: `/e`, `/i/v0/e`, `/g/collect`, `/batch`,
+ * `/track`. Words such as `capture` or `decide` are not listed: a bare
+ * `/capture` is as likely to be a payment capture as an analytics event.
+ * Anything under a leading `/ingest` segment (the usual analytics proxy
+ * prefix, e.g. `/ingest/i/v0/e`) is also a collector.
+ */
+const COLLECTOR_PATH_RE =
+  /^(\/ingest(\/.*)?|(\/[gjr])?\/collect\/?|\/(e|i\/v0\/e|batch|track)\/?)$/i;
 
 const STATIC_RESOURCE_TYPES = new Set([
   'image',
@@ -308,15 +331,18 @@ export function isTelemetry(p: Pick<NetRequestPayload, 'url'>): boolean {
   let path = p.url;
   try {
     const u = new URL(p.url);
-    host = u.host;
+    host = u.hostname;
     path = u.pathname;
   } catch {
-    host = p.url;
-    const q = p.url.indexOf('?');
-    path = q >= 0 ? p.url.slice(0, q) : p.url;
+    // Not absolute: split `host/path` by hand, ignoring any query or fragment.
+    const bare = p.url.split(/[?#]/, 1)[0] ?? '';
+    const slash = bare.indexOf('/');
+    host = slash < 0 ? bare : bare.slice(0, slash);
+    path = slash < 0 ? '' : bare.slice(slash);
   }
-  if (ANALYTICS_HOST_RE.test(host) || ANALYTICS_HOST_RE.test(p.url)) return true;
-  return ANALYTICS_PATH_RE.test(path);
+  if (ANALYTICS_HOST_RE.test(host)) return true;
+  if (AD_PIXEL_RE.test(`${host}${path}`)) return true;
+  return ANALYTICS_VENDOR_PATH_RE.test(path) || COLLECTOR_PATH_RE.test(path);
 }
 
 /**

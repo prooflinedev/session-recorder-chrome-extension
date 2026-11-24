@@ -224,3 +224,34 @@ describe('export pipeline OpenAPI compilation (captureApiSpec)', () => {
     expect(quietFiles.find((f) => f.path === 'openapi.json')).toBeUndefined();
   });
 });
+
+describe('export pipeline keeps application requests named like analytics collectors', () => {
+  function orderSession() {
+    const settings = { ...makeDefaultSettings(), captureApiSpec: true };
+    return new SessionBuilder({ name: 'Order not saved', settings })
+      .nav('https://shop.example.com/cart', 'Cart')
+      .click('Place order')
+      .net('POST', 'https://shop.example.com/api/orders/batch', {
+        status: 200,
+        reqBody: JSON.stringify({ items: [{ sku: 'A1', qty: 2 }] }),
+        resBody: JSON.stringify({ orderIds: [] }),
+        mime: 'application/json',
+      })
+      .net('POST', 'https://shop.example.com/ingest/e', { status: 200, mime: 'application/json' })
+      .marker('Order list is still empty')
+      .build();
+  }
+
+  it('reports the request at every level and in openapi.json', async () => {
+    const { session, events, assets } = orderSession();
+    for (const level of ['L0', 'L1', 'L2', 'L3'] as VerbosityLevel[]) {
+      const files = await buildBundle({ session, events, assets, level });
+      const report = files.find((f) => f.path === 'report.md')!.text!;
+      expect(report, `report.md at ${level}`).toMatch(/\bPOST \S*\/api\/orders\/batch\b/);
+      if (level !== 'L0') expect(report, `report.md at ${level}`).not.toContain('/ingest/e');
+      const spec = JSON.parse(files.find((f) => f.path === 'openapi.json')!.text!) as Record<string, any>;
+      expect(Object.keys(spec.paths)).toEqual(['/api/orders/batch']);
+      expect(spec.paths['/api/orders/batch'].post, `openapi POST at ${level}`).toBeTruthy();
+    }
+  });
+});
