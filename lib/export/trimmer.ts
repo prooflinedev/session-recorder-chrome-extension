@@ -337,7 +337,7 @@ export function isTelemetry(p: Pick<NetRequestPayload, 'url'>): boolean {
     // Not absolute: split `host/path` by hand, ignoring any query or fragment.
     const bare = p.url.split(/[?#]/, 1)[0] ?? '';
     const slash = bare.indexOf('/');
-    host = (slash < 0 ? bare : bare.slice(0, slash)).replace(/:\d+$/, '');
+    host = slash < 0 ? bare : bare.slice(0, slash);
     path = slash < 0 ? '' : bare.slice(slash);
   }
   if (ANALYTICS_HOST_RE.test(host)) return true;
