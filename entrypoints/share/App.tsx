@@ -79,6 +79,8 @@ export function App(): React.JSX.Element {
                 ? 'Filed'
                 : share.ready
                   ? 'Published'
+                  : share.publicationOutdated
+                    ? 'Redaction changed'
                   : state.publication
                     ? 'Upload incomplete'
                     : 'Saved locally'}
@@ -353,6 +355,8 @@ function ReportDetails({ share }: { share: ShareModel }) {
               ? 'Filed'
               : ready
                 ? 'Published'
+                : share.publicationOutdated
+                  ? 'Redaction changed'
                 : state.publication
                   ? 'Upload incomplete'
                   : 'Draft'}
@@ -390,7 +394,9 @@ function ReportDetails({ share }: { share: ShareModel }) {
           target="_blank"
           rel="noreferrer"
         >
-          {ready
+          {share.publicationOutdated
+            ? 'Open existing report (older screenshots)'
+            : ready
             ? 'Open published report'
             : isProoflinePublication(state.publication)
               ? 'Open partial report'
@@ -401,7 +407,7 @@ function ReportDetails({ share }: { share: ShareModel }) {
       <a className="text-action details-settings" href={optionsUrl('github')}>
         Sharing settings
       </a>
-      {state.publication && !ready && (
+      {state.publication && !ready && !share.publicationOutdated && (
         <button
           className="btn btn--sm"
           disabled={busy}
@@ -418,7 +424,7 @@ function ReportDetails({ share }: { share: ShareModel }) {
 function AdvancedReport({ share }: { share: ShareModel }) {
   const { state, busy, actions, totalBytes, ready, finalBody } = share;
   return (
-    <details className="report-disclosure advanced-report">
+    <details className="report-disclosure advanced-report" open={share.publicationOutdated}>
       <summary>
         Report options
         <ChevronDown size={14} />

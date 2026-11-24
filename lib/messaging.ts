@@ -192,7 +192,8 @@ export type BroadcastMessage =
   // Live (interim) transcript for the recording ticker.
   | { kind: 'transcript/live'; text: string; final: boolean }
   // Ask an open report tab to re-render at a new verbosity level.
-  | { kind: 'report/level'; sessionId: string; level: VerbosityLevel };
+  | { kind: 'report/level'; sessionId: string; level: VerbosityLevel }
+  | { kind: 'asset/redaction-updated'; sessionId: string; assetId: string; revision: number };
 
 // ----------------------------------------------------------------------------
 // Transport helpers

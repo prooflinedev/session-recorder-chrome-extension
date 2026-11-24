@@ -10,7 +10,7 @@
  * untrusted page content can never execute here). A verbosity selector re-renders
  * the report, and changing the level in the side panel re-renders it too.
  */
-import { getSession, getEvents, getAssets } from '@/lib/storage';
+import { getSession, getEvents, getAssets, getAsset } from '@/lib/storage';
 import { formatClock } from '@/lib/export/markdown';
 import {
   applyLevel,
@@ -24,12 +24,16 @@ import { zipFiles } from '@/lib/export/zip';
 import { sessionFolderName } from '@/lib/util/naming';
 import { broadcast, onBroadcast } from '@/lib/messaging';
 import type {
+  Asset,
   AssetMeta,
   AnnotationShape,
   NetRequestPayload,
   SessionEvent,
   VerbosityLevel,
 } from '@/lib/session/types';
+import { toAssetMeta } from '@/lib/session/asset-meta';
+import { openRedactionEditor } from './redaction-editor';
+import { screenshotRedactionLock } from '@/lib/capture/redaction-lock';
 
 const params = new URLSearchParams(location.search);
 const sessionId = params.get('session');
@@ -51,10 +55,15 @@ let loaded: {
   session: Awaited<ReturnType<typeof getSession>>;
   events: SessionEvent[];
   assetsMeta: AssetMeta[];
+  assets: Asset[];
   mediaUrls: Map<string, string>;
 } | null = null;
 let navigationVideos: Extract<SessionEvent, { type: 'video-segment' }>[] = [];
 let videoPlayers = new Map<string, HTMLVideoElement>();
+
+window.addEventListener('pagehide', () => {
+  loaded?.mediaUrls.forEach((url) => URL.revokeObjectURL(url));
+});
 
 const LEVELS: { id: VerbosityLevel; label: string }[] = [
   { id: 'L0', label: 'Full' },
@@ -128,8 +137,8 @@ async function load(): Promise<void> {
       mediaUrls.set(a.id, URL.createObjectURL(a.blob));
     }
   }
-  const assetsMeta: AssetMeta[] = assets.map(({ blob: _b, ...m }) => m);
-  loaded = { session, events, assetsMeta, mediaUrls };
+  const assetsMeta: AssetMeta[] = assets.map(toAssetMeta);
+  loaded = { session, events, assetsMeta, assets, mediaUrls };
   renderLevels();
   render();
 }
@@ -365,9 +374,9 @@ function eventNode(e: SessionEvent, mediaUrls: Map<string, string>): HTMLElement
       return row;
     }
     case 'screenshot':
-      return shotBlock(e.t, mediaUrls.get(e.payload.assetId ?? ''), e.payload.contextText);
+      return shotBlock(e.t, mediaUrls.get(e.payload.assetId ?? ''), e.payload.contextText, e.payload.assetId, isStopped());
     case 'annotation':
-      return annotationBlock(e.t, mediaUrls.get(e.payload.screenshotAssetId ?? ''), e.payload.shapes);
+      return annotationBlock(e.t, mediaUrls.get(e.payload.screenshotAssetId ?? ''), e.payload.shapes, e.payload.screenshotAssetId, isStopped());
     case 'video-segment':
       return videoBlock(
         e.id,
@@ -515,7 +524,11 @@ function formatDuration(ms: number): string {
   return rem ? `${m}m ${rem}s` : `${m}m`;
 }
 
-function shotBlock(t: number, url: string | undefined, ctx?: string): HTMLElement {
+function isStopped(): boolean {
+  return loaded?.session?.status === 'stopped';
+}
+
+function shotBlock(t: number, url: string | undefined, ctx?: string, assetId?: string, editable = false): HTMLElement {
   const b = el('div', 'r-shot');
   const head = el('div', 'r-shot__head');
   head.append(clockAt(t), tag('shot'), el('span', 'r-txt', ctx || 'Screenshot'));
@@ -527,11 +540,12 @@ function shotBlock(t: number, url: string | undefined, ctx?: string): HTMLElemen
     img.loading = 'lazy';
     img.addEventListener('click', () => window.open(url, '_blank'));
     b.appendChild(img);
+    if (editable && assetId) b.appendChild(redactButton(assetId));
   }
   return b;
 }
 
-function annotationBlock(t: number, url: string | undefined, shapes: AnnotationShape[]): HTMLElement {
+function annotationBlock(t: number, url: string | undefined, shapes: AnnotationShape[], assetId?: string, editable = false): HTMLElement {
   const b = el('div', 'r-shot');
   const head = el('div', 'r-shot__head');
   head.append(clockAt(t), tag('annotate'), el('span', 'r-txt', `Annotation (${shapes.length} shape${shapes.length === 1 ? '' : 's'})`));
@@ -547,8 +561,32 @@ function annotationBlock(t: number, url: string | undefined, shapes: AnnotationS
     img.alt = 'annotation';
     img.addEventListener('click', () => window.open(url, '_blank'));
     b.appendChild(img);
+    if (editable && assetId) b.appendChild(redactButton(assetId));
   }
   return b;
+}
+
+function redactButton(assetId: string): HTMLButtonElement {
+  const button = el('button', 'r-redact-trigger', 'Redact');
+  button.type = 'button';
+  button.setAttribute('aria-label', 'Redact screenshot');
+  button.addEventListener('click', () => {
+    button.disabled = true;
+    void openRedactionEditor(assetId, button, replaceScreenshotAsset).catch((error) => {
+      reportEl.appendChild(el('p', 'r-redact-error', error instanceof Error ? error.message : 'Could not open screenshot editor.'));
+    }).finally(() => { button.disabled = false; });
+  });
+  return button;
+}
+
+function replaceScreenshotAsset(asset: Asset): void {
+  if (!loaded) return;
+  const oldUrl = loaded.mediaUrls.get(asset.id);
+  if (oldUrl) URL.revokeObjectURL(oldUrl);
+  loaded.mediaUrls.set(asset.id, URL.createObjectURL(asset.blob));
+  loaded.assets = loaded.assets.map((current) => current.id === asset.id ? asset : current);
+  loaded.assetsMeta = loaded.assets.map(toAssetMeta);
+  render();
 }
 
 /** Inline playable video segment, styled like a screenshot block. */
@@ -629,18 +667,17 @@ downloadBtn.addEventListener('click', async () => {
   const label = downloadBtn.textContent;
   downloadBtn.textContent = 'Preparing…';
   try {
-    const [session, events, assets] = await Promise.all([
-      getSession(sessionId),
-      getEvents(sessionId),
-      getAssets(sessionId),
-    ]);
+    const session = await getSession(sessionId);
     if (!session) return;
-    const files = await buildBundle({ session, events, assets, level });
-    const folder = sessionFolderName(session);
-    const bytes = await zipFiles(files, folder);
-    const url = URL.createObjectURL(new Blob([bytes], { type: 'application/zip' }));
-    await chrome.downloads.download({ url, filename: `${folder}.zip` });
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    await navigator.locks.request(screenshotRedactionLock(sessionId), { mode: 'exclusive' }, async () => {
+      const [events, assets] = await Promise.all([getEvents(sessionId), getAssets(sessionId)]);
+      const files = await buildBundle({ session, events, assets, level });
+      const folder = sessionFolderName(session);
+      const bytes = await zipFiles(files, folder);
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'application/zip' }));
+      await chrome.downloads.download({ url, filename: `${folder}.zip` });
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    });
   } finally {
     downloadBtn.disabled = false;
     downloadBtn.textContent = label;
@@ -651,6 +688,14 @@ downloadBtn.addEventListener('click', async () => {
 onBroadcast((evt) => {
   if (evt.kind === 'report/level' && evt.sessionId === sessionId) {
     setLevel(evt.level);
+  } else if (evt.kind === 'asset/redaction-updated' && evt.sessionId === sessionId) {
+    const current = loaded?.assets.find((asset) => asset.id === evt.assetId);
+    if ((current?.localScreenshotRedaction?.revision ?? 0) >= evt.revision) return;
+    void getAsset(evt.assetId).then((asset) => {
+      if (asset && (loaded?.assets.find((item) => item.id === asset.id)?.localScreenshotRedaction?.revision ?? 0) < (asset.localScreenshotRedaction?.revision ?? 0)) {
+        replaceScreenshotAsset(asset);
+      }
+    });
   }
 });
 

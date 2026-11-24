@@ -13,6 +13,8 @@ import type {
   Session,
   SessionEvent,
 } from '@/lib/session/types';
+import { toAssetMeta } from '@/lib/session/asset-meta';
+import type { RedactionRect } from '@/lib/session/types';
 
 // ----------------------------------------------------------------------------
 // Schema
@@ -159,7 +161,53 @@ export async function getAssets(sessionId: string): Promise<Asset[]> {
 /** Asset metadata for a session, with the heavy `.blob` stripped off. */
 export async function getAssetsMeta(sessionId: string): Promise<AssetMeta[]> {
   const assets = await getAssets(sessionId);
-  return assets.map(({ blob: _blob, ...meta }) => meta);
+  return assets.map(toAssetMeta);
+}
+
+/** Atomically save a flattened screenshot if no other editor changed it. */
+export async function saveScreenshotRedaction(
+  assetId: string,
+  expectedRevision: number,
+  redactedBlob: Blob,
+  rectangles: RedactionRect[],
+  sha256: string | undefined,
+): Promise<Asset> {
+  const database = await db();
+  const tx = database.transaction(['assets', 'sessions'], 'readwrite');
+  const store = tx.objectStore('assets');
+  const current = await store.get(assetId);
+  if (!current || current.kind !== 'screenshot') {
+    await tx.done;
+    throw new Error('This screenshot is no longer available. Reload the report and try again.');
+  }
+  const local = current.localScreenshotRedaction;
+  const revision = local?.revision ?? 0;
+  if (revision !== expectedRevision) {
+    await tx.done;
+    throw new Error('This screenshot changed in another window. Reopen Redact to load the latest version.');
+  }
+  const originalBlob = local?.originalBlob ?? current.blob;
+  const originalMime = local?.originalMime ?? current.mime;
+  const nextRevision = revision + 1;
+  const next: Asset = {
+    ...current,
+    blob: redactedBlob,
+    mime: rectangles.length > 0 ? 'image/png' : originalMime,
+    size: redactedBlob.size,
+    sha256,
+    localScreenshotRedaction: rectangles.length > 0
+      ? { originalBlob, originalMime, rectangles, revision: nextRevision }
+      : { rectangles: [], revision: nextRevision },
+  };
+  await store.put(next);
+  const sessions = tx.objectStore('sessions');
+  const session = await sessions.get(current.sessionId);
+  if (session) {
+    session.assetBytes = Math.max(0, session.assetBytes - current.size + next.size);
+    await sessions.put(session);
+  }
+  await tx.done;
+  return next;
 }
 
 // ----------------------------------------------------------------------------

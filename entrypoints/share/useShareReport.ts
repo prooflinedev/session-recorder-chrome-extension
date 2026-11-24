@@ -4,6 +4,10 @@ import { prooflineRequest } from '@/lib/proofline/client';
 import { isProoflinePublication, publicationUrl, publicationReady } from '@/lib/sharing/draft';
 import { useEffect, useReducer, useRef } from 'react';
 import { getAssets, getEvents, getSession } from '@/lib/storage';
+import { toAssetMeta } from '@/lib/session/asset-meta';
+import { screenshotRevision } from '@/lib/capture/screenshot-redaction';
+import { screenshotRedactionLock } from '@/lib/capture/redaction-lock';
+import { onBroadcast } from '@/lib/messaging';
 import type { BuildBundleInput } from '@/lib/export/bundle';
 import type { VerbosityLevel } from '@/lib/session/types';
 import { buildHostedReport } from '@/lib/sharing/report';
@@ -39,6 +43,8 @@ type Recording = Omit<BuildBundleInput, 'level'>;
 
 export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) {
   const [state, dispatch] = useReducer(shareReducer, initialLevel, initialShareState);
+  const levelRef = useRef(initialLevel);
+  levelRef.current = state.level;
   const recording = useRef<Recording>();
   const operation = useRef<AbortController>();
   const preparation = useRef(0);
@@ -55,9 +61,9 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       const evidence = summaryEvidence(
         data.session,
         data.events,
-        data.assets.map(({ blob: _blob, ...meta }) => meta),
+        data.assets.map(toAssetMeta),
       );
-      dispatch({ type: 'prepared', files, evidence });
+      dispatch({ type: 'prepared', files, evidence, evidenceRevision: screenshotRevision(data.assets) });
     } catch (error) {
       if (revision === preparation.current)
         dispatch({ type: 'error', message: errorMessage(error) });
@@ -107,11 +113,24 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
           });
     };
     chrome.storage.onChanged.addListener(changed);
+    const unsubscribe = onBroadcast((event) => {
+      if (event.kind !== 'asset/redaction-updated' || event.sessionId !== sessionId) return;
+      if (!active || !recording.current) return;
+      void getAssets(sessionId).then((assets) => {
+        if (!active || !recording.current) return;
+        const next = { ...recording.current, assets };
+        recording.current = next;
+        void prepare(next, levelRef.current);
+      }).catch((error) => {
+        if (active) dispatch({ type: 'error', message: errorMessage(error) });
+      });
+    });
     return () => {
       active = false;
       ++preparation.current;
       operation.current?.abort();
       chrome.storage.onChanged.removeListener(changed);
+      unsubscribe();
     };
   }, [sessionId, initialLevel, draftKey]);
 
@@ -128,6 +147,7 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       draft: state.draft,
       repository: state.repository,
       publication: state.publication,
+      publicationRevision: state.publicationRevision,
       draftSource: state.draftSource,
       issue: state.issue,
       attempt: state.attempt,
@@ -147,6 +167,7 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
               ...edited,
               repository: stored.attempt?.repository ?? stored.issue?.repository ?? edited.repository,
               publication: stored.publication,
+              publicationRevision: stored.publicationRevision,
               issue: stored.issue,
               attempt: stored.attempt,
             }
@@ -188,8 +209,9 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
     } catch { /* An incomplete typed repository is saved only with this draft. */ }
   }
   async function remember(publication?: Publication) {
-    dispatch({ type: 'publication', publication });
-    await persist(snapshot({ publication }));
+    const publicationRevision = publication ? state.evidenceRevision : undefined;
+    dispatch({ type: 'publication', publication, publicationRevision });
+    await persist(snapshot({ publication, publicationRevision }));
   }
   async function run(
     kind: ShareState['operation'],
@@ -240,23 +262,32 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
   function publish() {
     return run('publish', async (signal) => {
       if (!state.files.length) throw new Error('The report is still preparing.');
-      const settings = await loadSharingSettings();
-      if (settings.proofline?.publishing === 'proofline' || (state.publication && isProoflinePublication(state.publication))) {
-        await publishProoflineReport(settings.proofline!, state.files, state.draft.title, state.level, state.publication, remember, progress, signal);
-        progress('Private report published.');
-        return;
-      }
-      const config = settings.cloudflare;
-      const { apiToken: _secret, ...destination } = config;
-      const deployment = await publishReport(
-        config,
-        state.files,
-        progress,
-        signal,
-        (d) => remember({ deployment: d, destination, level: state.level }),
-      );
-      await remember({ deployment, destination, level: state.level });
-      progress('Report published. File a GitHub issue to share its link.');
+      if (state.publication && (state.publicationRevision ?? '') !== state.evidenceRevision)
+        throw new Error('Screenshot redactions changed. Unpublish the existing report before publishing the updated screenshots.');
+      const currentSessionId = state.session?.id;
+      if (!currentSessionId) throw new Error('Session not found.');
+      await navigator.locks.request(screenshotRedactionLock(currentSessionId), { mode: 'exclusive', signal }, async () => {
+        const currentRevision = screenshotRevision(await getAssets(currentSessionId));
+        if (currentRevision !== state.evidenceRevision)
+          throw new Error('Screenshots changed while this report was preparing. Wait for the report to refresh, then try again.');
+        const settings = await loadSharingSettings();
+        if (settings.proofline?.publishing === 'proofline' || (state.publication && isProoflinePublication(state.publication))) {
+          await publishProoflineReport(settings.proofline!, state.files, state.draft.title, state.level, state.publication, remember, progress, signal);
+          progress('Private report published.');
+          return;
+        }
+        const config = settings.cloudflare;
+        const { apiToken: _secret, ...destination } = config;
+        const deployment = await publishReport(
+          config,
+          state.files,
+          progress,
+          signal,
+          (d) => remember({ deployment: d, destination, level: state.level }),
+        );
+        await remember({ deployment, destination, level: state.level });
+        progress('Report published. File a GitHub issue to share its link.');
+      });
     });
   }
   function checkDeployment() {
@@ -292,7 +323,8 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       progress('Report unpublished. Local recording kept.');
     });
   }
-  const finalBody = state.publication && publicationReady(state.publication)
+  const publicationOutdated = !!state.publication && (state.publicationRevision ?? '') !== state.evidenceRevision;
+  const finalBody = state.publication && publicationReady(state.publication) && !publicationOutdated
     ? issueBody(state.draft, publicationUrl(state.publication))
     : '';
   function submitIssue() {
@@ -305,20 +337,28 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
           const stored = (await chrome.storage.local.get(draftKey))[draftKey] as
             SavedDraft | undefined;
           const saved = stored ? { ...stored, repository: stored.repository || state.repository } : snapshot();
+          if (saved.publication && (saved.publicationRevision ?? '') !== state.evidenceRevision)
+            throw new Error('Screenshot redactions changed. Unpublish the existing report before filing an issue with its link.');
           await rememberRepository(saved.attempt?.repository ?? saved.repository);
-          const result = await fileIssue({
-            saved,
-            settings: await loadSharingSettings(),
-            files: state.files,
-            evidence: state.evidence,
-            level: state.level,
-            signal,
-            progress,
-            stage: (stage) => dispatch({ type: 'stage', stage }),
-            save: async (next) => {
-              await persist(next);
-              dispatch({ type: 'saved', saved: next });
-            },
+          const result = await navigator.locks.request(screenshotRedactionLock(sessionId), { mode: 'exclusive', signal }, async () => {
+            const currentRevision = screenshotRevision(await getAssets(sessionId));
+            if (currentRevision !== state.evidenceRevision)
+              throw new Error('Screenshots changed while this report was preparing. Wait for the report to refresh, then try again.');
+            return fileIssue({
+              saved,
+              settings: await loadSharingSettings(),
+              files: state.files,
+              evidence: state.evidence,
+              level: state.level,
+              signal,
+              progress,
+              stage: (stage) => dispatch({ type: 'stage', stage }),
+              save: async (next) => {
+                const revisioned = next.publication ? { ...next, publicationRevision: state.evidenceRevision } : next;
+                await persist(revisioned);
+                dispatch({ type: 'saved', saved: revisioned });
+              },
+            });
           });
           dispatch({ type: 'saved', saved: result });
           progress(`Issue #${result.issue!.number} created.`);
@@ -334,8 +374,10 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
     });
   }
   let publishLimit = '';
+  if (publicationOutdated)
+    publishLimit = 'Screenshot redactions changed. Unpublish the existing report before publishing the updated screenshots.';
   try {
-    if (state.files.length) validateFiles(state.files);
+    if (!publishLimit && state.files.length) validateFiles(state.files);
   } catch (error) {
     publishLimit = errorMessage(error);
   }
@@ -344,7 +386,8 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
     finalBody,
     publishLimit,
     busy: state.operation !== 'idle',
-    ready: publicationReady(state.publication),
+    ready: publicationReady(state.publication) && !publicationOutdated,
+    publicationOutdated,
     provider: SUMMARY_PROVIDERS.find((p) => p.id === state.settings.provider)!,
     totalBytes: state.files.reduce(
       (sum, f) =>

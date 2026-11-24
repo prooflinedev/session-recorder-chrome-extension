@@ -1,5 +1,6 @@
 import { useEffect, useReducer } from 'react';
 import { getAssets, getEvents } from '@/lib/storage';
+import { onBroadcast } from '@/lib/messaging';
 import type { SessionEvent } from '@/lib/session/types';
 
 export interface EvidenceItem {
@@ -29,63 +30,37 @@ export function useReportEvidence(sessionId: string) {
   useEffect(() => {
     let active = true;
     const urls: string[] = [];
-    void Promise.all([getEvents(sessionId), getAssets(sessionId)])
-      .then(([events, assets]) => {
-        if (!active) return;
-        const images = new Map(
-          assets
-            .filter((a) => a.mime.startsWith('image/'))
-            .map((a) => {
-              const url = URL.createObjectURL(a.blob);
-              urls.push(url);
-              return [a.id, url];
-            }),
-        );
-        const items: EvidenceItem[] = [];
-        for (const event of events) {
-          if (event.type === 'annotation') {
-            items.push({
-              id: event.id,
-              time: event.t,
-              label: 'Annotation',
-              image: images.get(event.payload.screenshotAssetId ?? ''),
-              comments: event.payload.shapes.flatMap((s) => (s.text ? [s.text] : [])),
-            });
-          } else if (event.type === 'screenshot') {
-            items.push({
-              id: event.id,
-              time: event.t,
-              label: 'Screenshot',
-              image: images.get(event.payload.assetId),
-              comments: [],
-            });
-          } else if (event.type === 'note') {
-            items.push({
-              id: event.id,
-              time: event.t,
-              label: 'Note',
-              comments: [event.payload.text],
-            });
-          }
+    const refresh = async () => {
+      const [events, assets] = await Promise.all([getEvents(sessionId), getAssets(sessionId)]);
+      if (!active) return;
+      urls.splice(0).forEach((url) => URL.revokeObjectURL(url));
+      const images = new Map(assets.filter((a) => a.mime.startsWith('image/')).map((asset) => {
+        const url = URL.createObjectURL(asset.blob);
+        urls.push(url);
+        return [asset.id, url] as const;
+      }));
+      const items: EvidenceItem[] = [];
+      for (const event of events) {
+        if (event.type === 'annotation') {
+          items.push({ id: event.id, time: event.t, label: 'Annotation', image: images.get(event.payload.screenshotAssetId ?? ''), comments: event.payload.shapes.flatMap((s) => (s.text ? [s.text] : [])) });
+        } else if (event.type === 'screenshot') {
+          items.push({ id: event.id, time: event.t, label: 'Screenshot', image: images.get(event.payload.assetId), comments: [] });
+        } else if (event.type === 'note') {
+          items.push({ id: event.id, time: event.t, label: 'Note', comments: [event.payload.text] });
         }
-        dispatch({
-          type: 'loaded',
-          items,
-          diagnostics: events.filter((e) =>
-            ['error', 'console', 'net-request'].includes(e.type),
-          ),
-        });
-      })
-      .catch((error) => {
-        if (active)
-          dispatch({
-            type: 'error',
-            message:
-              error instanceof Error ? error.message : 'Could not load evidence.',
-          });
-      });
+      }
+      dispatch({ type: 'loaded', items, diagnostics: events.filter((e) => ['error', 'console', 'net-request'].includes(e.type)) });
+    };
+    void refresh().catch((error) => {
+      if (active) dispatch({ type: 'error', message: error instanceof Error ? error.message : 'Could not load evidence.' });
+    });
+    const unsubscribe = onBroadcast((event) => {
+      if (event.kind === 'asset/redaction-updated' && event.sessionId === sessionId)
+        void refresh().catch(() => {});
+    });
     return () => {
       active = false;
+      unsubscribe();
       urls.forEach((url) => URL.revokeObjectURL(url));
     };
   }, [sessionId]);
