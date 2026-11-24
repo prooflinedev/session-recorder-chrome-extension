@@ -53,6 +53,8 @@ let loaded: {
   assetsMeta: AssetMeta[];
   mediaUrls: Map<string, string>;
 } | null = null;
+let navigationVideos: Extract<SessionEvent, { type: 'video-segment' }>[] = [];
+let videoPlayers = new Map<string, HTMLVideoElement>();
 
 const LEVELS: { id: VerbosityLevel; label: string }[] = [
   { id: 'L0', label: 'Full' },
@@ -161,6 +163,11 @@ function render(): void {
   };
   // Dictated speech already appears as the annotation it produced.
   const trimmed = trimForLevel(events, level, ctx).filter((e) => !isDictatedSpeech(e));
+  navigationVideos = trimmed.filter(
+    (event): event is Extract<SessionEvent, { type: 'video-segment' }> =>
+      event.type === 'video-segment' && !!mediaUrls.get(event.payload.assetId ?? ''),
+  );
+  videoPlayers = new Map();
 
   const root = el('div');
 
@@ -221,6 +228,10 @@ function render(): void {
     }
   }
   root.appendChild(tl);
+  const navigationStatus = el('div', 'r-navigation-status');
+  navigationStatus.setAttribute('role', 'status');
+  navigationStatus.setAttribute('aria-live', 'polite');
+  root.appendChild(navigationStatus);
 
   reportEl.replaceChildren(root);
 }
@@ -235,7 +246,62 @@ function setLevel(lv: VerbosityLevel): void {
 // ---- event nodes ----------------------------------------------------------
 
 function clockOf(e: SessionEvent): HTMLElement {
-  return el('span', 'r-time', formatClock(e.t));
+  return clockAt(e.t);
+}
+
+function clockAt(time: number): HTMLElement {
+  if (!findVideoForTime(time)) return el('span', 'r-time', formatClock(time));
+  const button = el('button', 'r-time r-time--jump', formatClock(time));
+  button.type = 'button';
+  button.setAttribute('aria-label', `Jump to video at ${formatClock(time)}`);
+  button.addEventListener('click', () => { void navigateToVideo(time); });
+  return button;
+}
+
+function findVideoForTime(time: number): Extract<SessionEvent, { type: 'video-segment' }> | undefined {
+  return navigationVideos
+    .filter((event) => time >= event.payload.tStart && time <= event.payload.tEnd)
+    .sort((a, b) => b.payload.tStart - a.payload.tStart)[0];
+}
+
+async function navigateToVideo(time: number): Promise<void> {
+  const event = findVideoForTime(time);
+  if (!event) return;
+  const video = videoPlayers.get(event.id);
+  if (!video) return;
+  const status = reportEl.querySelector<HTMLElement>('.r-navigation-status');
+  video.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  try {
+    if (video.readyState < HTMLMediaElement.HAVE_METADATA) {
+      await new Promise<void>((resolve, reject) => {
+        const cleanup = () => {
+          window.clearTimeout(timer);
+          video.removeEventListener('loadedmetadata', onMetadata);
+          video.removeEventListener('error', onError);
+        };
+        const finish = (error?: Error) => {
+          cleanup();
+          if (error) reject(error);
+          else resolve();
+        };
+        const onMetadata = () => finish();
+        const onError = () => finish(new Error(video.error?.message ?? 'Video failed to load.'));
+        const timer = window.setTimeout(() => finish(new Error('Video metadata timed out.')), 10_000);
+        video.addEventListener('loadedmetadata', onMetadata, { once: true });
+        video.addEventListener('error', onError, { once: true });
+        if (video.readyState >= HTMLMediaElement.HAVE_METADATA) finish();
+        else if (video.error) onError();
+      });
+    }
+    const offset = Math.max(0, (time - event.payload.tStart) / 1000);
+    video.currentTime = Number.isFinite(video.duration)
+      ? Math.min(offset, Math.max(0, video.duration - 0.05))
+      : offset;
+    await video.play();
+    if (status) status.textContent = '';
+  } catch {
+    if (status) status.textContent = `Video is available at ${formatClock(time)}. Press Play to continue.`;
+  }
 }
 
 function eventNode(e: SessionEvent, mediaUrls: Map<string, string>): HTMLElement {
@@ -304,6 +370,7 @@ function eventNode(e: SessionEvent, mediaUrls: Map<string, string>): HTMLElement
       return annotationBlock(e.t, mediaUrls.get(e.payload.screenshotAssetId ?? ''), e.payload.shapes);
     case 'video-segment':
       return videoBlock(
+        e.id,
         e.t,
         mediaUrls.get(e.payload.assetId ?? ''),
         e.payload.tStart,
@@ -361,20 +428,26 @@ function netGroup(run: SessionEvent[]): HTMLElement {
     (e) => e.type === 'net-request' && (e.payload.failed || (typeof e.payload.status === 'number' && e.payload.status >= 400)),
   ).length;
   const wrap = el('div', 'r-netgroup');
-  const details = el('details');
-  const summary = el('summary', 'r-net');
   const line = el('div', 'r-netline');
   line.append(clockOf(run[0]!), tag('net'));
   line.appendChild(el('span', 'r-net__meth', `${run.length} network requests`));
   if (errors > 0) line.appendChild(el('span', 'r-net__status r-err', `${errors} failed`));
-  summary.appendChild(line);
-  details.appendChild(summary);
+  const toggle = el('button', 'r-netgroup__toggle', 'Show requests');
+  toggle.type = 'button';
+  toggle.setAttribute('aria-expanded', 'false');
+  line.appendChild(toggle);
+  wrap.appendChild(line);
   const inner = el('div', 'r-netgroup__list');
+  inner.hidden = true;
   for (const e of run) {
     if (e.type === 'net-request') inner.appendChild(netRow(e.payload, e));
   }
-  details.appendChild(inner);
-  wrap.appendChild(details);
+  toggle.addEventListener('click', () => {
+    inner.hidden = !inner.hidden;
+    toggle.setAttribute('aria-expanded', String(!inner.hidden));
+    toggle.textContent = inner.hidden ? 'Show requests' : 'Hide requests';
+  });
+  wrap.appendChild(inner);
   return wrap;
 }
 
@@ -445,7 +518,7 @@ function formatDuration(ms: number): string {
 function shotBlock(t: number, url: string | undefined, ctx?: string): HTMLElement {
   const b = el('div', 'r-shot');
   const head = el('div', 'r-shot__head');
-  head.append(el('span', 'r-time', formatClock(t)), tag('shot'), el('span', 'r-txt', ctx || 'Screenshot'));
+  head.append(clockAt(t), tag('shot'), el('span', 'r-txt', ctx || 'Screenshot'));
   b.appendChild(head);
   if (url) {
     const img = el('img');
@@ -461,7 +534,7 @@ function shotBlock(t: number, url: string | undefined, ctx?: string): HTMLElemen
 function annotationBlock(t: number, url: string | undefined, shapes: AnnotationShape[]): HTMLElement {
   const b = el('div', 'r-shot');
   const head = el('div', 'r-shot__head');
-  head.append(el('span', 'r-time', formatClock(t)), tag('annotate'), el('span', 'r-txt', `Annotation (${shapes.length} shape${shapes.length === 1 ? '' : 's'})`));
+  head.append(clockAt(t), tag('annotate'), el('span', 'r-txt', `Annotation (${shapes.length} shape${shapes.length === 1 ? '' : 's'})`));
   b.appendChild(head);
   for (const shape of shapes) {
     if (!shape.text) continue;
@@ -480,6 +553,7 @@ function annotationBlock(t: number, url: string | undefined, shapes: AnnotationS
 
 /** Inline playable video segment, styled like a screenshot block. */
 function videoBlock(
+  eventId: string,
   t: number,
   url: string | undefined,
   tStart: number,
@@ -488,7 +562,7 @@ function videoBlock(
   const b = el('div', 'r-shot');
   const head = el('div', 'r-shot__head');
   head.append(
-    el('span', 'r-time', formatClock(t)),
+    clockAt(t),
     tag('video'),
     el('span', 'r-txt', `Video segment ${formatClock(tStart)}–${formatClock(tEnd)}`),
   );
@@ -498,6 +572,7 @@ function videoBlock(
     video.controls = true;
     video.preload = 'metadata';
     video.src = url;
+    videoPlayers.set(eventId, video);
     b.appendChild(video);
   }
   return b;
