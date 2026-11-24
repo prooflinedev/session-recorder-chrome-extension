@@ -119,8 +119,12 @@ function templatePath(url: string): { path: string; params: string[] } {
   try {
     pathname = new URL(url).pathname;
   } catch {
-    const q = url.indexOf('?');
-    pathname = q >= 0 ? url.slice(0, q) : url;
+    try {
+      pathname = new URL(url, 'http://localhost').pathname;
+    } catch {
+      const q = url.indexOf('?');
+      pathname = q >= 0 ? url.slice(0, q) : url;
+    }
   }
   const segs = pathname.split('/');
   const used = new Set<string>();
@@ -271,7 +275,12 @@ export function buildOpenApiSpec(
       origins.add(u.origin);
       for (const name of u.searchParams.keys()) op.queryParams.add(name);
     } catch {
-      /* relative / malformed URL: no origin or query info */
+      try {
+        const u = new URL(p.url, 'http://localhost');
+        for (const name of u.searchParams.keys()) op.queryParams.add(name);
+      } catch {
+        /* malformed URL: no origin or query info */
+      }
     }
 
     // Request body.
