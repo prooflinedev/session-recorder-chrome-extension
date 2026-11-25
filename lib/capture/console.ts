@@ -33,10 +33,10 @@ import {
 /** Max size (bytes/chars) of a joined console message before truncation. */
 const TEXT_CAP = 2048;
 
-/** Max characters of one formatted object, including anything nested in it. */
+/** Characters kept of one formatted object, nested values included, before the `…`. */
 const OBJECT_CAP = 500;
 
-/** Max characters of one string or key in an object. Chrome uses 100 for fields. */
+/** Characters kept of one string or key in an object, before the `…`. */
 const PREVIEW_STRING_CAP = 100;
 
 /** Milliseconds of quiet after which a pending console event is flushed. */
@@ -409,13 +409,13 @@ function formatPreview(p: ObjectPreviewLike, clean: PreviewCleaner): string | un
   }
 
   // A Map or Set lists only `size` as a property; its contents are entries.
-  const items = isMapOrSet
-    ? entries.map(({ key, value }) => {
+  const members = isMapOrSet
+    ? entries.map(({ key, value }) => () => {
         if (key === undefined) return formatNode(value, clean);
         const secret = key.type !== 'object' && clean.isSecretKey(key.description ?? '');
         return `${formatNode(key, clean)} => ${secret ? REDACTED : formatNode(value, clean)}`;
       })
-    : properties.map((prop, i) => {
+    : properties.map((prop, i) => () => {
         const value = clean.isSecretKey(prop.name)
           ? REDACTED
           : formatValue(prop.type, prop.subtype, prop.value, prop.valuePreview, clean);
@@ -423,9 +423,15 @@ function formatPreview(p: ObjectPreviewLike, clean: PreviewCleaner): string | un
           ? value
           : `${formatKey(prop.name, clean)}: ${value}`;
       });
-  if (p.overflow) items.push('…');
+  if (p.overflow) members.push(() => '…');
 
-  const list = items.join(', ');
+  // Stop at the cap: a console.table preview can hold tens of thousands of values.
+  let list = '';
+  for (const member of members) {
+    if (list.length > OBJECT_CAP) break;
+    list += (list && ', ') + member();
+  }
+
   const label = description === 'Object' || subtype === 'array' ? '' : `${clean.text(description)} `;
   // Cutting is safe here because every value is already masked.
   return cap(label + (isArray ? `[${list}]` : `{${list}}`), OBJECT_CAP);
@@ -461,17 +467,17 @@ function formatKey(name: string, clean: PreviewCleaner): string {
 
 /** Mask by body key and header name, as the network capture does. */
 function makePreviewCleaner(rules: RedactionRules): PreviewCleaner {
-  const matchesKey = buildKeyMatcher(rules);
-  const headers = new Set(
-    [...DEFAULT_HEADER_BLOCKLIST, ...rules.headerNames].map((h) => h.toLowerCase()),
+  // Header names become exact key patterns, so that they also apply inside JSON
+  // and form strings.
+  const headers = [...DEFAULT_HEADER_BLOCKLIST, ...rules.headerNames].map(
+    (name) => `^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`,
   );
+  const keyRules = { ...rules, bodyKeyPatterns: [...rules.bodyKeyPatterns, ...headers] };
+  const matchesKey = buildKeyMatcher(keyRules);
   return {
-    text: (text) => cleanPreviewString(text, rules),
-    isSecretKey: (key) => {
-      // `#x` and `Symbol(x)` count as `x`.
-      const name = key.replace(/^#|^Symbol\((.*)\)$/s, '$1');
-      return matchesKey(name) || headers.has(name.toLowerCase());
-    },
+    text: (text) => cleanPreviewString(text, keyRules),
+    // `#x` and `Symbol(x)` count as `x`.
+    isSecretKey: (key) => matchesKey(key.replace(/^#|^Symbol\((.*)\)$/s, '$1')),
   };
 }
 

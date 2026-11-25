@@ -281,6 +281,9 @@ const CDP = {
   mapSymKey: {"type":"object","subtype":"map","className":"Map","description":"Map(1)","preview":{"type":"object","subtype":"map","description":"Map(1)","overflow":false,"properties":[{"name":"size","type":"number","value":"1"}],"entries":[{"key":{"type":"symbol","description":"Symbol(cookie)","overflow":false,"properties":[]},"value":{"type":"string","description":"hid","overflow":false,"properties":[]}}]}},
   setObjString: {"type":"object","subtype":"set","className":"Set","description":"Set(1)","preview":{"type":"object","subtype":"set","description":"Set(1)","overflow":false,"properties":[{"name":"size","type":"number","value":"1"}],"entries":[{"value":{"type":"string","description":"Object","overflow":false,"properties":[]}}]}},
   tagUrl: {"type":"object","className":"https://a.test/?token=x","description":"https://a.test/?token=x","preview":{"type":"object","description":"https://a.test/?token=x","overflow":false,"properties":[{"name":"a","type":"number","value":"1"},{"name":"Symbol(Symbol.toStringTag)","type":"string","value":"https://a.test/?token=x"}]}},
+  hdrJson: {"type":"object","className":"Object","description":"Object","preview":{"type":"object","description":"Object","overflow":false,"properties":[{"name":"body","type":"string","value":"{\"cookie\":\"hid\",\"X-Tenant-Id\":\"acme\",\"cookies\":2}"}]}},
+  hdrForm: {"type":"object","className":"Object","description":"Object","preview":{"type":"object","description":"Object","overflow":false,"properties":[{"name":"body","type":"string","value":"cookie=hid&X-Tenant-Id=acme&cookies=2"}]}},
+  hdrExact: {"type":"object","className":"Object","description":"Object","preview":{"type":"object","description":"Object","overflow":false,"properties":[{"name":"x-id","type":"number","value":"1"},{"name":"x.id","type":"number","value":"2"},{"name":"cookies","type":"number","value":"3"},{"name":"nocookie","type":"number","value":"4"}]}},
 };
 type Fixture = keyof typeof CDP;
 
@@ -367,12 +370,31 @@ describe('ConsoleCapturer object previews', () => {
     })).toBe(`[${items.join(', ')}, …]`);
   });
 
-  it('caps one object at 500 characters', () => {
+  it('keeps 500 characters of one object before the ellipsis', () => {
     const full = `{${[...'abcde'].map((c) => `${c}: "${c.repeat(100)}"`).join(', ')}}`;
     expect(logged(CDP.objLongStrs)).toBe(`${full.slice(0, 500)}…`);
   });
 
-  it('caps a long key', () => {
+  it('stops formatting at the cap', () => {
+    // A console.table preview can hold tens of thousands of values.
+    let reads = 0;
+    const items = Array.from({ length: 1000 }, (_, i) => ({
+      name: String(i),
+      type: 'number',
+      get value() {
+        reads += 1;
+        return String(i);
+      },
+    }));
+    const full = `[${items.map((_, i) => i).join(', ')}]`;
+    expect(logged({
+      type: 'object', subtype: 'array', className: 'Array', description: 'Array(1000)',
+      preview: { type: 'object', subtype: 'array', description: 'Array(1000)', overflow: false, properties: items },
+    })).toBe(`${full.slice(0, 500)}…`);
+    expect(reads).toBeLessThan(200);
+  });
+
+  it('keeps 100 characters of a long key before the ellipsis', () => {
     expect(logged(CDP.longKey)).toBe(`{"${'k'.repeat(100)}…": 1}`);
   });
 
@@ -413,6 +435,17 @@ describe('ConsoleCapturer object previews', () => {
     expect(logged(CDP[name])).toBe(expected);
   });
 
+  it('formats and masks every object in one call', () => {
+    cap.handle(1, 'Runtime.consoleAPICalled', {
+      type: 'log', args: [{ type: 'string', value: 'save' }, CDP.plain, CDP.token],
+    });
+    vi.advanceTimersByTime(1000);
+    expect(emitted[0]!.payload).toMatchObject({
+      text: 'save {status: 409, code: "X"} {token: «redacted», status: 1}',
+      args: ['save', '{status: 409, code: "X"}', '{token: «redacted», status: 1}'],
+    });
+  });
+
   it('keeps different objects apart and still merges equal ones', () => {
     log(CDP.plain);
     log(CDP.six);
@@ -429,6 +462,17 @@ describe('ConsoleCapturer object previews', () => {
     expect(thrown(CDP.rejTok)).toBe('{token: «redacted»}');
     expect(thrown(CDP.errPropStack)).toBe('{e: Error: https://a.test/?token=«redacted»}');
     expect(thrown(CDP.throwEvt)).toBe('InputEvent');
+  });
+
+  it('keeps every formatted object in the args of a Log warning', () => {
+    cap.handle(1, 'Log.entryAdded', {
+      entry: { level: 'warning', text: 'slow', args: [CDP.plain, CDP.token] },
+    });
+    vi.advanceTimersByTime(1000);
+    expect(emitted[0]!.payload).toMatchObject({
+      text: 'slow {status: 409, code: "X"} {token: «redacted», status: 1}',
+      args: ['{status: 409, code: "X"}', '{token: «redacted», status: 1}'],
+    });
   });
 
   it('formats and masks objects in Log args', () => {
@@ -459,6 +503,15 @@ describe('ConsoleCapturer object previews', () => {
     // Exact names, so `#cookie` and `Symbol(cookie)` match only once unwrapped.
     settings.customRedaction.headerNames = ['X-Tenant-Id'];
     settings.customRedaction.bodyKeyPatterns = ['^pin$'];
+    expect(logged(CDP[name])).toBe(expected);
+  });
+
+  it.each<[Fixture, string]>([
+    ['hdrJson', String.raw`{body: "{\n  \"cookie\": \"«redacted»\",\n  \"X-Tenant-Id\": \"«redacted»\",\n  \"cookies\": 2\n}"}`],
+    ['hdrForm', '{body: "cookie=«redacted»&X-Tenant-Id=«redacted»&cookies=2"}'],
+    ['hdrExact', '{"x-id": 1, "x.id": «redacted», cookies: 3, nocookie: 4}'],
+  ])('matches header names exactly in %s', (name, expected) => {
+    settings.customRedaction.headerNames = ['X-Tenant-Id', 'X.Id'];
     expect(logged(CDP[name])).toBe(expected);
   });
 

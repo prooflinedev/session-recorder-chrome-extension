@@ -231,21 +231,22 @@ bodies before emit.
 Objects are written with the values Chrome sends in the event's preview, such as
 `{status: 409, code: "X"}`, `OrderState {status: 409}`, `["GET", 1]`,
 `Map(1) {"a" => 1}` or `Set(1) {"a"}`. This also applies to `Proxy(Object)`,
-`Proxy(Array)` and objects in `error` messages. One object is capped at about 500
-characters, and `…` marks anything left out. Errors, dates, DOM nodes, DOM events,
-functions and other types keep Chrome's short description.
+`Proxy(Array)` and objects in `error` messages. Each string or key inside an object
+keeps 100 characters, and the whole object keeps 500. `…` is added after the cut and
+marks anything left out. Errors, dates, DOM nodes, DOM events, functions and other
+types keep Chrome's short description.
 
 With redaction on, values are masked by key (the body key patterns and header
-names), and URLs, JSON and form data inside strings are cleaned. A string that was
-cut short keeps only the text before the `…`, or is masked when that text is JSON.
+names), also in JSON and form data inside strings, and URLs are cleaned. A string
+containing `…` is treated as cut short: it keeps only the text before the `…`, or is
+masked when that text is JSON.
 
 Limits:
 
 - Nested objects appear as `Object` or `Array(3)`, except inside Map, Set and `console.table`.
-- Only the first 5 fields, or 100 array items, are recorded.
+- Only the values Chrome sends are recorded: usually the first 5 fields or 100 array items. `console.table` rows have more.
 - Messages logged before recording starts have no preview, so their objects keep the short description.
 - Secrets with no label, such as `['token', 'abc']`, are not recognized.
-- Header names are not checked inside JSON or form strings, so `cookie` there is masked only by a custom body key pattern.
 
 ### `error`
 `ErrorPayload` records an error surfaced from any source. It is protected, and the
