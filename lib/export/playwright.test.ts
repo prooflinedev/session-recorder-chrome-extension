@@ -383,6 +383,37 @@ describe('buildPlaywrightRepro', () => {
     ]);
   });
 
+  it('presses Back after a page interaction unless the page went back itself', () => {
+    const code = repro([
+      click(1000, { tag: 'a', text: 'Orders' }),
+      nav(2000, 'https://app.example.com/orders'),
+      input(3000, { tag: 'input', name: 'q' }, 'boots'),
+      // The browser's Back button, three seconds after typing.
+      nav(6000, 'https://app.example.com/dashboard'),
+      click(7000, { tag: 'a', text: 'Orders' }),
+      nav(8000, 'https://app.example.com/orders'),
+      click(9000, button('Cancel')),
+      // The page called history.back() from the Cancel button.
+      ev('spa-route', 9050, {
+        url: 'https://app.example.com/dashboard',
+        method: 'pushState',
+      }),
+    ]);
+    expect(steps(code).slice(1)).toEqual([
+      "await page.getByRole('link', { name: 'Orders', exact: true }).click();",
+      "await page.waitForURL((url) => url.pathname === '/orders');",
+      "await page.locator('input[name=\"q\"]').fill('boots');",
+      "await page.waitForURL((url) => url.pathname === '/dashboard', { timeout: 3000 }).catch(() => page.goBack());",
+      "await page.getByRole('link', { name: 'Orders', exact: true }).click();",
+      "await page.waitForURL((url) => url.pathname === '/orders');",
+      "await page.getByRole('button', { name: 'Cancel', exact: true }).click();",
+      "await page.waitForURL((url) => url.pathname === '/dashboard', { timeout: 600 }).catch(() => page.goBack());",
+    ]);
+    expect(code).toContain(
+      '// [00:06] Back to /dashboard, by the page itself or the browser button.',
+    );
+  });
+
   it('waits for a query-only navigation to leave the old query', () => {
     const code = repro([
       nav(1000, 'https://app.example.com/contacts?page=1', 'typed'),

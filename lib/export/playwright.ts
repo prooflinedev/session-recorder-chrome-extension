@@ -98,9 +98,10 @@ const MODIFIER_KEYS: Record<string, string> = {
   meta: 'Meta',
 };
 
-/** A check waits as long as the recording took to hit its error, plus this. */
-const CHECK_SLACK_MS = 500;
+/** Waits last as long as the recording took to get there, plus this. */
+const WAIT_SLACK_MS = 500;
 const MAX_CHECK_WAIT_MS = 5000;
+const MAX_HISTORY_WAIT_MS = 3000;
 
 /** An input event this soon after a click on the same control is the change it caused. */
 const CLICK_CHANGE_WINDOW_MS = 2000;
@@ -443,6 +444,7 @@ class ReproWriter {
   private lastStepT = 0;
   private waited = 0;
   private lastClick: { tag: string; t: number } | undefined;
+  private lastLinkClickT: number | undefined;
   /** The element the last recorded click landed on, replayed or not. */
   private lastActivated: { key: string; t: number } | undefined;
   private actedSinceNav = false;
@@ -723,7 +725,7 @@ class ReproWriter {
   private spaRoute(e: EventOf<'spa-route'>): void {
     const { url, method } = e.payload;
     if (!this.opened || !isWebUrl(url) || url === this.currentUrl) return;
-    if (method === 'popstate' && this.historyMove(url, e.t)) return;
+    if (this.historyMove(url, e.t)) return;
     this.waitForUrl(url, e.t);
     if (method === 'replaceState' && this.historyIndex >= 0) {
       this.history[this.historyIndex] = url;
@@ -734,20 +736,35 @@ class ReproWriter {
   }
 
   /**
-   * Back or forward: a navigation to the neighbouring history entry with no page
-   * interaction since the last one came from the browser buttons.
+   * A move to the neighbouring history entry. With no page interaction since the
+   * last navigation it came from the browser buttons. After one, the page may have
+   * done it itself (a Back link, `history.back()`), so the test waits as long as
+   * the recording took and only then presses the browser button.
    */
   private historyMove(url: string, t: number): boolean {
-    if (this.actedSinceNav) return false;
-    if (this.history[this.historyIndex - 1] === url) {
-      this.navigation('await page.goBack();', t);
-      this.historyIndex -= 1;
-    } else if (this.history[this.historyIndex + 1] === url) {
-      this.navigation('await page.goForward();', t);
-      this.historyIndex += 1;
+    const back = this.history[this.historyIndex - 1] === url;
+    const forward = !back && this.history[this.historyIndex + 1] === url;
+    const u = parseUrl(url);
+    // Right after a link click, the link is what navigated.
+    const viaLink =
+      this.lastLinkClickT !== undefined && this.lastLinkClickT === this.lastStepT;
+    if ((!back && !forward) || !u || viaLink) return false;
+    const button = back ? 'goBack' : 'goForward';
+    if (!this.actedSinceNav) {
+      this.navigation(`await page.${button}();`, t);
     } else {
-      return false;
+      const elapsed = Math.ceil(Math.max(0, t - this.lastStepT) / 100) * 100;
+      const timeout = Math.min(MAX_HISTORY_WAIT_MS, elapsed + WAIT_SLACK_MS);
+      this.comment(
+        t,
+        `${back ? 'Back' : 'Forward'} to ${u.pathname}, by the page itself or the browser button.`,
+      );
+      this.navigation(
+        `await page.waitForURL(${this.urlMatcher(u)}, { timeout: ${timeout} }).catch(() => page.${button}());`,
+        t,
+      );
     }
+    this.historyIndex += back ? -1 : 1;
     this.currentUrl = url;
     return true;
   }
@@ -768,6 +785,7 @@ class ReproWriter {
     const options = clickOptions(e.payload.modifiers, e.payload.button);
     this.action(`await ${loc.expr}.click(${options});`, e.t, loc.weak);
     this.lastClick = { tag: d.tag, t: e.t };
+    this.lastLinkClickT = d.tag === 'a' || d.role === 'link' ? e.t : undefined;
   }
 
   private input(e: EventOf<'input'>): void {
@@ -998,7 +1016,7 @@ class ReproWriter {
     this.collectors.add(collector);
     this.comment(t, note);
     const elapsed = Math.ceil(Math.max(0, t - this.lastStepT) / 100) * 100;
-    const wait = Math.min(MAX_CHECK_WAIT_MS, elapsed + CHECK_SLACK_MS);
+    const wait = Math.min(MAX_CHECK_WAIT_MS, elapsed + WAIT_SLACK_MS);
     if (wait > this.waited) {
       this.steps.push(`await page.waitForTimeout(${wait - this.waited});`);
       this.waitTotal += wait - this.waited;
