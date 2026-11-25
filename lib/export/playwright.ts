@@ -281,12 +281,15 @@ function locate(d: ElementDescriptor, inputType?: string): Located {
 }
 
 function describeElement(d: ElementDescriptor): string {
-  const name = clean(d.ariaLabel) ?? clean(d.text);
   const kind = d.role ?? d.tag;
+  const byId = d.id ? `${kind} #${d.id}` : undefined;
+  const byName = d.name ? `${kind} named "${d.name}"` : undefined;
+  // A field's recorded text is usually its placeholder, which says little about it.
+  const field = FIELD_TAGS.has(d.tag) ? (byId ?? byName) : undefined;
+  if (field !== undefined) return field;
+  const name = clean(d.ariaLabel) ?? clean(d.text);
   if (name) return `${kind} "${oneLine(name, 60)}"`;
-  if (d.id) return `${kind} #${d.id}`;
-  if (d.name) return `${kind} named "${d.name}"`;
-  return d.selector ? `${kind} ${d.selector}` : kind;
+  return byId ?? byName ?? (d.selector ? `${kind} ${d.selector}` : kind);
 }
 
 // ----------------------------------------------------------------------------

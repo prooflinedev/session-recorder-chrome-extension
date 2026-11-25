@@ -262,10 +262,16 @@ describe('buildPlaywrightRepro', () => {
 
   it('reads redacted values from the environment and never writes them', () => {
     const code = repro([
-      input(1000, { tag: 'input', id: 'f-pass', name: 'password' }, '«redacted»', {
-        redacted: true,
-        inputType: 'password',
-      }),
+      // The recorder keeps a field's placeholder as its text.
+      input(
+        1000,
+        { tag: 'input', id: 'f-pass', name: 'password', text: '••••••••' },
+        '«redacted»',
+        {
+          redacted: true,
+          inputType: 'password',
+        },
+      ),
       input(2000, { tag: 'input', name: 'card[number]' }, '«redacted»', {
         redacted: true,
       }),
