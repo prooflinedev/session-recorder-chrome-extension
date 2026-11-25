@@ -736,7 +736,8 @@ class ReproWriter {
         '//',
         '// These fields were redacted while recording. Set the variables before running:',
       );
-      for (const f of this.envFields) h.push(`//   ${f.name}: ${oneLine(f.field, 80)}`);
+      for (const f of this.envFields)
+        h.push(`//   ${f.name}: ${oneLine(f.field, 120)}`);
       h.push('// The test stops before typing them into a page on any other site.');
     }
 
@@ -1102,8 +1103,16 @@ class ReproWriter {
     this.actedSinceNav = true;
   }
 
+  /**
+   * The variable holding a redacted field's value. Fields on different sites get
+   * different variables even when their locators match, so one site's secret is
+   * never typed into another.
+   */
   private envFor(d: ElementDescriptor, target: string): string {
-    const known = this.envByTarget.get(target);
+    const page = this.currentUrl !== undefined ? parseUrl(this.currentUrl) : undefined;
+    const site = page?.origin;
+    const key = `${site ?? ''} ${target}`;
+    const known = this.envByTarget.get(key);
     if (known !== undefined) return known;
     const slug = (d.name ?? d.id ?? d.ariaLabel ?? '')
       .replace(/[^A-Za-z0-9]+/g, '_')
@@ -1114,8 +1123,10 @@ class ReproWriter {
     let name = base;
     for (let n = 2; this.envFields.some((f) => f.name === name); n += 1)
       name = `${base}_${n}`;
-    this.envByTarget.set(target, name);
-    this.envFields.push({ name, field: describeElement(d) });
+    this.envByTarget.set(key, name);
+    const where =
+      site === undefined || site === this.origin ? 'on the app' : `on ${site}`;
+    this.envFields.push({ name, field: `${describeElement(d)} ${where}` });
     return name;
   }
 

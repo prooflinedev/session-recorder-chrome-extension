@@ -393,8 +393,10 @@ describe('buildPlaywrightRepro', () => {
         redacted: true,
       }),
     ]);
-    expect(code).toContain('//   REPRO_PASSWORD: input #f-pass');
-    expect(code).toContain('//   REPRO_CARD_NUMBER: input named "card[number]"');
+    expect(code).toContain('//   REPRO_PASSWORD: input #f-pass on the app');
+    expect(code).toContain(
+      '//   REPRO_CARD_NUMBER: input named "card[number]" on the app',
+    );
     expect(code).not.toContain('«redacted»');
     // Each secret goes into the field whose own page was just checked.
     const body = code.split('\n').map((line) => line.replace(/ \/\/ \[.*$/, '').trim());
@@ -412,6 +414,25 @@ describe('buildPlaywrightRepro', () => {
         '}',
       ]);
     }
+  });
+
+  it('gives each site its own variable for a secret field', () => {
+    const pass = { tag: 'input', id: 'password' };
+    const code = repro([
+      input(1000, pass, '«redacted»', { redacted: true, inputType: 'password' }),
+      click(2000, button('Sign in with SSO')),
+      nav(3000, 'https://auth.example.org/login'),
+      input(4000, pass, '«redacted»', { redacted: true, inputType: 'password' }),
+    ]);
+    // Same locator on two sites: the app's password must never reach the other site.
+    expect(code).toContain('//   REPRO_PASSWORD: input #password on the app');
+    expect(code).toContain(
+      '//   REPRO_PASSWORD_2: input #password on https://auth.example.org',
+    );
+    expect(steps(code).filter((line) => line.startsWith('await field.'))).toEqual([
+      "await field.fill(process.env.REPRO_PASSWORD ?? '');",
+      "await field.fill(process.env.REPRO_PASSWORD_2 ?? '');",
+    ]);
   });
 
   it('checks the site again before a secret typed after a reload', () => {
