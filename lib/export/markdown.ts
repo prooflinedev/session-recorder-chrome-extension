@@ -33,6 +33,8 @@ export interface RenderInput {
   assetPath: (assetId: string) => string | undefined;
   /** Set when the bundle includes a compiled OpenAPI spec (captureApiSpec). */
   openapi?: { path: string; endpointCount: number };
+  /** Set when the bundle includes a Playwright test that replays the session. */
+  repro?: { path: string };
 }
 
 // ----------------------------------------------------------------------------
@@ -151,6 +153,11 @@ function renderHeader(
   if (input.openapi) {
     lines.push(
       `- **API spec:** \`${input.openapi.path}\` (${input.openapi.endpointCount} endpoint(s) compiled from captured requests)`,
+    );
+  }
+  if (input.repro) {
+    lines.push(
+      `- **Repro test:** \`${input.repro.path}\` (Playwright test that replays this session; its header explains how to run it)`,
     );
   }
   lines.push('');

@@ -11,6 +11,7 @@ import type {
   Session,
   SessionEvent,
 } from '@/lib/session/types';
+import { buildBundle, type ExportFile } from './bundle';
 import { buildPlaywrightRepro, type PlaywrightReproOptions } from './playwright';
 
 let seq = 0;
@@ -592,4 +593,37 @@ describe('buildPlaywrightRepro', () => {
     expect(code).toContain('routeFromHAR');
     expect(typeErrors(code)).toEqual([]);
   }, 60_000);
+});
+
+describe('repro.spec.ts in the export bundle', () => {
+  function file(files: ExportFile[], path: string): string | undefined {
+    return files.find((f) => f.path === path)?.text;
+  }
+
+  it('is added next to the HAR and named in the report', async () => {
+    const { session, events, assets } = buildSampleSession();
+    const files = await buildBundle({ session, events, assets, level: 'L0' });
+    const spec = file(files, 'repro.spec.ts');
+    expect(spec).toContain("import { test, expect } from '@playwright/test';");
+    expect(spec).toContain('routeFromHAR');
+    expect(file(files, 'report.md')).toContain('`repro.spec.ts`');
+  });
+
+  it('follows the export level', async () => {
+    const { session, events, assets } = buildSampleSession();
+    const files = await buildBundle({ session, events, assets, level: 'L3' });
+    const spec = file(files, 'repro.spec.ts') ?? '';
+    expect(header(spec)).toContain('Exported at L3 (minimal)');
+    expect(spec).not.toContain('name="');
+    expect(spec).not.toContain('routeFromHAR');
+  });
+
+  it('is left out when the session has nothing to replay', async () => {
+    const { session, events, assets } = new SessionBuilder()
+      .net('GET', 'https://api.example.com/me')
+      .build();
+    const files = await buildBundle({ session, events, assets, level: 'L0' });
+    expect(file(files, 'repro.spec.ts')).toBeUndefined();
+    expect(file(files, 'report.md')).not.toContain('repro.spec.ts');
+  });
 });
