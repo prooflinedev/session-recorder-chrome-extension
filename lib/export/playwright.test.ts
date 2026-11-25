@@ -203,6 +203,24 @@ describe('buildPlaywrightRepro', () => {
     expect(code).toContain("test('repro: Fixture session', async ({ page }) => {");
   });
 
+  it('keeps replayed paths on the base URL', () => {
+    const code = repro([
+      nav(1000, 'https://app.example.com//assets/report', 'typed'),
+      click(2000, button('Open')),
+    ]);
+    expect(steps(code)[1]).toBe("await page.goto(appUrl('//assets/report'));");
+    const helper = code.split('\n').find((line) => line.startsWith('const appUrl'));
+    const appUrl = new Function(
+      'baseURL',
+      `${helper!.replace(': string', '')} return appUrl;`,
+    )('http://localhost:3000/app/') as (route: string) => string;
+    // A path starting with // must not be read as another host.
+    expect(appUrl('//assets/report')).toBe('http://localhost:3000/app//assets/report');
+    expect(appUrl('/cart?step=2#pay')).toBe(
+      'http://localhost:3000/app/cart?step=2#pay',
+    );
+  });
+
   it('prefers a test id, then a stable id, over role and text', () => {
     const code = repro([
       click(1000, button('Save', { selector: '[data-testid="save-btn"]' })),

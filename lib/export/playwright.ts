@@ -581,7 +581,9 @@ class ReproWriter {
     out.push('');
     if (this.usesAppUrl && this.origin !== undefined) {
       out.push(`const baseURL = process.env.REPRO_BASE_URL ?? ${lit(this.origin)};`);
-      out.push('const appUrl = (route: string) => new URL(route, baseURL).toString();');
+      out.push(
+        "const appUrl = (route: string) => baseURL.replace(/\\/+$/, '') + route;",
+      );
       out.push('');
     }
 
