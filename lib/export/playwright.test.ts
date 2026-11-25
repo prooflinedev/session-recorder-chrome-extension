@@ -286,10 +286,14 @@ describe('buildPlaywrightRepro', () => {
   });
 
   it('selects options and does not toggle a checkbox twice', () => {
+    const remember = { tag: 'input', name: 'remember' };
     const code = repro([
       input(1000, { tag: 'select', name: 'country' }, 'de', { inputType: 'select' }),
+      // A label click is recorded as two clicks: the label, then the browser's
+      // own click on its checkbox, followed by the change.
       click(2000, { tag: 'label', text: 'Remember me' }),
-      input(2600, { tag: 'input', name: 'remember' }, 'on', { inputType: 'checkbox' }),
+      click(2003, remember),
+      input(2800, remember, 'on', { inputType: 'checkbox' }),
       input(9000, { tag: 'input', name: 'terms' }, 'on', { inputType: 'checkbox' }),
       input(10000, { tag: 'input', name: 'plan' }, 'pro', { inputType: 'radio' }),
     ]);
@@ -298,6 +302,20 @@ describe('buildPlaywrightRepro', () => {
       "await page.getByText('Remember me', { exact: true }).click();",
       'await page.locator(\'input[name="terms"]\').click();',
       'await page.locator(\'input[name="plan"]\').check();',
+    ]);
+  });
+
+  it('does not let a click on another element hide a checkbox change', () => {
+    const code = repro([
+      click(1000, button('Save')),
+      // Toggled by a key the recorder does not capture, such as a bare Space.
+      input(1500, { tag: 'input', name: 'newsletter' }, 'on', {
+        inputType: 'checkbox',
+      }),
+    ]);
+    expect(steps(code).slice(1)).toEqual([
+      "await page.getByRole('button', { name: 'Save', exact: true }).click();",
+      'await page.locator(\'input[name="newsletter"]\').click();',
     ]);
   });
 

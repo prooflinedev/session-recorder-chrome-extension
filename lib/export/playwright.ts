@@ -102,8 +102,20 @@ const MODIFIER_KEYS: Record<string, string> = {
 const CHECK_SLACK_MS = 500;
 const MAX_CHECK_WAIT_MS = 5000;
 
-/** An input event this soon after a click is the change that click caused. */
+/** An input event this soon after a click on the same control is the change it caused. */
 const CLICK_CHANGE_WINDOW_MS = 2000;
+
+/** Clicking a label makes the browser click its control a few milliseconds later. */
+const LABEL_FORWARD_MS = 100;
+const LABELABLE_TAGS = new Set([
+  'button',
+  'input',
+  'meter',
+  'output',
+  'progress',
+  'select',
+  'textarea',
+]);
 
 const DEFAULT_TEST_TIMEOUT_MS = 30_000;
 
@@ -280,6 +292,13 @@ function locate(d: ElementDescriptor, inputType?: string): Located {
   return { expr: `page.locator(${lit(d.tag || 'body')})`, weak: true };
 }
 
+/** Identity of a recorded element, for matching a click with the change it caused. */
+function elementKey(d: ElementDescriptor): string {
+  if (d.selector) return d.selector;
+  if (d.id) return `#${d.id}`;
+  return d.name ? `${d.tag}[name="${d.name}"]` : `${d.tag}:${d.text ?? ''}`;
+}
+
 function describeElement(d: ElementDescriptor): string {
   const kind = d.role ?? d.tag;
   const byId = d.id ? `${kind} #${d.id}` : undefined;
@@ -423,7 +442,9 @@ class ReproWriter {
 
   private lastStepT = 0;
   private waited = 0;
-  private lastClickT = Number.NEGATIVE_INFINITY;
+  private lastClick: { tag: string; t: number } | undefined;
+  /** The element the last recorded click landed on, replayed or not. */
+  private lastActivated: { key: string; t: number } | undefined;
   private actedSinceNav = false;
   private currentUrl: string | undefined;
   private history: string[] = [];
@@ -732,10 +753,21 @@ class ReproWriter {
   }
 
   private click(e: EventOf<'click'>): void {
-    const loc = locate(e.payload.descriptor);
+    const d = e.payload.descriptor;
+    this.lastActivated = { key: elementKey(d), t: e.t };
+    // The browser's own click on a label's control; replaying it would undo the change.
+    const forwarded =
+      this.lastClick?.tag === 'label' &&
+      LABELABLE_TAGS.has(d.tag) &&
+      e.t - this.lastClick.t <= LABEL_FORWARD_MS;
+    if (forwarded) {
+      this.lastClick = undefined;
+      return;
+    }
+    const loc = locate(d);
     const options = clickOptions(e.payload.modifiers, e.payload.button);
     this.action(`await ${loc.expr}.click(${options});`, e.t, loc.weak);
-    this.lastClickT = e.t;
+    this.lastClick = { tag: d.tag, t: e.t };
   }
 
   private input(e: EventOf<'input'>): void {
@@ -743,8 +775,11 @@ class ReproWriter {
     const type = (p.inputType ?? '').toLowerCase();
     const loc = locate(p.descriptor, type);
     if (type === 'checkbox' || type === 'radio') {
-      // The click just before (on the box or its label) already changed it.
-      if (e.t - this.lastClickT <= CLICK_CHANGE_WINDOW_MS) return;
+      // A replayed click on this control, or on its label, already changed it.
+      const clicked =
+        this.lastActivated?.key === elementKey(p.descriptor) &&
+        e.t - this.lastActivated.t <= CLICK_CHANGE_WINDOW_MS;
+      if (clicked) return;
       this.action(
         `await ${loc.expr}.${type === 'radio' ? 'check' : 'click'}();`,
         e.t,
