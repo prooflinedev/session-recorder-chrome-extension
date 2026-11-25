@@ -6,7 +6,7 @@
  * order, and checks at each point where the recording hit an uncaught error or
  * a failing API call that it does not happen again. While the bug is present
  * the test fails where the recording did; once it is fixed the test passes, so
- * a developer or a coding agent can use it to confirm the fix.
+ * a developer or a coding agent can use it to check the fix.
  *
  * Its steps come from the trimmed events, so they follow the export level the
  * same way the HAR does. Locators take element details from the full events
@@ -696,7 +696,7 @@ class ReproWriter {
       '//',
       ...commentBlock(
         this.checks > 0
-          ? 'It replays the recording in one tab and fails if an uncaught error or a failing API call from the recording happens again: red while the bug is present, green once it is fixed. Each check waits about as long as the recording took to hit it.'
+          ? 'It replays the recording in one tab and fails if an uncaught error or a failing API call from the recording happens again: red while the bug is present, green once it is fixed. Each check waits about as long as the recording took to hit it, so an error that now comes later is not caught; add an assertion for the outcome you expect to confirm a fix fully.'
           : 'It replays the recording in one tab. No uncaught error or failing API call was recorded, so add an assertion for what you expected at the end of the test.',
       ),
       '//',
