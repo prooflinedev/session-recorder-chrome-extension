@@ -409,7 +409,7 @@ describe('buildPlaywrightRepro', () => {
       expect(body.slice(start - 1, start + 4)).toEqual([
         '{',
         `const field = (await ${locator}.elementHandle())!;`,
-        `expect(await field.evaluate(() => location.origin), '${env} is only typed into the recorded site').toBe(new URL(baseURL).origin);`,
+        `expect(await field.evaluate(() => location.origin), '${env} is only typed into the recorded site').toBe(appOrigin);`,
         `await field.fill(process.env.${env} ?? '');`,
         '}',
       ]);
@@ -444,7 +444,7 @@ describe('buildPlaywrightRepro', () => {
       input(4000, pass, '«redacted»', { redacted: true, inputType: 'password' }),
     ]);
     const check =
-      "expect(await field.evaluate(() => location.origin), 'REPRO_PASSWORD is only typed into the recorded site').toBe(new URL(baseURL).origin);";
+      "expect(await field.evaluate(() => location.origin), 'REPRO_PASSWORD is only typed into the recorded site').toBe(appOrigin);";
     expect(activeChecks(code)).toEqual([check, check]);
   });
 
@@ -556,12 +556,12 @@ describe('buildPlaywrightRepro', () => {
       // The reload right after opening the page is skipped.
       "await page.goto(appUrl('/settings'));",
       "await page.getByRole('link', { name: 'Contacts', exact: true }).click();",
-      "await page.waitForURL((url) => url.pathname === '/contacts');",
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/contacts');",
       "await page.getByRole('button', { name: 'Refresh', exact: true }).click();",
       'await page.reload();',
       "await page.getByRole('button', { name: 'Sign in', exact: true }).click();",
-      "await page.waitForURL((url) => url.host === 'auth.example.org' && url.pathname === '/login');",
-      "await page.waitForURL((url) => url.host === 'auth.example.org' && url.pathname === '/' && url.hash === '#/mfa');",
+      "await page.waitForURL((url) => url.origin === 'https://auth.example.org' && url.pathname === '/login');",
+      "await page.waitForURL((url) => url.origin === 'https://auth.example.org' && url.pathname === '/' && url.hash === '#/mfa');",
     ]);
   });
 
@@ -583,17 +583,31 @@ describe('buildPlaywrightRepro', () => {
     ]);
     expect(steps(code).slice(1)).toEqual([
       "await page.getByRole('link', { name: 'Orders', exact: true }).click();",
-      "await page.waitForURL((url) => url.pathname === '/orders');",
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/orders');",
       "await page.locator('input[name=\"q\"]').fill('boots');",
-      "await page.waitForURL((url) => url.pathname === '/dashboard', { timeout: 3000 }).catch(() => page.goBack());",
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/dashboard', { timeout: 3000 }).catch(() => page.goBack());",
       "await page.getByRole('link', { name: 'Orders', exact: true }).click();",
-      "await page.waitForURL((url) => url.pathname === '/orders');",
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/orders');",
       "await page.getByRole('button', { name: 'Cancel', exact: true }).click();",
-      "await page.waitForURL((url) => url.pathname === '/dashboard', { timeout: 600 }).catch(() => page.goBack());",
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/dashboard', { timeout: 600 }).catch(() => page.goBack());",
     ]);
     expect(code).toContain(
       '// [00:06] Back to /dashboard, by the page itself or the browser button.',
     );
+  });
+
+  it('waits for the app itself, not an outside page with the same path', () => {
+    const code = repro([
+      click(1000, button('Sign in')),
+      nav(2000, 'https://auth.example.org/callback'),
+      click(3000, button('Continue')),
+      nav(4000, 'https://app.example.com/callback'),
+    ]);
+    expect(steps(code).slice(-3)).toEqual([
+      "await page.waitForURL((url) => url.origin === 'https://auth.example.org' && url.pathname === '/callback');",
+      "await page.getByRole('button', { name: 'Continue', exact: true }).click();",
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/callback');",
+    ]);
   });
 
   it("trusts Chrome's Back and Forward marks when the recording has them", () => {
@@ -618,9 +632,9 @@ describe('buildPlaywrightRepro', () => {
     ]);
     expect(steps(code).slice(1)).toEqual([
       "await page.getByRole('link', { name: 'Orders', exact: true }).click();",
-      "await page.waitForURL((url) => url.pathname === '/orders');",
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/orders');",
       "await page.getByRole('button', { name: 'Back to list', exact: true }).click();",
-      "await page.waitForURL((url) => url.pathname === '/dashboard');",
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/dashboard');",
       'await page.goBack();',
     ]);
     expect(code).not.toContain('goForward');
@@ -633,7 +647,7 @@ describe('buildPlaywrightRepro', () => {
       linkNav(6000, 'https://app.example.com/dashboard', ['forward_back']),
     ]);
     expect(steps(typed).at(-1)).toBe(
-      "await page.waitForURL((url) => url.pathname === '/dashboard', { timeout: 3000 }).catch(() => page.goBack());",
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/dashboard', { timeout: 3000 }).catch(() => page.goBack());",
     );
   });
 
@@ -652,7 +666,7 @@ describe('buildPlaywrightRepro', () => {
       }),
     ]);
     expect(steps(code).slice(-1)).toEqual([
-      "await page.waitForURL((url) => url.pathname === '/docs' && url.hash === '#intro');",
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/docs' && url.hash === '#intro');",
     ]);
     expect(code).not.toContain('goBack');
   });
@@ -668,7 +682,7 @@ describe('buildPlaywrightRepro', () => {
     ]);
     expect(steps(code).slice(2)).toEqual([
       "await page.getByRole('button', { name: 'Next', exact: true }).click();",
-      "await page.waitForURL((url) => url.pathname === '/contacts' && url.search !== '?page=1');",
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/contacts' && url.search !== '?page=1');",
     ]);
   });
 
@@ -684,7 +698,7 @@ describe('buildPlaywrightRepro', () => {
     ]);
     expect(steps(code).slice(1)).toEqual([
       "await page.getByRole('link', { name: 'Orders', exact: true }).click();",
-      "await page.waitForURL((url) => url.pathname === '/orders');",
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/orders');",
       'await page.goBack();',
       'await page.goForward();',
     ]);

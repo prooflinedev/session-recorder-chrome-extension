@@ -436,7 +436,6 @@ const COLLECTORS: Record<Collector, string[]> = {
   failedRequests: [
     'const failedRequests: string[] = [];',
     '// App requests go by path so REPRO_BASE_URL still matches; other sites keep their origin.',
-    'const appOrigin = new URL(baseURL).origin;',
     'const where = (url: string) => {',
     '  const { origin, pathname } = new URL(url);',
     '  return origin === appOrigin ? pathname : origin + pathname;',
@@ -636,6 +635,7 @@ class ReproWriter {
     out.push('');
     if (this.usesAppUrl && this.origin !== undefined) {
       out.push(`const baseURL = process.env.REPRO_BASE_URL ?? ${lit(this.origin)};`);
+      out.push('const appOrigin = new URL(baseURL).origin;');
       out.push(
         "const appUrl = (route: string) => baseURL.replace(/\\/+$/, '') + route;",
       );
@@ -1040,7 +1040,13 @@ class ReproWriter {
   private urlMatcher(u: URL): string {
     const from = this.currentUrl !== undefined ? parseUrl(this.currentUrl) : undefined;
     const conditions: string[] = [];
-    if (u.origin !== this.origin) conditions.push(`url.host === ${lit(u.host)}`);
+    // App pages follow REPRO_BASE_URL; other sites must match their recorded origin.
+    if (u.origin === this.origin) {
+      this.usesAppUrl = true;
+      conditions.push('url.origin === appOrigin');
+    } else {
+      conditions.push(`url.origin === ${lit(u.origin)}`);
+    }
     conditions.push(`url.pathname === ${lit(u.pathname)}`);
     if (u.hash || from?.hash) conditions.push(`url.hash === ${lit(u.hash)}`);
     const queryOnly =
@@ -1082,7 +1088,7 @@ class ReproWriter {
     let expected = page ? lit(page.origin) : undefined;
     if (page && page.origin === this.origin) {
       this.usesAppUrl = true;
-      expected = 'new URL(baseURL).origin';
+      expected = 'appOrigin';
     }
     const message = lit(`${env} is only typed into the recorded site`);
     this.steps.push(
