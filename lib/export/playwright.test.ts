@@ -393,19 +393,24 @@ describe('buildPlaywrightRepro', () => {
         redacted: true,
       }),
     ]);
-    expect(steps(code).slice(1)).toEqual([
-      "await page.locator('#f-pass').fill(process.env.REPRO_PASSWORD ?? '');",
-      "await page.locator('input[name=\"card[number]\"]').fill(process.env.REPRO_CARD_NUMBER ?? '');",
-    ]);
     expect(code).toContain('//   REPRO_PASSWORD: input #f-pass');
     expect(code).toContain('//   REPRO_CARD_NUMBER: input named "card[number]"');
     expect(code).not.toContain('«redacted»');
-    // A site check right before every secret is typed.
+    // Each secret goes into the field whose own page was just checked.
     const body = code.split('\n').map((line) => line.replace(/ \/\/ \[.*$/, '').trim());
-    for (const env of ['REPRO_PASSWORD', 'REPRO_CARD_NUMBER']) {
-      const check = `expect(new URL(page.url()).origin, '${env} is only typed into the recorded site').toBe(new URL(baseURL).origin);`;
-      expect(body.indexOf(check)).toBeGreaterThan(-1);
-      expect(body[body.indexOf(check) + 1]).toContain(`process.env.${env}`);
+    const fields: [string, string][] = [
+      ["page.locator('#f-pass')", 'REPRO_PASSWORD'],
+      ['page.locator(\'input[name="card[number]"]\')', 'REPRO_CARD_NUMBER'],
+    ];
+    for (const [locator, env] of fields) {
+      const start = body.indexOf(`const field = (await ${locator}.elementHandle())!;`);
+      expect(body.slice(start - 1, start + 4)).toEqual([
+        '{',
+        `const field = (await ${locator}.elementHandle())!;`,
+        `expect(await field.evaluate(() => location.origin), '${env} is only typed into the recorded site').toBe(new URL(baseURL).origin);`,
+        `await field.fill(process.env.${env} ?? '');`,
+        '}',
+      ]);
     }
   });
 
@@ -418,7 +423,7 @@ describe('buildPlaywrightRepro', () => {
       input(4000, pass, '«redacted»', { redacted: true, inputType: 'password' }),
     ]);
     const check =
-      "expect(new URL(page.url()).origin, 'REPRO_PASSWORD is only typed into the recorded site').toBe(new URL(baseURL).origin);";
+      "expect(await field.evaluate(() => location.origin), 'REPRO_PASSWORD is only typed into the recorded site').toBe(new URL(baseURL).origin);";
     expect(activeChecks(code)).toEqual([check, check]);
   });
 
@@ -432,14 +437,13 @@ describe('buildPlaywrightRepro', () => {
       }),
     ]);
     const body = code.split('\n').map((line) => line.replace(/ \/\/ \[.*$/, '').trim());
-    const check =
-      "expect(new URL(page.url()).origin, 'REPRO_PASSWORD is only typed into the recorded site').toBe('https://auth.example.org');";
-    expect(body.indexOf(check)).toBeGreaterThan(-1);
-    expect(body.indexOf(check)).toBeLessThan(
-      body.indexOf(
-        "await page.locator('#password').fill(process.env.REPRO_PASSWORD ?? '');",
-      ),
+    const start = body.indexOf(
+      "const field = (await page.locator('#password').elementHandle())!;",
     );
+    expect(body.slice(start + 1, start + 3)).toEqual([
+      "expect(await field.evaluate(() => location.origin), 'REPRO_PASSWORD is only typed into the recorded site').toBe('https://auth.example.org');",
+      "await field.fill(process.env.REPRO_PASSWORD ?? '');",
+    ]);
   });
 
   it('selects options and does not toggle a checkbox twice', () => {

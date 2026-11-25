@@ -904,14 +904,14 @@ class ReproWriter {
     const previous = this.filled.get(loc.expr);
     if (previous?.value === p.value && previous.causes === this.causes) return;
     this.filled.set(loc.expr, { value: p.value, causes: this.causes });
-    const env =
-      p.redacted || p.value === REDACTION_MARKER ? this.envFor(d, loc.expr) : undefined;
-    if (env !== undefined) this.checkSecretOrigin(env);
-    const value = env !== undefined ? `process.env.${env} ?? ''` : lit(p.value);
     const method = type.startsWith('select') ? 'selectOption' : 'fill';
+    if (p.redacted || p.value === REDACTION_MARKER) {
+      this.secretFill(loc, this.envFor(d, loc.expr), method, e.t);
+      return;
+    }
     // Pauses while typing split one edit into several input events; keep the last value.
     this.action(
-      `await ${loc.expr}.${method}(${value});`,
+      `await ${loc.expr}.${method}(${lit(p.value)});`,
       e.t,
       loc.weak,
       `${method}:${loc.expr}`,
@@ -1039,22 +1039,35 @@ class ReproWriter {
   }
 
   /**
-   * Stop before typing a secret into a page that is not on the site the
-   * recording typed it into: the app (or REPRO_BASE_URL), or that exact origin.
+   * Type a secret only into a field on the site the recording typed it into:
+   * the app (or REPRO_BASE_URL), or that exact origin. The check reads the
+   * origin of the field's own page and types into that same field, so a
+   * navigation in between detaches it instead of sending the secret elsewhere.
    */
-  private checkSecretOrigin(env: string): void {
-    // Checked before every secret: a replayed step can land somewhere the recording did not.
+  private secretFill(loc: Located, env: string, method: string, t: number): void {
     const page = this.currentUrl !== undefined ? parseUrl(this.currentUrl) : undefined;
-    if (!page) return;
-    let expected = lit(page.origin);
-    if (page.origin === this.origin) {
+    let expected = page ? lit(page.origin) : undefined;
+    if (page && page.origin === this.origin) {
       this.usesAppUrl = true;
       expected = 'new URL(baseURL).origin';
     }
     const message = lit(`${env} is only typed into the recorded site`);
     this.steps.push(
-      `expect(new URL(page.url()).origin, ${message}).toBe(${expected});`,
+      '{',
+      `  const field = (await ${loc.expr}.elementHandle())!; // ${stamp(t)}${loc.weak ? ' weak locator, check it' : ''}`,
+      ...(expected
+        ? [
+            `  expect(await field.evaluate(() => location.origin), ${message}).toBe(${expected});`,
+          ]
+        : []),
+      `  await field.${method}(process.env.${env} ?? '');`,
+      '}',
     );
+    this.actions += 1;
+    if (loc.weak) this.weakSteps += 1;
+    this.mergeable = undefined;
+    this.stepped(t);
+    this.actedSinceNav = true;
   }
 
   private envFor(d: ElementDescriptor, target: string): string {

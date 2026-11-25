@@ -91,10 +91,13 @@ test('exports a Playwright test that replays the recording', async ({
     "await page.goto(appUrl('/'));",
     "await page.locator('#btn-log').click();",
     "await page.locator('#f-user').fill('ada lovelace');",
-    "await page.locator('#f-pass').fill(process.env.REPRO_PASSWORD ?? '');",
+    "await field.fill(process.env.REPRO_PASSWORD ?? '');",
     "await page.locator('#f-pass').press('Tab');",
     "await page.locator('#btn-info').click();",
   ]);
+  expect(spec).toContain(
+    "const field = (await page.locator('#f-pass').elementHandle())!;",
+  );
   expect(spec).not.toContain('hunter2');
 
   const reportKey = Object.keys(files).find((k) => k.endsWith('/report.md'));
