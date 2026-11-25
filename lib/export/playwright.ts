@@ -689,7 +689,7 @@ class ReproWriter {
     if (this.activeChecks.size > 0) {
       body.push(
         '',
-        '// Run every check again at the end, in case an error now comes later.',
+        '// Run every check again at the end, in case an error now comes a little later.',
         `await page.waitForTimeout(${FINAL_CHECK_WAIT_MS});`,
         ...this.activeChecks,
       );
@@ -724,7 +724,7 @@ class ReproWriter {
       '//',
       ...commentBlock(
         this.checks > 0
-          ? 'It replays the recording in one tab and fails if an uncaught error or a failing API call from the recording happens again: red while the bug is present, green once it is fixed. Each check waits about as long as the recording took to hit it, and all of them run again at the end, so an error that now comes later still fails the test. Add an assertion for the outcome you expect to confirm a fix fully.'
+          ? 'It replays the recording in one tab and fails if an uncaught error or a failing API call from the recording happens again while it runs. Each check waits about as long as the recording took to hit it, and all of them run again at the end, so an error that now comes a little later still fails the test, but one after the test ends does not. A pass means those failures did not come back in that time, not that the bug is fixed, so add an assertion for the outcome you expect.'
           : 'It replays the recording in one tab. No uncaught error or failing API call was recorded, so add an assertion for what you expected at the end of the test.',
       ),
       '//',

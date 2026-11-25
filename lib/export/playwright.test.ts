@@ -768,9 +768,10 @@ describe('buildPlaywrightRepro', () => {
     expect(code).toContain(
       "page.on('pageerror', (error) => pageErrors.push(String(error)));",
     );
-    expect(header(code)).toContain(
-      'red while the bug is present, green once it is fixed.',
-    );
+    // The header claims only what the run can show.
+    expect(header(code)).toContain('but one after the test ends does not.');
+    expect(header(code)).toContain('not that the bug is fixed');
+    expect(header(code)).not.toContain('once it is fixed');
   });
 
   it('matches the part of an error message that survived redaction', () => {
