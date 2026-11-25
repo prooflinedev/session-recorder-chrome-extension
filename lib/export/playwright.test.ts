@@ -240,6 +240,26 @@ describe('buildPlaywrightRepro', () => {
     ]);
   });
 
+  it('takes element details the export level dropped from the full recording', () => {
+    const full = click(1000, {
+      tag: 'input',
+      name: 'q',
+      selector: 'input[name="q"]',
+      text: 'Search',
+    });
+    const trimmed = {
+      ...full,
+      payload: { modifiers: [], descriptor: { tag: 'input', text: 'Search' } },
+    } as SessionEvent;
+    const code = repro([trimmed], { level: 'L3', fullEvents: [full] });
+    expect(steps(code)[1]).toBe('await page.locator(\'input[name="q"]\').click();');
+    expect(header(code)).not.toContain('Exported at L3');
+
+    const alone = repro([trimmed], { level: 'L3' });
+    expect(steps(alone)[1]).toBe("await page.locator('input').click();");
+    expect(header(alone)).toContain('Exported at L3 (minimal)');
+  });
+
   it('falls back to label, field name, text, the CSS path, then the tag', () => {
     const longText = 'x'.repeat(80);
     const code = repro([
@@ -799,12 +819,15 @@ describe('repro.spec.ts in the export bundle', () => {
     expect(file(files, 'report.md')).toContain('`repro.spec.ts`');
   });
 
-  it('follows the export level', async () => {
+  it('follows the export level but keeps full locators', async () => {
     const { session, events, assets } = buildSampleSession();
     const files = await buildBundle({ session, events, assets, level: 'L3' });
     const spec = file(files, 'repro.spec.ts') ?? '';
-    expect(header(spec)).toContain('Exported at L3 (minimal)');
-    expect(spec).not.toContain('name="');
+    // L3 strips element details from the report, but the test still finds the field.
+    expect(spec).toContain(
+      "page.locator('input[name=\"file-name\"]').fill('contacts.csv')",
+    );
+    expect(header(spec)).not.toContain('Exported at L3');
     expect(spec).not.toContain('routeFromHAR');
   });
 

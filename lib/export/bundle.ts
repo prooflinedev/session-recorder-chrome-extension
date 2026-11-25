@@ -348,10 +348,12 @@ export async function buildBundle(
   }
 
   // 2d) The HAR and the Playwright repro test come from the trimmed events, so
-  // both follow the export level.
+  // both follow the export level. The test's locators take element details from
+  // the full events, which higher levels strip only to save report tokens.
   const har = buildHar(session, trimmed);
   const repro = buildPlaywrightRepro(session, trimmed, {
     level,
+    fullEvents: events,
     ...(har ? { harPath: 'network.har' } : {}),
   });
 

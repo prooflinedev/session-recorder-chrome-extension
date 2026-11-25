@@ -31,6 +31,11 @@ export interface PlaywrightReproOptions {
   level: VerbosityLevel;
   /** Zip-relative path of the HAR, when the bundle includes one. */
   harPath?: string;
+  /**
+   * The untrimmed events. Higher levels strip element details to save report
+   * tokens; locators take them from here so steps stay findable at every level.
+   */
+  fullEvents?: SessionEvent[];
 }
 
 /**
@@ -449,6 +454,7 @@ class ReproWriter {
   private readonly origin: string | undefined;
   private readonly linkedRequestIds = new Set<string>();
   private readonly harReplayable: boolean;
+  private readonly fullDescriptors = new Map<string, ElementDescriptor>();
 
   private readonly steps: string[] = [];
   private readonly collectors = new Set<Collector>();
@@ -493,6 +499,16 @@ class ReproWriter {
       if (e.type === 'error' && e.payload.linkedRequestId) {
         this.linkedRequestIds.add(e.payload.linkedRequestId);
       }
+    }
+    for (const e of opts.fullEvents ?? []) {
+      const descriptor =
+        e.type === 'click' ||
+        e.type === 'input' ||
+        e.type === 'hover' ||
+        e.type === 'key'
+          ? e.payload.descriptor
+          : undefined;
+      if (descriptor) this.fullDescriptors.set(e.id, descriptor);
     }
     this.harReplayable =
       opts.harPath !== undefined &&
@@ -555,7 +571,7 @@ class ReproWriter {
         this.key(e);
         break;
       case 'hover': {
-        const loc = locate(e.payload.descriptor);
+        const loc = locate(this.element(e) ?? e.payload.descriptor);
         this.action(`await ${loc.expr}.hover();`, e.t, loc.weak);
         break;
       }
@@ -688,7 +704,7 @@ class ReproWriter {
     }
 
     const notes: string[] = [];
-    if (this.opts.level === 'L3') {
+    if (this.opts.level === 'L3' && this.opts.fullEvents === undefined) {
       notes.push(
         'Exported at L3 (minimal), which keeps only element tag and text, so steps find elements by role and text. Export at L0 or L1 for sturdier locators.',
       );
@@ -719,6 +735,15 @@ class ReproWriter {
   // --------------------------------------------------------------------------
   // Events
   // --------------------------------------------------------------------------
+
+  /** The event's element, with any details its export level stripped. */
+  private element(e: SessionEvent): ElementDescriptor | undefined {
+    const recorded =
+      e.type === 'click' || e.type === 'input' || e.type === 'hover' || e.type === 'key'
+        ? e.payload.descriptor
+        : undefined;
+    return this.fullDescriptors.get(e.id) ?? recorded;
+  }
 
   private inPrimary(e: SessionEvent): boolean {
     return (
@@ -803,7 +828,7 @@ class ReproWriter {
   }
 
   private click(e: EventOf<'click'>): void {
-    const d = e.payload.descriptor;
+    const d = this.element(e) ?? e.payload.descriptor;
     this.causes += 1;
     this.lastActivated = { key: elementKey(d), t: e.t };
     // The browser's own click on a label's control; replaying it would undo the change.
@@ -824,12 +849,13 @@ class ReproWriter {
 
   private input(e: EventOf<'input'>): void {
     const p = e.payload;
+    const d = this.element(e) ?? p.descriptor;
     const type = (p.inputType ?? '').toLowerCase();
-    const loc = locate(p.descriptor, type);
+    const loc = locate(d, type);
     if (type === 'checkbox' || type === 'radio') {
       // A replayed click on this control, or on its label, already changed it.
       const clicked =
-        this.lastActivated?.key === elementKey(p.descriptor) &&
+        this.lastActivated?.key === elementKey(d) &&
         e.t - this.lastActivated.t <= CLICK_CHANGE_WINDOW_MS;
       if (clicked) return;
       this.action(
@@ -854,7 +880,7 @@ class ReproWriter {
     this.filled.set(loc.expr, { value: p.value, causes: this.causes });
     const value =
       p.redacted || p.value === REDACTION_MARKER
-        ? `process.env.${this.envFor(p.descriptor, loc.expr)} ?? ''`
+        ? `process.env.${this.envFor(d, loc.expr)} ?? ''`
         : lit(p.value);
     const method = type.startsWith('select') ? 'selectOption' : 'fill';
     // Pauses while typing split one edit into several input events; keep the last value.
@@ -870,7 +896,7 @@ class ReproWriter {
     const key = playwrightKey(e.payload.key);
     if (key === undefined) return;
     this.causes += 1;
-    const d = e.payload.descriptor;
+    const d = this.element(e);
     const target = d && d.tag !== 'body' && d.tag !== 'html' ? locate(d) : undefined;
     const line = target
       ? `await ${target.expr}.press(${lit(key)});`
