@@ -383,6 +383,21 @@ describe('buildPlaywrightRepro', () => {
     ]);
   });
 
+  it('waits for a query-only navigation to leave the old query', () => {
+    const code = repro([
+      nav(1000, 'https://app.example.com/contacts?page=1', 'typed'),
+      click(2000, button('Next')),
+      ev('spa-route', 2100, {
+        url: 'https://app.example.com/contacts?page=2&t=1764064800',
+        method: 'pushState',
+      }),
+    ]);
+    expect(steps(code).slice(2)).toEqual([
+      "await page.getByRole('button', { name: 'Next', exact: true }).click();",
+      "await page.waitForURL((url) => url.pathname === '/contacts' && url.search !== '?page=1');",
+    ]);
+  });
+
   it('replays the browser back and forward buttons', () => {
     const code = repro([
       click(1000, { tag: 'a', text: 'Orders' }),

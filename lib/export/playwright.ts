@@ -890,11 +890,26 @@ class ReproWriter {
   private waitForUrl(url: string, t: number): void {
     const u = parseUrl(url);
     if (!u) return;
+    this.navigation(`await page.waitForURL(${this.urlMatcher(u)});`, t);
+  }
+
+  /** A `waitForURL` predicate for a recorded URL, relative to where the replay is now. */
+  private urlMatcher(u: URL): string {
+    const from = this.currentUrl !== undefined ? parseUrl(this.currentUrl) : undefined;
     const conditions: string[] = [];
     if (u.origin !== this.origin) conditions.push(`url.host === ${lit(u.host)}`);
     conditions.push(`url.pathname === ${lit(u.pathname)}`);
-    if (u.hash) conditions.push(`url.hash === ${lit(u.hash)}`);
-    this.navigation(`await page.waitForURL((url) => ${conditions.join(' && ')});`, t);
+    if (u.hash || from?.hash) conditions.push(`url.hash === ${lit(u.hash)}`);
+    const queryOnly =
+      from !== undefined &&
+      from.origin === u.origin &&
+      from.pathname === u.pathname &&
+      from.hash === u.hash &&
+      from.search !== u.search;
+    // The old URL would match too, so wait for the query to move on. Its new value is
+    // not compared because recorded queries can hold redacted or per-run values.
+    if (queryOnly) conditions.push(`url.search !== ${lit(from.search)}`);
+    return `(url) => ${conditions.join(' && ')}`;
   }
 
   private pushHistory(url: string): void {
