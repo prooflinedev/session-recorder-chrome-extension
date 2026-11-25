@@ -1112,17 +1112,20 @@ describe('repro.spec.ts in the export bundle', () => {
     expect(spec).not.toContain('routeFromHAR');
   });
 
-  it('is counted in the size estimate for the report', async () => {
+  it('is counted in the size estimate for the report at every level', async () => {
     const { session, events, assets } = new SessionBuilder()
       .click('Save')
       .error('TypeError: draft is undefined')
       .build();
-    const files = await buildBundle({ session, events, assets, level: 'L0' });
-    const report = file(files, 'report.md') ?? '';
-    expect(report).toContain('`repro.spec.ts`');
     // With no assets the estimate renders exactly the report the bundle writes.
-    const [l0] = estimateForLevels(events, [], session);
-    expect(l0?.approxBytes).toBe(new TextEncoder().encode(report).length);
+    const estimates = estimateForLevels(events, [], session);
+    expect(estimates.map((e) => e.level)).toEqual(['L0', 'L1', 'L2', 'L3']);
+    for (const { level, approxBytes } of estimates) {
+      const files = await buildBundle({ session, events, assets, level });
+      const report = file(files, 'report.md') ?? '';
+      expect(report).toContain('`repro.spec.ts`');
+      expect(approxBytes, level).toBe(new TextEncoder().encode(report).length);
+    }
   });
 
   it('replays only the network.har entries recorded whole', async () => {
