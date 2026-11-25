@@ -124,9 +124,17 @@ function steps(code: string): string[] {
     .map((line) => line.replace(/ \/\/ \[.*$/, ''));
 }
 
-/** Assertions the test runs, leaving out the commented-out ones. */
+const FINAL_CHECK_MARKER = '// Run every check again at the end';
+
+/** The test up to the end-of-test re-check, where each step's own checks live. */
+function beforeFinalCheck(code: string): string {
+  const at = code.indexOf(FINAL_CHECK_MARKER);
+  return at === -1 ? code : code.slice(0, at);
+}
+
+/** Assertions the test runs at its checkpoints, leaving out the commented-out ones. */
 function activeChecks(code: string): string[] {
-  return code
+  return beforeFinalCheck(code)
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line.startsWith('expect('));
@@ -744,7 +752,7 @@ describe('buildPlaywrightRepro', () => {
       ev('error', 3200, boom),
     ]);
     // One check after each step, so the Checkout one still fails if only Add gets fixed.
-    const flow = code
+    const flow = beforeFinalCheck(code)
       .split('\n')
       .map((line) => line.replace(/ \/\/ \[.*$/, '').trim())
       .filter((line) => line.startsWith('await page.') || line.startsWith('expect('));
@@ -756,6 +764,30 @@ describe('buildPlaywrightRepro', () => {
       'await page.waitForTimeout(700);',
       cartCheck,
     ]);
+  });
+
+  it('runs every check again at the end, for errors that now come later', () => {
+    const code = repro([
+      click(1000, button('Pay')),
+      ev('error', 1200, {
+        message: 'TypeError: order is undefined',
+        origin: 'exception',
+      }),
+      request(1300, 'POST', 'https://app.example.com/v1/orders', { status: 500 }),
+      click(4000, button('Done')),
+    ]);
+    const tail = code
+      .slice(code.indexOf(FINAL_CHECK_MARKER))
+      .split('\n')
+      .map((l) => l.trim());
+    expect(tail.slice(1, 5)).toEqual([
+      'await page.waitForTimeout(1000);',
+      "expect(pageErrors).not.toContainEqual(expect.stringContaining('order is undefined'));",
+      "expect(failedRequests).not.toContain('POST /v1/orders 500');",
+      '});',
+    ]);
+    // No re-check block when nothing is checked.
+    expect(repro([click(1000, button('Save'))])).not.toContain(FINAL_CHECK_MARKER);
   });
 
   it('does not let a commented check stand in for a required one', () => {

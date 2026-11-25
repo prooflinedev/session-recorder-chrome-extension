@@ -108,6 +108,8 @@ const MODIFIER_KEYS: Record<string, string> = {
 const WAIT_SLACK_MS = 500;
 const MAX_CHECK_WAIT_MS = 5000;
 const MAX_HISTORY_WAIT_MS = 3000;
+/** How long the end-of-test re-check gives late errors to surface. */
+const FINAL_CHECK_WAIT_MS = 1000;
 
 /** An input event this soon after a click on the same control is the change it caused. */
 const CLICK_CHANGE_WINDOW_MS = 2000;
@@ -666,6 +668,14 @@ class ReproWriter {
     }
     if (body.length > 0) body.push('');
     body.push(...this.steps);
+    if (this.activeChecks.size > 0) {
+      body.push(
+        '',
+        '// Run every check again at the end, in case an error now comes later.',
+        `await page.waitForTimeout(${FINAL_CHECK_WAIT_MS});`,
+        ...this.activeChecks,
+      );
+    }
     if (this.checks === 0) {
       body.push(
         '',
@@ -696,7 +706,7 @@ class ReproWriter {
       '//',
       ...commentBlock(
         this.checks > 0
-          ? 'It replays the recording in one tab and fails if an uncaught error or a failing API call from the recording happens again: red while the bug is present, green once it is fixed. Each check waits about as long as the recording took to hit it, so an error that now comes later is not caught; add an assertion for the outcome you expect to confirm a fix fully.'
+          ? 'It replays the recording in one tab and fails if an uncaught error or a failing API call from the recording happens again: red while the bug is present, green once it is fixed. Each check waits about as long as the recording took to hit it, and all of them run again at the end, so an error that now comes later still fails the test. Add an assertion for the outcome you expect to confirm a fix fully.'
           : 'It replays the recording in one tab. No uncaught error or failing API call was recorded, so add an assertion for what you expected at the end of the test.',
       ),
       '//',
