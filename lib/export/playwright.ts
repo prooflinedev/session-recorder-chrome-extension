@@ -385,6 +385,18 @@ function errorCore(message: string): string {
 }
 
 /** Requests whose failure can be the bug, as opposed to a missing favicon or font. */
+/**
+ * Whether the HAR can stand in for this request: no body was cut, and a
+ * successful API response kept its body, or replay would serve it empty.
+ */
+function harCanReplay(p: NetRequestPayload): boolean {
+  if (p.responseBody?.truncated === true || p.requestBody?.truncated === true)
+    return false;
+  const status = p.status ?? 0;
+  const expectsBody = isApiCall(p) && status >= 200 && status < 300 && status !== 204;
+  return !expectsBody || p.responseBody?.present === true;
+}
+
 function isApiCall(p: NetRequestPayload): boolean {
   const type = (p.resourceType ?? '').toLowerCase();
   return (
@@ -515,12 +527,7 @@ class ReproWriter {
     this.harReplayable =
       opts.harPath !== undefined &&
       opts.level === 'L0' &&
-      !events.some(
-        (e) =>
-          e.type === 'net-request' &&
-          (e.payload.responseBody?.truncated === true ||
-            e.payload.requestBody?.truncated === true),
-      );
+      !events.some((e) => e.type === 'net-request' && !harCanReplay(e.payload));
 
     const firstNav = events.find(
       (e): e is EventOf<'nav'> =>
@@ -647,8 +654,9 @@ class ReproWriter {
     }
     if (replayHar && this.opts.harPath !== undefined) {
       body.push(
-        `// ${this.opts.harPath} holds the responses from the recording. REPRO_REPLAY_NETWORK=1`,
-        '// answers requests from it instead of the server, for bugs that need the same data.',
+        `// ${oneLine(this.opts.harPath)} holds the responses from the recording. REPRO_REPLAY_NETWORK=1`,
+        '// answers requests from it instead of the server, for bugs that need the same data;',
+        '// requests it does not have still go to the server.',
         '// Leave it unset when checking a backend fix: replayed responses keep the old failures.',
         "if (process.env.REPRO_REPLAY_NETWORK === '1') {",
         `  const har = path.join(path.dirname(test.info().file), ${lit(this.opts.harPath)});`,
@@ -727,8 +735,11 @@ class ReproWriter {
       );
     }
     if (this.opts.harPath !== undefined && !this.harReplayable) {
+      const har = oneLine(this.opts.harPath);
       notes.push(
-        `${this.opts.harPath} is not replayed: its response bodies are trimmed at ${this.opts.level} (${LEVEL_NAMES[this.opts.level]}) or were cut at capture. Export at L0 (full) to replay the recorded responses.`,
+        this.opts.level === 'L0'
+          ? `${har} is not replayed: some responses were cut at capture or never captured, and replay would serve them empty.`
+          : `${har} is not replayed: ${this.opts.level} (${LEVEL_NAMES[this.opts.level]}) trims response bodies. Export at L0 (full) to replay the recorded responses.`,
       );
     }
     for (const note of notes) h.push('//', ...commentBlock(note));

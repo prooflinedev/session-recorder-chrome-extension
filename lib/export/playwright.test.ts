@@ -797,6 +797,20 @@ describe('buildPlaywrightRepro', () => {
     );
     expect(cut).not.toContain('routeFromHAR');
 
+    // A successful API response recorded without its body would replay empty.
+    const missing = repro(
+      [
+        ...events,
+        request(1300, 'GET', 'https://api.example.com/v1/profile', { status: 200 }),
+      ],
+      { level: 'L0', harPath: 'network.har' },
+    );
+    expect(missing).not.toContain('routeFromHAR');
+    expect(header(missing)).toContain(
+      'some responses were cut at capture or never captured',
+    );
+    expect(full).toContain('// requests it does not have still go to the server.');
+
     expect(repro(events)).not.toContain('network.har');
   });
 
