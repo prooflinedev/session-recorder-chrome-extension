@@ -134,6 +134,7 @@ These events segment the story. The renderer turns them into `##` section breaks
 | `url`           | `string`            | Destination URL. |
 | `title`         | `string` (optional) | Page title, when available. |
 | `transitionType`| `string` (optional) | Chrome transition type, for example `link`, `typed`, or `reload`. |
+| `transitionQualifiers`| `string[]` (optional) | Chrome transition qualifiers, for example `forward_back` for Back and Forward. Absent in recordings made before it was captured. |
 
 ### `spa-route`
 `SpaRoutePayload` records a client-side route change through the History API or a
@@ -144,7 +145,8 @@ fragment. It is captured through `onHistoryStateUpdated` and
 | ------- | ------------------------------------------- | ------- |
 | `url`   | `string`                                    | New route URL. |
 | `title` | `string` (optional)                         | Title, when available. |
-| `method`| `'pushState' \| 'replaceState' \| 'popstate'`| How the route changed. |
+| `method`| `'pushState' \| 'replaceState' \| 'popstate'`| How the route changed. `popstate` is Back or Forward, which Chrome marks with `forward_back`. |
+| `transitionQualifiers`| `string[]` (optional) | Chrome transition qualifiers. When present, `method` tells history moves apart from new entries; older recordings record Back and Forward as `pushState`. |
 
 ### `tab-switch`
 `TabSwitchPayload` records that the active tab changed within the session.

@@ -575,6 +575,47 @@ describe('buildPlaywrightRepro', () => {
     );
   });
 
+  it("trusts Chrome's Back and Forward marks when the recording has them", () => {
+    const linkNav = (t: number, url: string, qualifiers: string[] = []) =>
+      ev('nav', t, { url, transitionType: 'link', transitionQualifiers: qualifiers });
+    const code = repro([
+      click(1000, { tag: 'a', text: 'Orders' }),
+      linkNav(2000, 'https://app.example.com/orders'),
+      click(3000, button('Back to list')),
+      // The button pushed the previous URL as a new entry; it did not go back.
+      ev('spa-route', 3050, {
+        url: 'https://app.example.com/dashboard',
+        method: 'pushState',
+        transitionQualifiers: [],
+      }),
+      // Then the browser's Back button.
+      ev('spa-route', 5000, {
+        url: 'https://app.example.com/orders',
+        method: 'popstate',
+        transitionQualifiers: ['forward_back'],
+      }),
+    ]);
+    expect(steps(code).slice(1)).toEqual([
+      "await page.getByRole('link', { name: 'Orders', exact: true }).click();",
+      "await page.waitForURL((url) => url.pathname === '/orders');",
+      "await page.getByRole('button', { name: 'Back to list', exact: true }).click();",
+      "await page.waitForURL((url) => url.pathname === '/dashboard');",
+      'await page.goBack();',
+    ]);
+    expect(code).not.toContain('goForward');
+
+    // A marked full-page Back after typing still lets the page go back by itself first.
+    const typed = repro([
+      click(1000, { tag: 'a', text: 'Orders' }),
+      linkNav(2000, 'https://app.example.com/orders'),
+      input(3000, { tag: 'input', name: 'q' }, 'boots'),
+      linkNav(6000, 'https://app.example.com/dashboard', ['forward_back']),
+    ]);
+    expect(steps(typed).at(-1)).toBe(
+      "await page.waitForURL((url) => url.pathname === '/dashboard', { timeout: 3000 }).catch(() => page.goBack());",
+    );
+  });
+
   it('does not mistake a history replacement for Back', () => {
     const code = repro([
       nav(1000, 'https://app.example.com/docs#intro', 'typed'),

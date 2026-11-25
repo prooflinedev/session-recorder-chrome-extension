@@ -793,9 +793,16 @@ class ReproWriter {
   }
 
   private nav(e: EventOf<'nav'>): void {
-    const { url } = e.payload;
+    const { url, transitionQualifiers } = e.payload;
     if (!isWebUrl(url)) return;
     const type = e.payload.transitionType ?? 'link';
+    // Chrome marks Back and Forward; older recordings lack the marks and are inferred.
+    const traversal = transitionQualifiers?.includes('forward_back') === true;
+    if (this.opened && traversal) {
+      if (url === this.currentUrl || this.historyMove(url, e.t, true)) return;
+      this.goto(url, e.t, true);
+      return;
+    }
     if (!this.opened || BROWSER_NAVIGATIONS.has(type)) {
       if (url !== this.currentUrl) this.goto(url, e.t, true);
       return;
@@ -806,7 +813,7 @@ class ReproWriter {
       return;
     }
     if (url === this.currentUrl) return;
-    if (this.historyMove(url, e.t)) return;
+    if (transitionQualifiers === undefined && this.historyMove(url, e.t)) return;
     this.waitForUrl(url, e.t);
     this.pushHistory(url);
   }
@@ -814,8 +821,16 @@ class ReproWriter {
   private spaRoute(e: EventOf<'spa-route'>): void {
     const { url, method } = e.payload;
     if (!this.opened || !isWebUrl(url) || url === this.currentUrl) return;
-    // A replacement swaps the current entry; it never moves through history.
-    if (method !== 'replaceState' && this.historyMove(url, e.t)) return;
+    if (method === 'popstate') {
+      if (this.historyMove(url, e.t, true)) return;
+    } else if (
+      e.payload.transitionQualifiers === undefined &&
+      method !== 'replaceState'
+    ) {
+      // Older recordings label Back and Forward as pushState, so infer them. A
+      // replacement swaps the current entry and never moves through history.
+      if (this.historyMove(url, e.t)) return;
+    }
     this.waitForUrl(url, e.t);
     if (method === 'replaceState' && this.historyIndex >= 0) {
       this.history[this.historyIndex] = url;
@@ -829,15 +844,18 @@ class ReproWriter {
    * A move to the neighbouring history entry. With no page interaction since the
    * last navigation it came from the browser buttons. After one, the page may have
    * done it itself (a Back link, `history.back()`), so the test waits as long as
-   * the recording took and only then presses the browser button.
+   * the recording took and only then presses the browser button. `marked` is true
+   * when Chrome flagged the navigation as Back or Forward.
    */
-  private historyMove(url: string, t: number): boolean {
+  private historyMove(url: string, t: number, marked = false): boolean {
     const back = this.history[this.historyIndex - 1] === url;
     const forward = !back && this.history[this.historyIndex + 1] === url;
     const u = parseUrl(url);
-    // Right after a link click, the link is what navigated.
+    // Right after a link click, the link is what navigated, unless Chrome says otherwise.
     const viaLink =
-      this.lastLinkClickT !== undefined && this.lastLinkClickT === this.lastStepT;
+      !marked &&
+      this.lastLinkClickT !== undefined &&
+      this.lastLinkClickT === this.lastStepT;
     if ((!back && !forward) || !u || viaLink) return false;
     const button = back ? 'goBack' : 'goForward';
     if (!this.actedSinceNav) {
