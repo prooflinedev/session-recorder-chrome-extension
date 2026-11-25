@@ -284,6 +284,13 @@ const CDP = {
   hdrJson: {"type":"object","className":"Object","description":"Object","preview":{"type":"object","description":"Object","overflow":false,"properties":[{"name":"body","type":"string","value":"{\"cookie\":\"hid\",\"X-Tenant-Id\":\"acme\",\"cookies\":2}"}]}},
   hdrForm: {"type":"object","className":"Object","description":"Object","preview":{"type":"object","description":"Object","overflow":false,"properties":[{"name":"body","type":"string","value":"cookie=hid&X-Tenant-Id=acme&cookies=2"}]}},
   hdrExact: {"type":"object","className":"Object","description":"Object","preview":{"type":"object","description":"Object","overflow":false,"properties":[{"name":"x-id","type":"number","value":"1"},{"name":"x.id","type":"number","value":"2"},{"name":"cookies","type":"number","value":"3"},{"name":"nocookie","type":"number","value":"4"}]}},
+  status409: {"type":"object","className":"Object","description":"Object","preview":{"type":"object","description":"Object","overflow":false,"properties":[{"name":"status","type":"number","value":"409"}]}},
+  status500: {"type":"object","className":"Object","description":"Object","preview":{"type":"object","description":"Object","overflow":false,"properties":[{"name":"status","type":"number","value":"500"}]}},
+  cutInKey: {"type":"object","className":"Object","description":"Object","preview":{"type":"object","description":"Object","overflow":false,"properties":[{"name":"body","type":"string","value":"token=SECRET&page=1&kkkkkkkkkkkkkkkkkkkkkkkkkkkkkk…kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk=1"}]}},
+  setCutInKey: {"type":"object","subtype":"set","className":"Set","description":"Set(1)","preview":{"type":"object","subtype":"set","description":"Set(1)","overflow":false,"properties":[{"name":"size","type":"number","value":"1"}],"entries":[{"value":{"type":"string","description":"token=SECRET&kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk=1","overflow":false,"properties":[]}}]}},
+  errCutInKey: {"type":"object","className":"Object","description":"Object","preview":{"type":"object","description":"Object","overflow":false,"properties":[{"name":"e","type":"object","value":"Error: token=SECRET&kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk…","subtype":"error"}]}},
+  relUrlCutInKey: {"type":"object","className":"Object","description":"Object","preview":{"type":"object","description":"Object","overflow":false,"properties":[{"name":"u","type":"string","value":"/api/items?token=SECRET&kkkkkkkkkkkkkkkkkkkkkkkkkk…kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk=1"}]}},
+  proseCut: {"type":"object","className":"Object","description":"Object","preview":{"type":"object","description":"Object","overflow":false,"properties":[{"name":"msg","type":"string","value":"login failed token=SECRET retry xxxxxxxxxxxxxxxxxx…xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}]}},
 };
 type Fixture = keyof typeof CDP;
 
@@ -446,6 +453,19 @@ describe('ConsoleCapturer object previews', () => {
     });
   });
 
+  it('keeps calls apart that differ only in a later object', () => {
+    for (const status of [CDP.status409, CDP.status500, CDP.status500]) {
+      cap.handle(1, 'Runtime.consoleAPICalled', {
+        type: 'error', args: [{ type: 'string', value: 'save failed' }, status],
+      });
+    }
+    vi.advanceTimersByTime(1000);
+    expect(emitted.map((e) => e.payload)).toEqual([
+      { level: 'error', text: 'save failed {status: 409}', args: ['save failed', '{status: 409}'] },
+      { level: 'error', text: 'save failed {status: 500}', args: ['save failed', '{status: 500}'], repeat: 2 },
+    ]);
+  });
+
   it('keeps different objects apart and still merges equal ones', () => {
     log(CDP.plain);
     log(CDP.six);
@@ -539,6 +559,16 @@ describe('ConsoleCapturer object previews', () => {
     ['jsonMidParse', '{body: "«redacted»"}'],
     ['longErrTok', `{e: Error: fail https://a.test/?q=${'p'.repeat(60)}&token=«redacted»…}`],
   ])('keeps only the text before the ellipsis in %s', (name, expected) => {
+    expect(logged(CDP[name])).toBe(expected);
+  });
+
+  it.each<[Fixture, string]>([
+    ['cutInKey', `{body: "token=«redacted»&page=1&${'k'.repeat(30)}…"}`],
+    ['setCutInKey', `Set(1) {"token=«redacted»&${'k'.repeat(87)}…"}`],
+    ['errCutInKey', `{e: Error: token=«redacted»&${'k'.repeat(79)}…}`],
+    ['relUrlCutInKey', `{u: "/api/items?token=«redacted»&${'k'.repeat(26)}…"}`],
+    ['proseCut', '{msg: "login failed token=«redacted»…"}'],
+  ])('masks form data cut inside a later key in %s', (name, expected) => {
     expect(logged(CDP[name])).toBe(expected);
   });
 

@@ -490,8 +490,10 @@ function cleanPreviewString(text: string, rules: RedactionRules): string {
   const kept = cut === -1 ? capped : capped.slice(0, cut);
   // JSON cut short no longer parses, so its keys cannot be checked.
   if (cut !== -1 && /"\s*:/.test(kept)) return REDACTED;
+  // Form data cut inside a key no longer looks like form data, so say that it is.
+  const mime = cut === -1 ? undefined : 'application/x-www-form-urlencoded';
   // Bodies before URLs: masking a URL first can break the JSON around it.
-  const masked = redactUrlsInText(redactBody(kept, undefined, rules).text, rules);
+  const masked = redactUrlsInText(redactBody(kept, mime, rules).text, rules);
   return cut === -1 ? masked : `${masked}…`;
 }
 

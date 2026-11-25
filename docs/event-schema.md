@@ -234,12 +234,13 @@ Objects are written with the values Chrome sends in the event's preview, such as
 `Proxy(Array)` and objects in `error` messages. Each string or key inside an object
 keeps 100 characters, and the whole object keeps 500. `…` is added after the cut and
 marks anything left out. Errors, dates, DOM nodes, DOM events, functions and other
-types keep Chrome's short description.
+types keep Chrome's short description, except that a function inside an object is
+written as `ƒ` and a getter as `(...)`.
 
 With redaction on, values are masked by key (the body key patterns and header
 names), also in JSON and form data inside strings, and URLs are cleaned. A string
 containing `…` is treated as cut short: it keeps only the text before the `…`, or is
-masked when that text is JSON.
+masked when that text holds a complete JSON key.
 
 Limits:
 
@@ -247,6 +248,7 @@ Limits:
 - Only the values Chrome sends are recorded: usually the first 5 fields or 100 array items. `console.table` rows have more.
 - Messages logged before recording starts have no preview, so their objects keep the short description.
 - Secrets with no label, such as `['token', 'abc']`, are not recognized.
+- In a complete string, secrets outside URLs, JSON and form data, such as `login failed token=abc`, are not recognized. Form data with a key that has no `=`, such as `token=abc&flag`, is not recognized either.
 
 ### `error`
 `ErrorPayload` records an error surfaced from any source. It is protected, and the
