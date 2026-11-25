@@ -101,10 +101,7 @@ test('exports a Playwright test that replays the recording', async ({
   expect(new TextDecoder().decode(files[reportKey!])).toContain('`repro.spec.ts`');
 
   // Run the exported test on its own, against the page it was recorded on.
-  const results = path.join(dir, '..', 'test-results');
-  mkdirSync(results, { recursive: true });
-  const work = mkdtempSync(path.join(results, 'repro-export-'));
-  // These only pass if the exported steps really ran against the page.
+  // The appended checks only pass if the exported steps really ran against the page.
   const checked = spec.replace(
     /\n\}\);\s*$/,
     [
@@ -117,6 +114,9 @@ test('exports a Playwright test that replays the recording', async ({
     ].join('\n'),
   );
   expect(checked, 'effect checks appended to the exported test').not.toBe(spec);
+  const results = path.join(dir, '..', 'test-results');
+  mkdirSync(results, { recursive: true });
+  const work = mkdtempSync(path.join(results, 'repro-export-'));
   try {
     writeFileSync(path.join(work, 'repro.spec.ts'), checked);
     const config = path.join(work, 'playwright.config.mjs');
