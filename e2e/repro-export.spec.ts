@@ -130,13 +130,17 @@ test('exports a Playwright test that replays the recording', async ({
     });
     expect(result.stdout).toMatch(/1 passed/);
   } finally {
+    // Neither step may hide the replay's own result, so both only warn.
     await test
       .info()
-      .attach('repro.spec.ts', { body: spec, contentType: 'text/plain' });
+      .attach('repro.spec.ts', { body: spec, contentType: 'text/plain' })
+      .catch((err: unknown) =>
+        console.warn(`Could not attach the exported test: ${String(err)}`),
+      );
     try {
       rmSync(work, { recursive: true, force: true, maxRetries: 3 });
-    } catch {
-      // A lingering Windows file lock; the next run clears test-results anyway.
+    } catch (err) {
+      console.warn(`Could not remove ${work}: ${String(err)}`);
     }
   }
 });
