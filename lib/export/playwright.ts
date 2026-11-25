@@ -8,10 +8,11 @@
  * the test fails where the recording did; once it is fixed the test passes, so
  * a developer or a coding agent can use it to confirm the fix.
  *
- * It is built from the trimmed events, so it follows the export level the same
- * way the HAR does: at L3 interactions keep only tag and text, and steps fall
- * back to role and text locators. Values redacted at capture never reach the
- * file; the test reads them from environment variables instead.
+ * Its steps come from the trimmed events, so they follow the export level the
+ * same way the HAR does. Locators take element details from the full events
+ * when the bundle passes them, since higher levels strip those only to save
+ * report tokens. Values redacted at capture never reach the file; the test
+ * reads them from environment variables instead.
  *
  * This module is pure: no chrome/DOM/network access, no input mutation, no
  * global mutable state.
