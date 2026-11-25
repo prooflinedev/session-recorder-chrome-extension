@@ -184,6 +184,18 @@ function typeErrors(code: string): string[] {
     .map((d) => ts.flattenDiagnosticMessageText(d.messageText, '\n'));
 }
 
+/** The `whole` HAR entry filter exactly as the generated spec defines it. */
+function harFilter(code: string): (entry: unknown) => boolean {
+  const start = code.indexOf('const whole = ');
+  const end = code.indexOf('< 400));', start) + '< 400));'.length;
+  const js = ts.transpileModule(`${code.slice(start, end)}\nmodule.exports = whole;`, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS },
+  }).outputText;
+  const mod = { exports: (_: unknown) => false };
+  new Function('module', js)(mod);
+  return mod.exports;
+}
+
 describe('buildPlaywrightRepro', () => {
   it('returns null when nothing would be replayed', () => {
     const onlyRequests = new SessionBuilder()
@@ -985,26 +997,24 @@ describe('buildPlaywrightRepro', () => {
     expect(partly).toContain('routeFromHAR');
 
     // The generated filter keeps exactly the entries recorded whole.
-    const start = full.indexOf('const whole = ');
-    const end = full.indexOf('< 400));', start) + '< 400));'.length;
-    const js = ts.transpileModule(
-      `${full.slice(start, end)}\nmodule.exports = whole;`,
-      {
-        compilerOptions: { module: ts.ModuleKind.CommonJS },
-      },
-    ).outputText;
-    const mod = { exports: (_: unknown) => false };
-    new Function('module', js)(mod);
-    const entry = (status: number, content: object, postData?: object) => ({
-      request: postData ? { postData } : {},
+    const whole = harFilter(full);
+    const entry = (
+      status: number,
+      content: object,
+      postData?: object,
+      method = 'GET',
+    ) => ({
+      request: postData ? { method, postData } : { method },
       response: { status, content },
     });
-    expect(mod.exports(entry(200, { text: '[]' }))).toBe(true);
-    expect(mod.exports(entry(204, {}))).toBe(true);
-    expect(mod.exports(entry(302, {}))).toBe(true);
-    expect(mod.exports(entry(200, { text: '[', comment: 'partial' }))).toBe(false);
-    expect(mod.exports(entry(200, {}))).toBe(false);
-    expect(mod.exports(entry(200, { text: '{}' }, { comment: 'partial' }))).toBe(false);
+    expect(whole(entry(200, { text: '[]' }))).toBe(true);
+    expect(whole(entry(204, {}))).toBe(true);
+    expect(whole(entry(302, {}))).toBe(true);
+    expect(whole(entry(200, { text: '[', comment: 'partial' }))).toBe(false);
+    expect(whole(entry(200, {}))).toBe(false);
+    expect(whole(entry(200, { text: '{}' }, { comment: 'partial' }))).toBe(false);
+    expect(whole(entry(200, { text: '{}' }, { text: '{"q":1}' }, 'POST'))).toBe(true);
+    expect(whole(entry(200, { text: '{}' }, undefined, 'POST'))).toBe(false);
 
     expect(repro(events)).not.toContain('network.har');
   });
@@ -1113,6 +1123,37 @@ describe('repro.spec.ts in the export bundle', () => {
     // With no assets the estimate renders exactly the report the bundle writes.
     const [l0] = estimateForLevels(events, [], session);
     expect(l0?.approxBytes).toBe(new TextEncoder().encode(report).length);
+  });
+
+  it('replays only the network.har entries recorded whole', async () => {
+    const { session, events, assets } = new SessionBuilder()
+      .click('Load')
+      .net('GET', 'https://app.example.com/api/items', { resBody: '[1,2]' })
+      .net('GET', 'https://app.example.com/api/report', { resBody: '{"rows":' })
+      .net('POST', 'https://app.example.com/api/search', {
+        reqBody: '{"q":"a"}',
+        resBody: '[1]',
+      })
+      .net('POST', 'https://app.example.com/api/save', { resBody: '{"ok":true}' })
+      .build();
+    const cut = events.find(
+      (e) => e.type === 'net-request' && e.payload.url.endsWith('/api/report'),
+    );
+    if (cut?.type !== 'net-request' || !cut.payload.responseBody)
+      throw new Error('no body');
+    cut.payload.responseBody.truncated = true;
+
+    const files = await buildBundle({ session, events, assets, level: 'L0' });
+    const har = JSON.parse(file(files, 'network.har') ?? '') as {
+      log: { entries: { request: { url: string } }[] };
+    };
+    expect(har.log.entries).toHaveLength(4);
+    const whole = harFilter(file(files, 'repro.spec.ts') ?? '');
+    // The cut response and the POST whose payload was not recorded go to the server.
+    expect(har.log.entries.filter(whole).map((e) => e.request.url)).toEqual([
+      'https://app.example.com/api/items',
+      'https://app.example.com/api/search',
+    ]);
   });
 
   it('is left out when the session has nothing to replay', async () => {
