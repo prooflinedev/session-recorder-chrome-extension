@@ -683,8 +683,19 @@ describe('buildPlaywrightRepro', () => {
       click(3000, button('Checkout')),
       ev('error', 3200, boom),
     ]);
-    // One check per step, so the Checkout one still fails if only Add gets fixed.
-    expect(activeChecks(code)).toEqual([cartCheck, cartCheck]);
+    // One check after each step, so the Checkout one still fails if only Add gets fixed.
+    const flow = code
+      .split('\n')
+      .map((line) => line.replace(/ \/\/ \[.*$/, '').trim())
+      .filter((line) => line.startsWith('await page.') || line.startsWith('expect('));
+    expect(flow.slice(1)).toEqual([
+      "await page.getByRole('button', { name: 'Add', exact: true }).click();",
+      'await page.waitForTimeout(700);',
+      cartCheck,
+      "await page.getByRole('button', { name: 'Checkout', exact: true }).click();",
+      'await page.waitForTimeout(700);',
+      cartCheck,
+    ]);
   });
 
   it('does not let a commented check stand in for a required one', () => {
@@ -790,6 +801,13 @@ describe('buildPlaywrightRepro', () => {
     for (const line of code.split('\n')) {
       expect(line).not.toMatch(/[\u2028\u2029\r]/);
     }
+    // The replay must type exactly what was recorded, not just valid code.
+    const fill = steps(code).find((line) => line.includes('.fill('))!;
+    const literal = fill.slice(
+      fill.lastIndexOf('.fill(') + '.fill('.length,
+      fill.lastIndexOf(');'),
+    );
+    expect(new Function(`return ${literal};`)()).toBe(hostile);
   });
 
   it('type-checks against the Playwright test API', () => {
