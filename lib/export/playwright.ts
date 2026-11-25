@@ -456,6 +456,12 @@ class ReproWriter {
   private readonly optionalChecks = new Set<string>();
   private readonly envByTarget = new Map<string, string>();
   private readonly envFields: { name: string; field: string }[] = [];
+  /**
+   * The value last filled into each field, with how many clicks, keys and
+   * navigations had happened by then.
+   */
+  private readonly filled = new Map<string, { value: string; causes: number }>();
+  private causes = 0;
 
   private usesAppUrl = false;
   private opened = false;
@@ -798,6 +804,7 @@ class ReproWriter {
 
   private click(e: EventOf<'click'>): void {
     const d = e.payload.descriptor;
+    this.causes += 1;
     this.lastActivated = { key: elementKey(d), t: e.t };
     // The browser's own click on a label's control; replaying it would undo the change.
     const forwarded =
@@ -840,6 +847,11 @@ class ReproWriter {
       this.fileUploads += 1;
       return;
     }
+    // The recorder can log one edit twice: as typed, and again on change when the field
+    // loses focus. A repeat with no click, key or navigation since cannot be needed.
+    const previous = this.filled.get(loc.expr);
+    if (previous?.value === p.value && previous.causes === this.causes) return;
+    this.filled.set(loc.expr, { value: p.value, causes: this.causes });
     const value =
       p.redacted || p.value === REDACTION_MARKER
         ? `process.env.${this.envFor(p.descriptor, loc.expr)} ?? ''`
@@ -857,6 +869,7 @@ class ReproWriter {
   private key(e: EventOf<'key'>): void {
     const key = playwrightKey(e.payload.key);
     if (key === undefined) return;
+    this.causes += 1;
     const d = e.payload.descriptor;
     const target = d && d.tag !== 'body' && d.tag !== 'html' ? locate(d) : undefined;
     const line = target
@@ -1014,6 +1027,7 @@ class ReproWriter {
 
   private navigation(line: string, t: number, counts = true): void {
     this.steps.push(`${line} // ${stamp(t)}`);
+    this.causes += 1;
     if (counts) this.actions += 1;
     this.stepped(t);
     this.actedSinceNav = false;

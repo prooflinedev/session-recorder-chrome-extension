@@ -312,6 +312,28 @@ describe('buildPlaywrightRepro', () => {
     );
   });
 
+  it('drops the repeat a field logs when it loses focus', () => {
+    const user = { tag: 'input', id: 'f-user' };
+    const todo = { tag: 'input', id: 'new-todo' };
+    const code = repro([
+      input(1000, user, 'ada'),
+      input(2000, { tag: 'input', id: 'f-email' }, 'ada@example.com'),
+      // The change event when focus left #f-user.
+      input(2000, user, 'ada'),
+      input(3000, todo, 'buy milk'),
+      ev('key', 3000, { key: 'Enter', modifiers: [], descriptor: todo }),
+      // The page cleared the field on Enter and the same text was typed again.
+      input(4000, todo, 'buy milk'),
+    ]);
+    expect(steps(code).slice(1)).toEqual([
+      "await page.locator('#f-user').fill('ada');",
+      "await page.locator('#f-email').fill('ada@example.com');",
+      "await page.locator('#new-todo').fill('buy milk');",
+      "await page.locator('#new-todo').press('Enter');",
+      "await page.locator('#new-todo').fill('buy milk');",
+    ]);
+  });
+
   it('fills each edit once, with its final value', () => {
     const search = { tag: 'input', name: 'q' };
     const code = repro([
