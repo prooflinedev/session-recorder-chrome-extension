@@ -438,16 +438,21 @@ const COLLECTORS: Record<Collector, string[]> = {
   ],
   failedRequests: [
     'const failedRequests: string[] = [];',
+    '// App requests go by path so REPRO_BASE_URL still matches; other sites keep their origin.',
+    'const appOrigin = new URL(baseURL).origin;',
+    'const where = (url: string) => {',
+    '  const { origin, pathname } = new URL(url);',
+    '  return origin === appOrigin ? pathname : origin + pathname;',
+    '};',
     "page.on('response', (response) => {",
     '  if (response.status() >= 400) {',
-    '    const { pathname } = new URL(response.url());',
-    '    failedRequests.push(`${response.request().method()} ${pathname} ${response.status()}`);',
+    '    failedRequests.push(`${response.request().method()} ${where(response.url())} ${response.status()}`);',
     '  }',
     '});',
     "page.on('requestfailed', (request) => {",
     '  // A canceled request (a navigation or an abort) is not a failure.',
     "  if (/ABORTED|cancel/i.test(request.failure()?.errorText ?? '')) return;",
-    '  failedRequests.push(`${request.method()} ${new URL(request.url()).pathname} failed`);',
+    '  failedRequests.push(`${request.method()} ${where(request.url())} failed`);',
     '});',
   ],
   consoleErrors: [
@@ -973,8 +978,11 @@ class ReproWriter {
     if (!linked && !isApiCall(p)) return;
     const u = parseUrl(p.url);
     if (!u) return;
-    const label = `${p.method.toUpperCase()} ${u.pathname} ${failed ? 'failed' : status}`;
+    // Same key as the collector builds: path for the app, origin and path elsewhere.
+    const where = u.origin === this.origin ? u.pathname : u.origin + u.pathname;
+    const label = `${p.method.toUpperCase()} ${where} ${failed ? 'failed' : status}`;
     const assertion = `expect(failedRequests).not.toContain(${lit(label)});`;
+    this.usesAppUrl = true;
     if (linked || failed || status >= 500) {
       this.check(e.t, `${label} in the recording.`, 'failedRequests', assertion);
     } else {

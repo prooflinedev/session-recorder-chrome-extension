@@ -725,12 +725,12 @@ describe('buildPlaywrightRepro', () => {
       }),
     ]);
     expect(activeChecks(code)).toEqual([
-      "expect(failedRequests).not.toContain('POST /v1/orders 500');",
-      "expect(failedRequests).not.toContain('GET /v1/cart 404');",
-      "expect(failedRequests).not.toContain('GET /v1/stock failed');",
+      "expect(failedRequests).not.toContain('POST https://api.example.com/v1/orders 500');",
+      "expect(failedRequests).not.toContain('GET https://api.example.com/v1/cart 404');",
+      "expect(failedRequests).not.toContain('GET https://api.example.com/v1/stock failed');",
     ]);
     expect(commentedChecks(code)).toEqual([
-      "expect(failedRequests).not.toContain('GET /v1/me 401');",
+      "expect(failedRequests).not.toContain('GET https://api.example.com/v1/me 401');",
     ]);
     expect(code).not.toContain('logo.png');
     expect(code).not.toContain('/v1/poll');
@@ -795,7 +795,8 @@ describe('buildPlaywrightRepro', () => {
   });
 
   it('does not let a commented check stand in for a required one', () => {
-    const cartCheck = "expect(failedRequests).not.toContain('GET /v1/cart 404');";
+    const cartCheck =
+      "expect(failedRequests).not.toContain('GET https://api.example.com/v1/cart 404');";
     const code = repro([
       click(1000, button('Load cart')),
       request(1500, 'GET', 'https://api.example.com/v1/cart', { status: 404 }),
@@ -809,6 +810,23 @@ describe('buildPlaywrightRepro', () => {
     ]);
     expect(commentedChecks(code)).toEqual([cartCheck]);
     expect(activeChecks(code)).toEqual([cartCheck]);
+  });
+
+  it('keeps failures on other sites apart from the app', () => {
+    const code = repro([
+      click(1000, button('Pay')),
+      request(1200, 'POST', 'https://app.example.com/api/pay', { status: 500 }),
+      request(1300, 'POST', 'https://payments.example.net/api/pay', { status: 502 }),
+    ]);
+    expect(activeChecks(code)).toEqual([
+      "expect(failedRequests).not.toContain('POST /api/pay 500');",
+      "expect(failedRequests).not.toContain('POST https://payments.example.net/api/pay 502');",
+    ]);
+    // The collector maps the app to REPRO_BASE_URL the same way.
+    expect(code).toContain('const appOrigin = new URL(baseURL).origin;');
+    expect(code).toContain(
+      'return origin === appOrigin ? pathname : origin + pathname;',
+    );
   });
 
   it('leaves console errors as checks to opt into', () => {
