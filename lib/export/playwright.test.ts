@@ -748,6 +748,7 @@ describe('buildPlaywrightRepro', () => {
       "const har = path.join(path.dirname(test.info().file), 'network.har');",
     );
     expect(full).toContain("await page.routeFromHAR(har, { notFound: 'fallback' });");
+    expect(full).toContain('// Leave it unset when checking a backend fix');
 
     const standard = repro(events, { level: 'L1', harPath: 'network.har' });
     expect(standard).not.toContain('routeFromHAR');

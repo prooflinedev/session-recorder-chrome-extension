@@ -648,6 +648,7 @@ class ReproWriter {
       body.push(
         `// ${this.opts.harPath} holds the responses from the recording. REPRO_REPLAY_NETWORK=1`,
         '// answers requests from it instead of the server, for bugs that need the same data.',
+        '// Leave it unset when checking a backend fix: replayed responses keep the old failures.',
         "if (process.env.REPRO_REPLAY_NETWORK === '1') {",
         `  const har = path.join(path.dirname(test.info().file), ${lit(this.opts.harPath)});`,
         "  await page.routeFromHAR(har, { notFound: 'fallback' });",
