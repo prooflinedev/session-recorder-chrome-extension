@@ -502,12 +502,15 @@ export function estimateForLevels(
 
   return ALL_LEVELS.map((level) => {
     const trimmed = applyLevel(events, level, ctx);
+    // The report names repro.spec.ts when the bundle would include it.
+    const repro = buildPlaywrightRepro(session, trimmed, { level, fullEvents: events });
     const report = renderReport({
       session,
       events: trimmed,
       assets,
       level,
       assetPath: stubPath,
+      ...(repro ? { repro: { path: 'repro.spec.ts' } } : {}),
     });
     return {
       level,

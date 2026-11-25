@@ -11,7 +11,7 @@ import type {
   Session,
   SessionEvent,
 } from '@/lib/session/types';
-import { buildBundle, type ExportFile } from './bundle';
+import { buildBundle, estimateForLevels, type ExportFile } from './bundle';
 import { buildPlaywrightRepro, type PlaywrightReproOptions } from './playwright';
 
 let seq = 0;
@@ -847,6 +847,19 @@ describe('repro.spec.ts in the export bundle', () => {
     );
     expect(header(spec)).not.toContain('Exported at L3');
     expect(spec).not.toContain('routeFromHAR');
+  });
+
+  it('is counted in the size estimate for the report', async () => {
+    const { session, events, assets } = new SessionBuilder()
+      .click('Save')
+      .error('TypeError: draft is undefined')
+      .build();
+    const files = await buildBundle({ session, events, assets, level: 'L0' });
+    const report = file(files, 'report.md') ?? '';
+    expect(report).toContain('`repro.spec.ts`');
+    // With no assets the estimate renders exactly the report the bundle writes.
+    const [l0] = estimateForLevels(events, [], session);
+    expect(l0?.approxBytes).toBe(new TextEncoder().encode(report).length);
   });
 
   it('is left out when the session has nothing to replay', async () => {
