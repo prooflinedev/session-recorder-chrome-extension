@@ -867,10 +867,14 @@ describe('buildPlaywrightRepro', () => {
       }),
     ];
     const full = repro(events, { level: 'L0', harPath: 'network.har' });
+    expect(full).toContain("import { readFileSync, writeFileSync } from 'node:fs';");
     expect(full).toContain("import path from 'node:path';");
     expect(full).toContain("if (process.env.REPRO_REPLAY_NETWORK === '1') {");
     expect(full).toContain(
-      "const har = path.join(path.dirname(test.info().file), 'network.har');",
+      "const file = path.join(path.dirname(test.info().file), 'network.har');",
+    );
+    expect(full).toContain(
+      'recorded.log.entries = recorded.log.entries.filter(whole);',
     );
     expect(full).toContain("await page.routeFromHAR(har, { notFound: 'fallback' });");
     expect(full).toContain('// Leave it unset when checking a backend fix');
@@ -879,31 +883,41 @@ describe('buildPlaywrightRepro', () => {
     expect(standard).not.toContain('routeFromHAR');
     expect(header(standard)).toContain('network.har is not replayed');
 
-    const cut = repro(
+    // One cut or missing body no longer turns replay off; that entry goes to the server.
+    const partly = repro(
       [
         ...events,
         request(1200, 'GET', 'https://api.example.com/v1/big', {
           status: 200,
           responseBody: { present: true, text: '[', truncated: true },
         }),
-      ],
-      { level: 'L0', harPath: 'network.har' },
-    );
-    expect(cut).not.toContain('routeFromHAR');
-
-    // A successful API response recorded without its body would replay empty.
-    const missing = repro(
-      [
-        ...events,
         request(1300, 'GET', 'https://api.example.com/v1/profile', { status: 200 }),
       ],
       { level: 'L0', harPath: 'network.har' },
     );
-    expect(missing).not.toContain('routeFromHAR');
-    expect(header(missing)).toContain(
-      'some responses were cut at capture or never captured',
-    );
-    expect(full).toContain('// requests it does not have still go to the server.');
+    expect(partly).toContain('routeFromHAR');
+
+    // The generated filter keeps exactly the entries recorded whole.
+    const start = full.indexOf('const whole = ');
+    const end = full.indexOf('< 400));', start) + '< 400));'.length;
+    const js = ts.transpileModule(
+      `${full.slice(start, end)}\nmodule.exports = whole;`,
+      {
+        compilerOptions: { module: ts.ModuleKind.CommonJS },
+      },
+    ).outputText;
+    const mod = { exports: (_: unknown) => false };
+    new Function('module', js)(mod);
+    const entry = (status: number, content: object, postData?: object) => ({
+      request: postData ? { postData } : {},
+      response: { status, content },
+    });
+    expect(mod.exports(entry(200, { text: '[]' }))).toBe(true);
+    expect(mod.exports(entry(204, {}))).toBe(true);
+    expect(mod.exports(entry(302, {}))).toBe(true);
+    expect(mod.exports(entry(200, { text: '[', comment: 'partial' }))).toBe(false);
+    expect(mod.exports(entry(200, {}))).toBe(false);
+    expect(mod.exports(entry(200, { text: '{}' }, { comment: 'partial' }))).toBe(false);
 
     expect(repro(events)).not.toContain('network.har');
   });
