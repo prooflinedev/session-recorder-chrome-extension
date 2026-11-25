@@ -228,6 +228,29 @@ bodies before emit.
 | `stack` | `string` (optional)   | Stack trace, when present. |
 | `source`| `string` (optional)   | Origin as `url:line`, from the first stack frame. |
 
+Objects are written with the values Chrome sends in the event's preview, such as
+`{status: 409, code: "X"}`, `OrderState {status: 409}`, `["GET", 1]`,
+`Map(1) {"a" => 1}` or `Set(1) {"a"}`. This also applies to `Proxy(Object)`,
+`Proxy(Array)` and objects in `error` messages. Each string or key inside an object
+keeps 100 characters, counted before masking, and the whole object keeps 500. `…` is
+added after the cut and marks anything left out. Errors, dates, DOM nodes, DOM events,
+functions and other types keep Chrome's short description, except that a function
+inside an object is written as `ƒ` and a getter as `(...)`.
+
+With redaction on, values are masked by key (the body key patterns and header
+names), also in JSON and form data inside strings, and URLs are cleaned. A string
+containing `…` is treated as cut short: it keeps only the text before the `…`, or is
+masked whole when that text has a `"` followed by a `:`, as in a JSON key. This
+includes complete strings that contain `…`.
+
+Limits:
+
+- Nested objects appear as `Object` or `Array(3)`, except inside Map, Set and `console.table`.
+- Only the values Chrome sends are recorded: usually the first 5 fields or 100 array items. `console.table` rows have more.
+- Messages logged before recording starts have no preview, so their objects keep the short description.
+- Secrets with no label, such as `['token', 'abc']`, are not recognized.
+- In a complete string, secrets outside URLs, JSON and form data, such as `login failed token=abc`, are not recognized. Form data with a key that has no `=`, such as `token=abc&flag`, is not recognized either.
+
 ### `error`
 `ErrorPayload` records an error surfaced from any source. It is protected, and the
 renderer isolates these with a `⚠` prefix.

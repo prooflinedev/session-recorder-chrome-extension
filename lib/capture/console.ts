@@ -19,14 +19,51 @@ import type {
   ConsolePayload,
   ErrorPayload,
   RawEvent,
+  RedactionRules,
 } from '@/lib/session/types';
-import { redactUrl, redactUrlsInText } from './redaction';
+import {
+  buildKeyMatcher,
+  DEFAULT_HEADER_BLOCKLIST,
+  REDACTED,
+  redactBody,
+  redactUrl,
+  redactUrlsInText,
+} from './redaction';
 
 /** Max size (bytes/chars) of a joined console message before truncation. */
 const TEXT_CAP = 2048;
 
+/** Characters kept of one formatted object, nested values included, before the `…`. */
+const OBJECT_CAP = 500;
+
+/** Characters kept of one string or key in an object, before the `…`. */
+const PREVIEW_STRING_CAP = 100;
+
 /** Milliseconds of quiet after which a pending console event is flushed. */
 const COALESCE_MS = 1000;
+
+/** Minimal shape of a CDP ObjectPreview (only the fields we read). */
+interface ObjectPreviewLike {
+  type?: string;
+  subtype?: string;
+  description?: string;
+  overflow?: boolean;
+  properties?: PropertyPreviewLike[];
+  entries?: { key?: ObjectPreviewLike; value: ObjectPreviewLike }[];
+}
+interface PropertyPreviewLike {
+  name: string;
+  type?: string;
+  subtype?: string;
+  value?: string;
+  valuePreview?: ObjectPreviewLike;
+}
+
+/** How to hide secrets while formatting a preview. */
+interface PreviewCleaner {
+  text: (text: string) => string;
+  isSecretKey: (key: string) => boolean;
+}
 
 /** Minimal shape of a CDP RemoteObject (only the fields we read). */
 interface RemoteObjectLike {
@@ -35,7 +72,7 @@ interface RemoteObjectLike {
   value?: unknown;
   description?: string;
   unserializableValue?: string;
-  preview?: { description?: string } & Record<string, unknown>;
+  preview?: ObjectPreviewLike;
 }
 
 /** Minimal shape of a CDP stack trace (only the fields we read). */
@@ -103,7 +140,7 @@ export class ConsoleCapturer {
     const args = Array.isArray(params['args'])
       ? (params['args'] as RemoteObjectLike[])
       : [];
-    const argStrings = args.map((arg) => this.redactText(stringifyRemoteObject(arg)));
+    const argStrings = args.map((arg) => this.renderArg(arg));
     const text = capText(argStrings.join(' '));
     const source = sourceFromStack(params['stackTrace'] as StackTraceLike | undefined, (url) => this.redactUrl(url));
 
@@ -139,7 +176,7 @@ export class ConsoleCapturer {
     } else {
       message = text ?? 'Uncaught exception';
     }
-    message = capText(this.redactText(message));
+    message = capText(this.renderPreview(exception) ?? this.redactText(message));
 
     const stack =
       formatStack(details['stackTrace'] as StackTraceLike | undefined, (url) => this.redactUrl(url)) ??
@@ -172,7 +209,7 @@ export class ConsoleCapturer {
     const stackTrace = entry['stackTrace'] as StackTraceLike | undefined;
 
     const args = Array.isArray(entry['args'])
-      ? (entry['args'] as RemoteObjectLike[]).map((arg) => this.redactText(stringifyRemoteObject(arg)))
+      ? (entry['args'] as RemoteObjectLike[]).map((arg) => this.renderArg(arg))
       : [];
     const text = capText([this.redactText(rawText), ...args].filter((s) => s.length > 0).join(' '));
 
@@ -248,6 +285,26 @@ export class ConsoleCapturer {
     payload: RawEvent<T>['payload'],
   ): RawEvent<T> {
     return { type, tabId, payload };
+  }
+
+  private renderArg(arg: RemoteObjectLike): string {
+    return this.renderPreview(arg) ?? this.redactText(stringifyRemoteObject(arg));
+  }
+
+  /**
+   * The object's own values, or undefined to fall back to its description. The
+   * result is already masked: running `redactText` on it would let an unquoted
+   * URL swallow the `,` or `}` that follows.
+   */
+  private renderPreview(obj: RemoteObjectLike | undefined): string | undefined {
+    if (!obj?.preview) return undefined;
+    const settings = this.getSettings();
+    return formatPreview(
+      obj.preview,
+      settings.redactionEnabled
+        ? makePreviewCleaner(settings.customRedaction)
+        : { text: capPreviewString, isSecretKey: () => false },
+    );
   }
 
   private redactText(text: string): string {
@@ -329,6 +386,117 @@ function stringifyRemoteObject(obj: RemoteObjectLike | undefined): string {
   return '';
 }
 
+/**
+ * Format the fields Chrome sent with an object, or return undefined when only
+ * its description should be used.
+ */
+function formatPreview(p: ObjectPreviewLike, clean: PreviewCleaner): string | undefined {
+  const { type, subtype, description = '', properties = [], entries = [] } = p;
+  const isArray = description === 'Proxy(Array)' || /^Array\(\d+\)$/.test(description);
+  const isMapOrSet = subtype === 'map' || subtype === 'set';
+
+  if (type !== 'object') return undefined;
+  // DOM events carry what the user typed.
+  if (properties.some((prop) => prop.name === 'isTrusted')) return undefined;
+  if (subtype === undefined) {
+    // Host objects such as Headers hide their contents; `Headers {}` would mislead.
+    if (properties.length === 0 && description !== 'Object') return undefined;
+  } else if (subtype === 'array' || subtype === 'proxy') {
+    // NodeList and Arguments are also 'array'; Proxy(Map) and so on are 'proxy'.
+    if (!isArray && description !== 'Proxy(Object)') return undefined;
+  } else if (!isMapOrSet) {
+    return undefined;
+  }
+
+  // A Map or Set lists only `size` as a property; its contents are entries.
+  const members = isMapOrSet
+    ? entries.map(({ key, value }) => () => {
+        if (key === undefined) return formatNode(value, clean);
+        const secret = key.type !== 'object' && clean.isSecretKey(key.description ?? '');
+        return `${formatNode(key, clean)} => ${secret ? REDACTED : formatNode(value, clean)}`;
+      })
+    : properties.map((prop, i) => () => {
+        const value = clean.isSecretKey(prop.name)
+          ? REDACTED
+          : formatValue(prop.type, prop.subtype, prop.value, prop.valuePreview, clean);
+        return isArray && prop.name === String(i)
+          ? value
+          : `${formatKey(prop.name, clean)}: ${value}`;
+      });
+  if (p.overflow) members.push(() => '…');
+
+  // Stop at the cap: a console.table preview can hold tens of thousands of values.
+  let list = '';
+  for (const member of members) {
+    if (list.length > OBJECT_CAP) break;
+    list += (list && ', ') + member();
+  }
+
+  const label = description === 'Object' || subtype === 'array' ? '' : `${clean.text(description)} `;
+  // Cutting is safe here because every value is already masked.
+  return cap(label + (isArray ? `[${list}]` : `{${list}}`), OBJECT_CAP);
+}
+
+/** Format a Map key, Map value or Set item, which Chrome sends as a preview. */
+function formatNode(node: ObjectPreviewLike, clean: PreviewCleaner): string {
+  return formatValue(node.type, node.subtype, node.description, node, clean);
+}
+
+/** Format one value: nested fields when Chrome sent them, else its short text. */
+function formatValue(
+  type: string | undefined,
+  subtype: string | undefined,
+  text = '',
+  nested: ObjectPreviewLike | undefined,
+  clean: PreviewCleaner,
+): string {
+  const object = nested && formatPreview(nested, clean);
+  if (object !== undefined) return object;
+  if (type === 'string') return JSON.stringify(clean.text(text));
+  if (type === 'function') return 'ƒ';
+  if (type === 'accessor') return '(...)';
+  // The other lines of an error are its stack.
+  return clean.text(subtype === 'error' ? text.split('\n', 1)[0]! : text);
+}
+
+/** Print names, `#private` and `Symbol(x)` keys as they are; quote the rest. */
+function formatKey(name: string, clean: PreviewCleaner): string {
+  const key = clean.text(name);
+  return /^(?:#?[\w$]+|Symbol\([\w$.]*\))$/.test(key) ? key : JSON.stringify(key);
+}
+
+/** Mask by body key and header name, as the network capture does. */
+function makePreviewCleaner(rules: RedactionRules): PreviewCleaner {
+  // Header names become exact key patterns, so that they also apply inside JSON
+  // and form strings.
+  const headers = [...DEFAULT_HEADER_BLOCKLIST, ...rules.headerNames].map(
+    (name) => `^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`,
+  );
+  const keyRules = { ...rules, bodyKeyPatterns: [...rules.bodyKeyPatterns, ...headers] };
+  const matchesKey = buildKeyMatcher(keyRules);
+  return {
+    text: (text) => cleanPreviewString(text, keyRules),
+    // `#x` and `Symbol(x)` count as `x`.
+    isSecretKey: (key) => matchesKey(key.replace(/^#|^Symbol\((.*)\)$/s, '$1')),
+  };
+}
+
+/** Mask secrets inside one string of a preview. */
+function cleanPreviewString(text: string, rules: RedactionRules): string {
+  const capped = capPreviewString(text);
+  // Chrome shortens long strings with an ellipsis, often in the middle. What
+  // follows it has lost its key, so only the text before it can be judged.
+  const cut = capped.indexOf('…');
+  const kept = cut === -1 ? capped : capped.slice(0, cut);
+  // JSON cut short no longer parses, so its keys cannot be checked.
+  if (cut !== -1 && /"\s*:/.test(kept)) return REDACTED;
+  // Form data cut inside a key no longer looks like form data, so say that it is.
+  const mime = cut === -1 ? undefined : 'application/x-www-form-urlencoded';
+  // Bodies before URLs: masking a URL first can break the JSON around it.
+  const masked = redactUrlsInText(redactBody(kept, mime, rules).text, rules);
+  return cut === -1 ? masked : `${masked}…`;
+}
+
 /** `url:lineNumber` from the first call frame, if present. */
 function sourceFromStack(
   stackTrace: StackTraceLike | undefined,
@@ -361,6 +529,14 @@ function formatStack(
 
 /** Cap a string to `TEXT_CAP`, appending an ellipsis marker when truncated. */
 function capText(text: string): string {
-  if (text.length <= TEXT_CAP) return text;
-  return `${text.slice(0, TEXT_CAP)}…`;
+  return cap(text, TEXT_CAP);
+}
+
+/** Cap one string or key of a preview. Map and Set strings arrive whole. */
+function capPreviewString(text: string): string {
+  return cap(text, PREVIEW_STRING_CAP);
+}
+
+function cap(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max)}…`;
 }
