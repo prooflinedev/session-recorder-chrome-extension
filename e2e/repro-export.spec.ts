@@ -99,24 +99,35 @@ test('exports a Playwright test that replays the recording', async ({
     "const field = (await page.locator('#f-pass').elementHandle())!;",
   );
   expect(spec).not.toContain('hunter2');
+  // A block comment could hide steps from the line-by-line comparison above.
+  expect(spec).not.toContain('/*');
 
   const reportKey = Object.keys(files).find((k) => k.endsWith('/report.md'));
   expect(new TextDecoder().decode(files[reportKey!])).toContain('`repro.spec.ts`');
 
   // Run the exported test on its own, against the page it was recorded on.
   // The appended checks only pass if the exported steps really ran against the page.
-  const checked = spec.replace(
-    /\n\}\);\s*$/,
-    [
-      '',
-      "  await expect(page.locator('#log')).toContainText('console.log emitted');",
-      "  await expect(page.locator('#f-user')).toHaveValue('ada lovelace');",
-      "  await expect(page.locator('#log')).toContainText('console.info emitted');",
-      '});',
-      '',
-    ].join('\n'),
-  );
-  expect(checked, 'effect checks appended to the exported test').not.toBe(spec);
+  const tabCheck = "  await expect(page.locator('#f-pass')).not.toBeFocused();\n";
+  const checked = spec
+    // Right after the Tab press, focus must have left the password field.
+    .replace(
+      /(await page\.locator\('#f-pass'\)\.press\('Tab'\);[^\n]*\n)/,
+      `$1${tabCheck}`,
+    )
+    .replace(
+      /\n\}\);\s*$/,
+      [
+        '',
+        "  await expect(page.locator('#log')).toContainText('console.log emitted');",
+        "  await expect(page.locator('#f-user')).toHaveValue('ada lovelace');",
+        "  await expect(page.locator('#f-pass')).toHaveValue('any-password');",
+        "  await expect(page.locator('#log')).toContainText('console.info emitted');",
+        '});',
+        '',
+      ].join('\n'),
+    );
+  expect(checked, 'Tab check inserted').toContain(tabCheck);
+  expect(checked, 'effect checks appended').toContain("toHaveValue('any-password')");
   const results = path.join(dir, '..', 'test-results');
   mkdirSync(results, { recursive: true });
   const work = mkdtempSync(path.join(results, 'repro-export-'));
