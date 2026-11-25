@@ -417,6 +417,15 @@ function describeStep(e: SessionEvent): string | undefined {
   }
 }
 
+/** The step types that carry the element they acted on. */
+function isInteraction(
+  e: SessionEvent,
+): e is EventOf<'click' | 'input' | 'hover' | 'key'> {
+  return (
+    e.type === 'click' || e.type === 'input' || e.type === 'hover' || e.type === 'key'
+  );
+}
+
 type Collector = 'pageErrors' | 'failedRequests' | 'consoleErrors';
 
 const COLLECTORS: Record<Collector, string[]> = {
@@ -509,15 +518,12 @@ class ReproWriter {
         this.linkedRequestIds.add(e.payload.linkedRequestId);
       }
     }
-    for (const e of opts.fullEvents ?? []) {
-      const descriptor =
-        e.type === 'click' ||
-        e.type === 'input' ||
-        e.type === 'hover' ||
-        e.type === 'key'
-          ? e.payload.descriptor
-          : undefined;
-      if (descriptor) this.fullDescriptors.set(e.id, descriptor);
+    // Only the steps this export kept need their full element details.
+    const kept = new Set(events.filter(isInteraction).map((e) => e.id));
+    for (const e of kept.size > 0 ? (opts.fullEvents ?? []) : []) {
+      if (kept.has(e.id) && isInteraction(e) && e.payload.descriptor) {
+        this.fullDescriptors.set(e.id, e.payload.descriptor);
+      }
     }
     // Below L0 the level trims bodies, so most responses could not be replayed.
     this.harReplayable = opts.harPath !== undefined && opts.level === 'L0';
@@ -769,11 +775,10 @@ class ReproWriter {
 
   /** The event's element, with any details its export level stripped. */
   private element(e: SessionEvent): ElementDescriptor | undefined {
-    const recorded =
-      e.type === 'click' || e.type === 'input' || e.type === 'hover' || e.type === 'key'
-        ? e.payload.descriptor
-        : undefined;
-    return this.fullDescriptors.get(e.id) ?? recorded;
+    return (
+      this.fullDescriptors.get(e.id) ??
+      (isInteraction(e) ? e.payload.descriptor : undefined)
+    );
   }
 
   private inPrimary(e: SessionEvent): boolean {
