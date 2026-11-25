@@ -574,6 +574,10 @@ describe('buildPlaywrightRepro', () => {
       "expect(failedRequests).not.toContain('GET /v1/stock failed');",
     );
     expect(code).toContain("page.on('requestfailed', (request) => {");
+    // Canceled requests are left out on replay too, as they are when generating.
+    expect(code).toContain(
+      "if (/ABORTED|cancel/i.test(request.failure()?.errorText ?? '')) return;",
+    );
   });
 
   it('does not let a commented check stand in for a required one', () => {

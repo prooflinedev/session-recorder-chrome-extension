@@ -403,6 +403,8 @@ const COLLECTORS: Record<Collector, string[]> = {
     '  }',
     '});',
     "page.on('requestfailed', (request) => {",
+    '  // A canceled request (a navigation or an abort) is not a failure.',
+    "  if (/ABORTED|cancel/i.test(request.failure()?.errorText ?? '')) return;",
     '  failedRequests.push(`${request.method()} ${new URL(request.url()).pathname} failed`);',
     '});',
   ],
