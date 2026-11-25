@@ -669,6 +669,24 @@ describe('buildPlaywrightRepro', () => {
     );
   });
 
+  it('checks an error again after each step that recorded it', () => {
+    const boom = {
+      message: 'TypeError: cart is undefined',
+      origin: 'exception' as const,
+    };
+    const cartCheck =
+      "expect(pageErrors).not.toContainEqual(expect.stringContaining('cart is undefined'));";
+    const code = repro([
+      click(1000, button('Add')),
+      ev('error', 1200, boom),
+      ev('error', 1300, boom),
+      click(3000, button('Checkout')),
+      ev('error', 3200, boom),
+    ]);
+    // One check per step, so the Checkout one still fails if only Add gets fixed.
+    expect(activeChecks(code)).toEqual([cartCheck, cartCheck]);
+  });
+
   it('does not let a commented check stand in for a required one', () => {
     const cartCheck = "expect(failedRequests).not.toContain('GET /v1/cart 404');";
     const code = repro([

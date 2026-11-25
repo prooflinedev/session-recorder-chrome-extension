@@ -460,6 +460,7 @@ class ReproWriter {
   private readonly collectors = new Set<Collector>();
   private readonly activeChecks = new Set<string>();
   private readonly optionalChecks = new Set<string>();
+  private readonly checkedSinceStep = new Set<string>();
   private readonly envByTarget = new Map<string, string>();
   private readonly envFields: { name: string; field: string }[] = [];
   /**
@@ -1062,6 +1063,7 @@ class ReproWriter {
   private stepped(t: number): void {
     this.lastStepT = t;
     this.waited = 0;
+    this.checkedSinceStep.clear();
   }
 
   private comment(t: number, text: string): void {
@@ -1078,7 +1080,10 @@ class ReproWriter {
     collector: Collector,
     assertion: string,
   ): void {
-    if (this.activeChecks.has(assertion)) return;
+    // The same error after another step gets its own check, so fixing one trigger
+    // cannot let the test pass while a later one still throws.
+    if (this.checkedSinceStep.has(assertion)) return;
+    this.checkedSinceStep.add(assertion);
     this.activeChecks.add(assertion);
     this.collectors.add(collector);
     this.comment(t, note);
