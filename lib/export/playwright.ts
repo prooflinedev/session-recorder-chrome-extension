@@ -42,7 +42,7 @@ export function buildPlaywrightRepro(
   events: SessionEvent[],
   opts: PlaywrightReproOptions,
 ): string | null {
-  const sorted = [...events].sort((a, b) => a.t - b.t);
+  const sorted = [...events].sort((a, b) => a.t - b.t || tieRank(a) - tieRank(b));
   const writer = new ReproWriter(session, sorted, opts);
   for (const e of sorted) writer.add(e);
   return writer.finish();
@@ -119,6 +119,28 @@ const LABELABLE_TAGS = new Set([
 ]);
 
 const DEFAULT_TEST_TIMEOUT_MS = 30_000;
+
+/**
+ * Events can share a millisecond, and storage returns ties in any order. Put them
+ * in cause-and-effect order: typing is flushed just before the click or key that
+ * flushed it, and errors and requests follow the step that caused them.
+ */
+function tieRank(e: SessionEvent): number {
+  switch (e.type) {
+    case 'input':
+      return 0;
+    case 'click':
+    case 'key':
+    case 'hover':
+    case 'scroll':
+      return 1;
+    case 'nav':
+    case 'spa-route':
+      return 2;
+    default:
+      return 3;
+  }
+}
 
 // ----------------------------------------------------------------------------
 // Text helpers

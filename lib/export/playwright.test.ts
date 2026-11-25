@@ -280,6 +280,38 @@ describe('buildPlaywrightRepro', () => {
     ]);
   });
 
+  it('orders same-millisecond events by cause and effect', () => {
+    // Storage returns events that share a millisecond in any order.
+    const code = repro([
+      ev('key', 1000, {
+        key: 'Enter',
+        modifiers: [],
+        descriptor: { tag: 'input', id: 'new-todo' },
+      }),
+      input(1000, { tag: 'input', id: 'new-todo' }, 'buy milk'),
+      ev('error', 2000, {
+        message: 'TypeError: list is undefined',
+        origin: 'exception',
+      }),
+      click(2000, button('Clear completed')),
+    ]);
+    const body = code.split('\n').map((line) => line.replace(/ \/\/ \[.*$/, '').trim());
+    const at = (line: string) => body.indexOf(line);
+    expect(at("await page.locator('#new-todo').fill('buy milk');")).toBeLessThan(
+      at("await page.locator('#new-todo').press('Enter');"),
+    );
+    // The check must come after the click that caused the error, or it passes too early.
+    expect(
+      at(
+        "await page.getByRole('button', { name: 'Clear completed', exact: true }).click();",
+      ),
+    ).toBeLessThan(
+      at(
+        "expect(pageErrors).not.toContainEqual(expect.stringContaining('list is undefined'));",
+      ),
+    );
+  });
+
   it('fills each edit once, with its final value', () => {
     const search = { tag: 'input', name: 'q' };
     const code = repro([
