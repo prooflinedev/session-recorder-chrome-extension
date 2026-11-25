@@ -16,6 +16,7 @@ We prefix every path with a single root directory named after the session, so th
   transcript.json      # voice segments; an empty array when there are none
   openapi.json         # inferred API description, when capture is enabled and endpoints exist
   network.har          # HAR 1.2 log of the captured requests, when there are any
+  repro.spec.ts        # Playwright test that replays the session, when it has steps to replay
   screenshots/
     001-0004.jpg       # {seq}-{mmss}.jpg: seq order, timestamp in the name
     002-0011.jpg
@@ -39,6 +40,7 @@ Note the following:
 - `report.md` is the primary artifact. It is a single chronological narrative with `[mm:ss]` timestamps, section breaks at navigations and tab switches, fenced network bodies and console or error output, screenshot references, and blockquotes for your markers and notes. At Compact and Minimal it retains the main text evidence. Visual details may still require the referenced screenshots or other assets.
 - `session.json` is the machine-readable mirror. It holds the trimmed event stream (the same events, in the same order as the report) plus session metadata, with all asset references rewritten to their zip-relative paths. Use it when you want to program against the events rather than read prose.
 - `network.har` holds the requests from `session.json` in HAR 1.2 form, for the Chrome DevTools Network panel (Import HAR), Charles, Fiddler, or Playwright's `routeFromHAR`. It follows the export level: requests and bodies the level drops are absent here too. Bodies are the inline copies from `session.json`, so the file stays about as large as `session.json`. A body cut at the inline capture cap or summarized by the level keeps its partial text with a `comment`; its full copy, when stored, is under `network/`. Export at Full when you need complete responses. URLs, headers and bodies carry the same redaction as the rest of the export, and `cookies` arrays stay empty.
+- `repro.spec.ts` is a Playwright test built from the same trimmed events. It opens the page the session started on and replays the clicks, typing, keys and navigations in one tab. Wherever the recording hit an uncaught exception or a failing API call (a 5xx, a network failure, or a request an error links to), it waits about as long as the recording did and checks that the failure does not happen again, so it fails while the bug is present and passes once it is fixed. Console errors and other 4xx responses are left as commented-out checks because they are often unrelated noise. Values redacted at capture are read from `REPRO_*` environment variables listed in the test's header, and `REPRO_BASE_URL` points it at another server. When the export is at Full and no body was cut at capture, `REPRO_REPLAY_NETWORK=1` answers requests from `network.har`. Steps in other tabs and file uploads become comments. At Minimal, interactions keep only tag and text, so the test finds elements by role and text.
 - `MANIFEST.md` lists every asset actually included in the zip. Some assets are dropped at higher verbosity levels (see below), so the report never points at a file that is not there.
 - Asset naming embeds the sequence and timestamp (`{seq}-{mmss}`) so files sort in capture order and cross-reference the `[mm:ss]` marks in `report.md`.
 - We include only assets still referenced by a surviving event. The exceptions are annotation screenshots, audio, and file assets, which we always include regardless of level because they are protected signal.
@@ -107,6 +109,7 @@ Follow these steps in order:
 - trust the blockquotes. Markers and notes are you narrating your own intent. We never trim them, and they are the best anchor for what you expected.
 - follow `linkedRequestId`. Errors point at the network request that caused them. At every level we preserve that request's body, so the agent can inspect the exact failing payload.
 - escalate verbosity surgically. If the agent needs one full body, re-export at L1 or L0 rather than dumping the whole session at full fidelity.
+- run the repro. When the zip has `repro.spec.ts`, ask the agent to run it before and after its change with `npx playwright test repro.spec.ts`. It fails while the recorded error still happens, so a passing run is evidence the fix works.
 
 ## Local and hosted reports
 
