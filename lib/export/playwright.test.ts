@@ -124,6 +124,23 @@ function steps(code: string): string[] {
     .map((line) => line.replace(/ \/\/ \[.*$/, ''));
 }
 
+/** Assertions the test runs, leaving out the commented-out ones. */
+function activeChecks(code: string): string[] {
+  return code
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('expect('));
+}
+
+/** Assertions left commented out for the developer to opt into. */
+function commentedChecks(code: string): string[] {
+  return code
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('// expect('))
+    .map((line) => line.slice('// '.length));
+}
+
 function syntaxErrors(code: string): string[] {
   const { diagnostics = [] } = ts.transpileModule(code, {
     reportDiagnostics: true,
@@ -557,6 +574,23 @@ describe('buildPlaywrightRepro', () => {
       "expect(failedRequests).not.toContain('GET /v1/stock failed');",
     );
     expect(code).toContain("page.on('requestfailed', (request) => {");
+  });
+
+  it('does not let a commented check stand in for a required one', () => {
+    const cartCheck = "expect(failedRequests).not.toContain('GET /v1/cart 404');";
+    const code = repro([
+      click(1000, button('Load cart')),
+      request(1500, 'GET', 'https://api.example.com/v1/cart', { status: 404 }),
+      click(2000, button('Retry')),
+      request(2500, 'GET', 'https://api.example.com/v1/cart', { status: 404 }),
+      ev('error', 2600, {
+        message: 'Cart not found',
+        origin: 'network',
+        linkedRequestId: 'req_2500',
+      }),
+    ]);
+    expect(commentedChecks(code)).toEqual([cartCheck]);
+    expect(activeChecks(code)).toEqual([cartCheck]);
   });
 
   it('leaves console errors as checks to opt into', () => {

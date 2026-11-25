@@ -428,7 +428,8 @@ class ReproWriter {
 
   private readonly steps: string[] = [];
   private readonly collectors = new Set<Collector>();
-  private readonly emittedChecks = new Set<string>();
+  private readonly activeChecks = new Set<string>();
+  private readonly optionalChecks = new Set<string>();
   private readonly envByTarget = new Map<string, string>();
   private readonly envFields: { name: string; field: string }[] = [];
 
@@ -1011,8 +1012,8 @@ class ReproWriter {
     collector: Collector,
     assertion: string,
   ): void {
-    if (this.emittedChecks.has(assertion)) return;
-    this.emittedChecks.add(assertion);
+    if (this.activeChecks.has(assertion)) return;
+    this.activeChecks.add(assertion);
     this.collectors.add(collector);
     this.comment(t, note);
     const elapsed = Math.ceil(Math.max(0, t - this.lastStepT) / 100) * 100;
@@ -1033,8 +1034,9 @@ class ReproWriter {
     collector: Collector,
     assertion: string,
   ): void {
-    if (this.emittedChecks.has(assertion)) return;
-    this.emittedChecks.add(assertion);
+    // A commented check never stands in for an active one, only the reverse.
+    if (this.activeChecks.has(assertion) || this.optionalChecks.has(assertion)) return;
+    this.optionalChecks.add(assertion);
     this.collectors.add(collector);
     this.comment(t, note);
     this.steps.push(`// ${assertion}`);
