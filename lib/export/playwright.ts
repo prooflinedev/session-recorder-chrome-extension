@@ -496,6 +496,8 @@ class ReproWriter {
   private waited = 0;
   private lastClick: { tag: string; t: number } | undefined;
   private lastLinkClickT: number | undefined;
+  /** The recorded page the last secret-origin check was written for. */
+  private secretCheckedFor: string | undefined;
   /** The element the last recorded click landed on, replayed or not. */
   private lastActivated: { key: string; t: number } | undefined;
   private actedSinceNav = false;
@@ -712,6 +714,7 @@ class ReproWriter {
         '// These fields were redacted while recording. Set the variables before running:',
       );
       for (const f of this.envFields) h.push(`//   ${f.name}: ${oneLine(f.field, 80)}`);
+      h.push('// The test stops before typing them into a page on any other site.');
     }
 
     const notes: string[] = [];
@@ -893,10 +896,10 @@ class ReproWriter {
     const previous = this.filled.get(loc.expr);
     if (previous?.value === p.value && previous.causes === this.causes) return;
     this.filled.set(loc.expr, { value: p.value, causes: this.causes });
-    const value =
-      p.redacted || p.value === REDACTION_MARKER
-        ? `process.env.${this.envFor(d, loc.expr)} ?? ''`
-        : lit(p.value);
+    const env =
+      p.redacted || p.value === REDACTION_MARKER ? this.envFor(d, loc.expr) : undefined;
+    if (env !== undefined) this.checkSecretOrigin(env);
+    const value = env !== undefined ? `process.env.${env} ?? ''` : lit(p.value);
     const method = type.startsWith('select') ? 'selectOption' : 'fill';
     // Pauses while typing split one edit into several input events; keep the last value.
     this.action(
@@ -1025,6 +1028,25 @@ class ReproWriter {
       return `appUrl(${lit(u.pathname + u.search + u.hash)})`;
     }
     return lit(url);
+  }
+
+  /**
+   * Stop before typing a secret into a page that is not on the site the
+   * recording typed it into: the app (or REPRO_BASE_URL), or that exact origin.
+   */
+  private checkSecretOrigin(env: string): void {
+    const page = this.currentUrl !== undefined ? parseUrl(this.currentUrl) : undefined;
+    if (!page || this.secretCheckedFor === this.currentUrl) return;
+    this.secretCheckedFor = this.currentUrl;
+    let expected = lit(page.origin);
+    if (page.origin === this.origin) {
+      this.usesAppUrl = true;
+      expected = 'new URL(baseURL).origin';
+    }
+    const message = lit(`${env} is only typed into the recorded site`);
+    this.steps.push(
+      `expect(new URL(page.url()).origin, ${message}).toBe(${expected});`,
+    );
   }
 
   private envFor(d: ElementDescriptor, target: string): string {
