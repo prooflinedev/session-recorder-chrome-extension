@@ -440,6 +440,18 @@ describe('buildPlaywrightRepro', () => {
     );
   });
 
+  it('matches the part of an error message that survived redaction', () => {
+    const code = repro([
+      click(1000, button('Invite')),
+      ev('error', 1500, {
+        message: 'Error: No account for «redacted», cannot send the invite',
+        origin: 'exception',
+      }),
+    ]);
+    expect(code).toContain("expect.stringContaining(', cannot send the invite')");
+    expect(code).not.toContain("stringContaining('No account for «redacted»");
+  });
+
   it('checks failing API calls, not missing images, aborts or expected client errors', () => {
     const code = repro([
       click(1000, button('Save')),

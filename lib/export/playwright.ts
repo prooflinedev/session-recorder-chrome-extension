@@ -328,7 +328,12 @@ function errorCore(message: string): string {
     .replace(/^Uncaught (?:\(in promise\) )?/, '')
     .replace(/^[A-Za-z]*(?:Error|Exception): /, '')
     .trim();
-  return (core || first).slice(0, 150);
+  // The page never says «redacted», so match the longest part redaction left alone.
+  const kept = core
+    .split(REDACTION_MARKER)
+    .map((part) => part.trim())
+    .sort((a, b) => b.length - a.length)[0];
+  return (kept || core || first).slice(0, 150);
 }
 
 /** Requests whose failure can be the bug, as opposed to a missing favicon or font. */
