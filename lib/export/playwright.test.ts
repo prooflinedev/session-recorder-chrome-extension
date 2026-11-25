@@ -851,6 +851,17 @@ describe('buildPlaywrightRepro', () => {
     ]);
     expect(commentedChecks(code)).toEqual([cartCheck]);
     expect(activeChecks(code)).toEqual([cartCheck]);
+    // The required check belongs after Retry, the step that hit the linked failure.
+    const flow = beforeFinalCheck(code)
+      .split('\n')
+      .map((line) => line.replace(/ \/\/ \[.*$/, '').trim())
+      .filter((line) => /^(await page\.getByRole|\/\/ expect\(|expect\()/.test(line));
+    expect(flow).toEqual([
+      "await page.getByRole('button', { name: 'Load cart', exact: true }).click();",
+      `// ${cartCheck}`,
+      "await page.getByRole('button', { name: 'Retry', exact: true }).click();",
+      cartCheck,
+    ]);
   });
 
   it('keeps failures on other sites apart from the app', () => {
@@ -1033,10 +1044,15 @@ describe('repro.spec.ts in the export bundle', () => {
   it('is added next to the HAR and named in the report', async () => {
     const { session, events, assets } = buildSampleSession();
     const files = await buildBundle({ session, events, assets, level: 'L0' });
-    const spec = file(files, 'repro.spec.ts');
+    const spec = file(files, 'repro.spec.ts') ?? '';
     expect(spec).toContain("import { test, expect } from '@playwright/test';");
     expect(spec).toContain('routeFromHAR');
     expect(file(files, 'report.md')).toContain('`repro.spec.ts`');
+    // The HAR the test reads ships in the same zip.
+    const harPath =
+      /path\.join\(path\.dirname\(test\.info\(\)\.file\), '([^']+)'\)/.exec(spec)?.[1];
+    expect(harPath).toBe('network.har');
+    expect(files.map((f) => f.path)).toContain(harPath);
   });
 
   it('follows the export level but keeps full locators', async () => {
