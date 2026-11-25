@@ -547,8 +547,9 @@ describe('buildPlaywrightRepro', () => {
         origin: 'exception',
       }),
     ]);
-    expect(code).toContain("expect.stringContaining(', cannot send the invite')");
-    expect(code).not.toContain("stringContaining('No account for «redacted»");
+    expect(activeChecks(code)).toEqual([
+      "expect(pageErrors).not.toContainEqual(expect.stringContaining(', cannot send the invite'));",
+    ]);
   });
 
   it('checks failing API calls, not missing images, aborts or expected client errors', () => {
@@ -577,20 +578,16 @@ describe('buildPlaywrightRepro', () => {
         failureReason: 'net::ERR_CONNECTION_REFUSED',
       }),
     ]);
-    expect(code).toContain(
+    expect(activeChecks(code)).toEqual([
       "expect(failedRequests).not.toContain('POST /v1/orders 500');",
-    );
+      "expect(failedRequests).not.toContain('GET /v1/cart 404');",
+      "expect(failedRequests).not.toContain('GET /v1/stock failed');",
+    ]);
+    expect(commentedChecks(code)).toEqual([
+      "expect(failedRequests).not.toContain('GET /v1/me 401');",
+    ]);
     expect(code).not.toContain('logo.png');
     expect(code).not.toContain('/v1/poll');
-    expect(code).toContain(
-      "// expect(failedRequests).not.toContain('GET /v1/me 401');",
-    );
-    expect(code).toContain(
-      "\n  expect(failedRequests).not.toContain('GET /v1/cart 404');",
-    );
-    expect(code).toContain(
-      "expect(failedRequests).not.toContain('GET /v1/stock failed');",
-    );
     expect(code).toContain("page.on('requestfailed', (request) => {");
     // Canceled requests are left out on replay too, as they are when generating.
     expect(code).toContain(
@@ -625,9 +622,10 @@ describe('buildPlaywrightRepro', () => {
         origin: 'log',
       }),
     ]);
-    expect(code).toContain(
-      "// expect(consoleErrors).not.toContainEqual(expect.stringContaining('Failed to save draft'));",
-    );
+    expect(activeChecks(code)).toEqual([]);
+    expect(commentedChecks(code)).toEqual([
+      "expect(consoleErrors).not.toContainEqual(expect.stringContaining('Failed to save draft'));",
+    ]);
     expect(code).not.toContain('Failed to load resource');
     expect(code).toContain(
       "if (message.type() === 'error') consoleErrors.push(message.text());",
