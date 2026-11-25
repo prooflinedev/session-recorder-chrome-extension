@@ -523,6 +523,26 @@ describe('buildPlaywrightRepro', () => {
     );
   });
 
+  it('does not mistake a history replacement for Back', () => {
+    const code = repro([
+      nav(1000, 'https://app.example.com/docs#intro', 'typed'),
+      click(2000, { tag: 'a', text: 'Setup' }),
+      ev('spa-route', 2100, {
+        url: 'https://app.example.com/docs#setup',
+        method: 'pushState',
+      }),
+      // The page swapped its hash back without going back in history.
+      ev('spa-route', 3000, {
+        url: 'https://app.example.com/docs#intro',
+        method: 'replaceState',
+      }),
+    ]);
+    expect(steps(code).slice(-1)).toEqual([
+      "await page.waitForURL((url) => url.pathname === '/docs' && url.hash === '#intro');",
+    ]);
+    expect(code).not.toContain('goBack');
+  });
+
   it('waits for a query-only navigation to leave the old query', () => {
     const code = repro([
       nav(1000, 'https://app.example.com/contacts?page=1', 'typed'),

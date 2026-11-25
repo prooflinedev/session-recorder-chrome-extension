@@ -786,7 +786,8 @@ class ReproWriter {
   private spaRoute(e: EventOf<'spa-route'>): void {
     const { url, method } = e.payload;
     if (!this.opened || !isWebUrl(url) || url === this.currentUrl) return;
-    if (this.historyMove(url, e.t)) return;
+    // A replacement swaps the current entry; it never moves through history.
+    if (method !== 'replaceState' && this.historyMove(url, e.t)) return;
     this.waitForUrl(url, e.t);
     if (method === 'replaceState' && this.historyIndex >= 0) {
       this.history[this.historyIndex] = url;
