@@ -247,7 +247,7 @@ export interface NavPayload {
 export interface SpaRoutePayload {
   url: string;
   title?: string;
-  /** `popstate` is a move through history (Back or Forward). */
+  /** `popstate` is a move through history (Back or Forward); `replaceState` a fragment change. */
   method: 'pushState' | 'replaceState' | 'popstate';
   /** Chrome's qualifiers. When present, `method` tells history moves apart. */
   transitionQualifiers?: string[];

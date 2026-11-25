@@ -832,21 +832,14 @@ class ReproWriter {
     if (!this.opened || !isWebUrl(url) || url === this.currentUrl) return;
     if (method === 'popstate') {
       if (this.historyMove(url, e.t, true)) return;
-    } else if (
-      e.payload.transitionQualifiers === undefined &&
-      method !== 'replaceState'
-    ) {
-      // Older recordings label Back and Forward as pushState, so infer them. A
-      // replacement swaps the current entry and never moves through history.
+    } else if (e.payload.transitionQualifiers === undefined) {
+      // Older recordings label Back and Forward as pushState, or replaceState on a
+      // hash change, so infer them.
       if (this.historyMove(url, e.t)) return;
     }
     this.waitForUrl(url, e.t);
-    if (method === 'replaceState' && this.historyIndex >= 0) {
-      this.history[this.historyIndex] = url;
-      this.currentUrl = url;
-    } else {
-      this.pushHistory(url);
-    }
+    // replaceState marks a fragment change, which adds an entry like a link does.
+    this.pushHistory(url);
   }
 
   /**

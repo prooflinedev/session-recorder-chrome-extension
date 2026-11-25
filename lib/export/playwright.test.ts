@@ -663,24 +663,55 @@ describe('buildPlaywrightRepro', () => {
     );
   });
 
-  it('does not mistake a history replacement for Back', () => {
+  it('does not mistake a hash change Chrome did not mark for Back', () => {
     const code = repro([
       nav(1000, 'https://app.example.com/docs#intro', 'typed'),
       click(2000, { tag: 'a', text: 'Setup' }),
       ev('spa-route', 2100, {
         url: 'https://app.example.com/docs#setup',
-        method: 'pushState',
+        method: 'replaceState',
+        transitionQualifiers: [],
       }),
       // The page swapped its hash back without going back in history.
       ev('spa-route', 3000, {
         url: 'https://app.example.com/docs#intro',
         method: 'replaceState',
+        transitionQualifiers: [],
       }),
     ]);
     expect(steps(code).slice(-1)).toEqual([
       "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/docs' && url.hash === '#intro');",
     ]);
     expect(code).not.toContain('goBack');
+  });
+
+  it('replays Back between hash entries, marked or from an older recording', () => {
+    const hashBack = (qualifiers?: { link: string[]; back: string[] }) =>
+      repro([
+        nav(1000, 'https://app.example.com/docs#intro', 'typed'),
+        click(2000, { tag: 'a', text: 'Setup' }),
+        // A fragment change from a link adds a history entry.
+        ev('spa-route', 2100, {
+          url: 'https://app.example.com/docs#setup',
+          method: 'replaceState',
+          ...(qualifiers && { transitionQualifiers: qualifiers.link }),
+        }),
+        // The browser's Back. Older recordings have no marks and call it replaceState.
+        ev('spa-route', 4000, {
+          url: 'https://app.example.com/docs#intro',
+          method: qualifiers ? 'popstate' : 'replaceState',
+          ...(qualifiers && { transitionQualifiers: qualifiers.back }),
+        }),
+      ]);
+    const expected = [
+      "await page.getByRole('link', { name: 'Setup', exact: true }).click();",
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/docs' && url.hash === '#setup');",
+      'await page.goBack();',
+    ];
+    expect(steps(hashBack({ link: [], back: ['forward_back'] })).slice(-3)).toEqual(
+      expected,
+    );
+    expect(steps(hashBack()).slice(-3)).toEqual(expected);
   });
 
   it('waits for a query-only navigation to leave the old query', () => {

@@ -145,8 +145,8 @@ fragment. It is captured through `onHistoryStateUpdated` and
 | ------- | ------------------------------------------- | ------- |
 | `url`   | `string`                                    | New route URL. |
 | `title` | `string` (optional)                         | Title, when available. |
-| `method`| `'pushState' \| 'replaceState' \| 'popstate'`| How the route changed. `popstate` is Back or Forward, which Chrome marks with `forward_back`. |
-| `transitionQualifiers`| `string[]` (optional) | Chrome transition qualifiers. When present, `method` tells history moves apart from new entries; older recordings record Back and Forward as `pushState`. |
+| `method`| `'pushState' \| 'replaceState' \| 'popstate'`| How the route changed. `popstate` is Back or Forward, which Chrome marks with `forward_back`. `replaceState` is a change to the fragment (the part after `#`), and `pushState` any other History API change, since Chrome reports `history.replaceState()` the same way as `history.pushState()`. |
+| `transitionQualifiers`| `string[]` (optional) | Chrome transition qualifiers. When present, `method` tells history moves apart from new entries. Older recordings lack them and record a Back or Forward as `pushState`, or as `replaceState` when only the fragment changed. |
 
 ### `tab-switch`
 `TabSwitchPayload` records that the active tab changed within the session.
