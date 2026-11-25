@@ -392,14 +392,26 @@ describe('buildPlaywrightRepro', () => {
     expect(code).toContain('//   REPRO_PASSWORD: input #f-pass');
     expect(code).toContain('//   REPRO_CARD_NUMBER: input named "card[number]"');
     expect(code).not.toContain('«redacted»');
-    // One site check for the page, before the first secret is typed.
-    expect(activeChecks(code)).toEqual([
-      "expect(new URL(page.url()).origin, 'REPRO_PASSWORD is only typed into the recorded site').toBe(new URL(baseURL).origin);",
+    // A site check right before every secret is typed.
+    const body = code.split('\n').map((line) => line.replace(/ \/\/ \[.*$/, '').trim());
+    for (const env of ['REPRO_PASSWORD', 'REPRO_CARD_NUMBER']) {
+      const check = `expect(new URL(page.url()).origin, '${env} is only typed into the recorded site').toBe(new URL(baseURL).origin);`;
+      expect(body.indexOf(check)).toBeGreaterThan(-1);
+      expect(body[body.indexOf(check) + 1]).toContain(`process.env.${env}`);
+    }
+  });
+
+  it('checks the site again before a secret typed after a reload', () => {
+    const pass = { tag: 'input', id: 'password' };
+    const code = repro([
+      input(1000, pass, '«redacted»', { redacted: true, inputType: 'password' }),
+      click(2000, button('Sign in')),
+      nav(3000, 'https://app.example.com/dashboard', 'reload'),
+      input(4000, pass, '«redacted»', { redacted: true, inputType: 'password' }),
     ]);
-    const body = code.split('\n').map((line) => line.trim());
-    expect(body.indexOf(activeChecks(code)[0]!)).toBeLessThan(
-      body.findIndex((line) => line.includes('process.env.REPRO_PASSWORD')),
-    );
+    const check =
+      "expect(new URL(page.url()).origin, 'REPRO_PASSWORD is only typed into the recorded site').toBe(new URL(baseURL).origin);";
+    expect(activeChecks(code)).toEqual([check, check]);
   });
 
   it('types a secret only on the site where it was recorded', () => {

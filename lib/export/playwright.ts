@@ -496,8 +496,6 @@ class ReproWriter {
   private waited = 0;
   private lastClick: { tag: string; t: number } | undefined;
   private lastLinkClickT: number | undefined;
-  /** The recorded page the last secret-origin check was written for. */
-  private secretCheckedFor: string | undefined;
   /** The element the last recorded click landed on, replayed or not. */
   private lastActivated: { key: string; t: number } | undefined;
   private actedSinceNav = false;
@@ -1035,9 +1033,9 @@ class ReproWriter {
    * recording typed it into: the app (or REPRO_BASE_URL), or that exact origin.
    */
   private checkSecretOrigin(env: string): void {
+    // Checked before every secret: a replayed step can land somewhere the recording did not.
     const page = this.currentUrl !== undefined ? parseUrl(this.currentUrl) : undefined;
-    if (!page || this.secretCheckedFor === this.currentUrl) return;
-    this.secretCheckedFor = this.currentUrl;
+    if (!page) return;
     let expected = lit(page.origin);
     if (page.origin === this.origin) {
       this.usesAppUrl = true;
