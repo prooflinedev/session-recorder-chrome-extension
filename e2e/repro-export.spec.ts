@@ -1,14 +1,15 @@
 /**
  * Export a recording as a Playwright test, then run that test.
  *
- * Records a few steps on the demo page, downloads the Full zip through the real
- * export UI (as record-export.spec.ts does), and runs the repro.spec.ts inside it
- * with a separate Playwright process against the same page, the way a developer
- * would. Under Playwright the recorder runs degraded (no debugger), so there are
- * no errors to check here; this proves the generated steps replay for real.
+ * Records a few steps on the demo page, captures the Full zip the export UI hands
+ * to chrome.downloads (intercepted, as record-export.spec.ts does), and runs the
+ * repro.spec.ts inside it with a separate Playwright process against the same
+ * page, the way a developer would. Under Playwright the recorder runs degraded
+ * (no debugger), so there are no errors to check here; this proves the generated
+ * steps replay for real.
  */
 import { execFile } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,6 +43,9 @@ test('exports a Playwright test that replays the recording', async ({
 
   await page.click('#btn-log');
   await page.fill('#f-user', 'ada lovelace');
+  // Let this field's input debounce (800ms) flush on its own. Two fills flushed in
+  // the same millisecond have no recorded order.
+  await page.waitForTimeout(1000);
   await page.fill('#f-pass', 'hunter2'); // must not reach the test
   await page.press('#f-pass', 'Tab');
   await page.waitForTimeout(1000);
@@ -49,7 +53,7 @@ test('exports a Playwright test that replays the recording', async ({
   await page.waitForTimeout(400);
   await dispatch(background, { kind: 'session/stop' });
 
-  // Download the Full zip through the real export UI.
+  // Capture the Full zip the export UI hands to chrome.downloads.
   const workspace = await context.newPage();
   await workspace.goto(extUrl(extensionId, `share.html?session=${sessionId}`));
   const opened = context.waitForEvent('page');
@@ -75,12 +79,22 @@ test('exports a Playwright test that replays the recording', async ({
   const specKey = Object.keys(files).find((k) => k.endsWith('/repro.spec.ts'));
   expect(specKey, 'zip contains repro.spec.ts').toBeTruthy();
   const spec = new TextDecoder().decode(files[specKey!]);
-  expect(spec).toContain("await page.goto(appUrl('/'));");
-  expect(spec).toContain("await page.locator('#btn-log').click();");
-  expect(spec).toContain("await page.locator('#f-user').fill('ada lovelace');");
-  expect(spec).toContain(
+  const steps = spec
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('await '))
+    .map((line) => line.replace(/ \/\/ \[.*$/, ''));
+  // Pointer dwell and scrolling depend on timing, so only the deliberate steps are compared.
+  expect(
+    steps.filter((s) => !s.includes('.hover()') && !s.includes('window.scrollTo')),
+  ).toEqual([
+    "await page.goto(appUrl('/'));",
+    "await page.locator('#btn-log').click();",
+    "await page.locator('#f-user').fill('ada lovelace');",
     "await page.locator('#f-pass').fill(process.env.REPRO_PASSWORD ?? '');",
-  );
+    "await page.locator('#f-pass').press('Tab');",
+    "await page.locator('#btn-info').click();",
+  ]);
   expect(spec).not.toContain('hunter2');
 
   const reportKey = Object.keys(files).find((k) => k.endsWith('/report.md'));
@@ -90,27 +104,39 @@ test('exports a Playwright test that replays the recording', async ({
   const results = path.join(dir, '..', 'test-results');
   mkdirSync(results, { recursive: true });
   const work = mkdtempSync(path.join(results, 'repro-export-'));
-  writeFileSync(path.join(work, 'repro.spec.ts'), spec);
-  const config = path.join(work, 'playwright.config.mjs');
-  writeFileSync(
-    config,
-    "export default { testDir: '.', outputDir: './out', reporter: 'line', use: { channel: 'chromium' } };\n",
-  );
-  const cli = createRequire(import.meta.url).resolve('@playwright/test/cli');
-  // Leave out the outer run's worker variables so the inner run starts clean.
-  const env = Object.fromEntries(
-    Object.entries(process.env).filter(
-      ([k]) => !k.startsWith('TEST_') && !k.startsWith('PW_'),
-    ),
-  );
-  const result = await run(process.execPath, [cli, 'test', '--config', config], {
-    cwd: work,
-    env: { ...env, REPRO_PASSWORD: 'any-password' },
-    timeout: 120_000,
-  }).catch((err: { stdout?: string; stderr?: string }) => {
-    throw new Error(
-      `The exported test failed:\n${err.stdout ?? ''}\n${err.stderr ?? ''}`,
+  try {
+    writeFileSync(path.join(work, 'repro.spec.ts'), spec);
+    const config = path.join(work, 'playwright.config.mjs');
+    writeFileSync(
+      config,
+      "export default { testDir: '.', outputDir: './out', reporter: 'line', use: { channel: 'chromium' } };\n",
     );
-  });
-  expect(result.stdout).toMatch(/1 passed/);
+    const cli = createRequire(import.meta.url).resolve('@playwright/test/cli');
+    // Leave out the outer run's worker variables so the inner run starts clean.
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([k]) => !k.startsWith('TEST_') && !k.startsWith('PW_'),
+      ),
+    );
+    const result = await run(process.execPath, [cli, 'test', '--config', config], {
+      cwd: work,
+      env: { ...env, REPRO_PASSWORD: 'any-password' },
+      timeout: 120_000,
+    }).catch((err: Error & { stdout?: string; stderr?: string }) => {
+      throw new Error(
+        `The exported test failed: ${err.message}\n${err.stdout ?? ''}\n${err.stderr ?? ''}`,
+        { cause: err },
+      );
+    });
+    expect(result.stdout).toMatch(/1 passed/);
+  } finally {
+    await test
+      .info()
+      .attach('repro.spec.ts', { body: spec, contentType: 'text/plain' });
+    try {
+      rmSync(work, { recursive: true, force: true, maxRetries: 3 });
+    } catch {
+      // A lingering Windows file lock; the next run clears test-results anyway.
+    }
+  }
 });
