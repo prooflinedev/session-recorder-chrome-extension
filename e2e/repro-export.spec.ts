@@ -104,8 +104,21 @@ test('exports a Playwright test that replays the recording', async ({
   const results = path.join(dir, '..', 'test-results');
   mkdirSync(results, { recursive: true });
   const work = mkdtempSync(path.join(results, 'repro-export-'));
+  // These only pass if the exported steps really ran against the page.
+  const checked = spec.replace(
+    /\n\}\);\s*$/,
+    [
+      '',
+      "  await expect(page.locator('#log')).toContainText('console.log emitted');",
+      "  await expect(page.locator('#f-user')).toHaveValue('ada lovelace');",
+      "  await expect(page.locator('#log')).toContainText('console.info emitted');",
+      '});',
+      '',
+    ].join('\n'),
+  );
+  expect(checked, 'effect checks appended to the exported test').not.toBe(spec);
   try {
-    writeFileSync(path.join(work, 'repro.spec.ts'), spec);
+    writeFileSync(path.join(work, 'repro.spec.ts'), checked);
     const config = path.join(work, 'playwright.config.mjs');
     writeFileSync(
       config,
