@@ -4,7 +4,7 @@
  * delete button removes the session (cascading its events + assets).
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import { formatClock } from '@/lib/export/markdown';
 import type { Session } from '@/lib/session/types';
 import { useSessionList } from './useSessionList';
@@ -15,6 +15,7 @@ interface SessionListProps {
 
 export function SessionList({ onOpen }: SessionListProps): React.JSX.Element {
   const { sessions, loading, remove, now } = useSessionList();
+  const [query, setQuery] = useState('');
 
   if (loading && sessions.length === 0) {
     return <p className="sessions__empty">Loading…</p>;
@@ -24,10 +25,18 @@ export function SessionList({ onOpen }: SessionListProps): React.JSX.Element {
     return <p className="sessions__empty">No recordings yet.</p>;
   }
 
+  const term = query.trim().toLocaleLowerCase();
+  const matches = sessions.filter((session) => session.name.toLocaleLowerCase().includes(term));
+
   return (
     <div className="sessions">
+      <label className="sessions__search">
+        Search recordings
+        <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} />
+      </label>
+      {matches.length === 0 && <p className="sessions__empty" role="status">No matching recordings.</p>}
       <ul className="sessions__list" aria-label="Recorded sessions">
-        {sessions.map((s) => (
+        {matches.map((s) => (
           <li key={s.id} className="session-row">
             <button
               type="button"
