@@ -341,6 +341,23 @@ test('files through Proofline with managed AI and private attachment uploads', a
     path: 'test-results/recorder-upload-incomplete-dark.png',
     fullPage: true,
   });
+  const draftKey = `shareDraft:${started.session.id}`;
+  const beforeRetry = await background.evaluate(async (key: string) =>
+    (await chrome.storage.local.get(key))[key] as {
+      publication?: {
+        id: string;
+        requestId: string;
+        attachments: { path: string; requestId: string; uploaded: boolean }[];
+      };
+    } | undefined,
+  draftKey);
+
+  const originalPublication = beforeRetry?.publication;
+  expect(originalPublication?.id).toBe(reportId);
+  expect(originalPublication?.requestId).toEqual(expect.any(String));
+  expect(originalPublication?.attachments.length).toBeGreaterThan(0);
+  expect(originalPublication?.attachments.some(asset => !asset.uploaded)).toBe(true);
+
   // Reopening must resume the durable checkpoint through File issue itself.
   await page.reload();
   await expect(page.getByText('Upload incomplete', { exact: true })).toHaveCount(2);
@@ -354,6 +371,26 @@ test('files through Proofline with managed AI and private attachment uploads', a
   await expect(page.getByRole('link', { name: 'View issue #42' })).toBeVisible({
     timeout: 30000,
   });
+  const afterRetry = await background.evaluate(async (key: string) =>
+    (await chrome.storage.local.get(key))[key] as {
+      publication?: {
+        id: string;
+        requestId: string;
+        attachments: { path: string; requestId: string; uploaded: boolean }[];
+      };
+    } | undefined,
+  draftKey);
+
+  const recovered = afterRetry?.publication;
+  expect(recovered?.id).toBe(reportId);
+  expect(recovered?.requestId).toBe(originalPublication!.requestId);
+  expect(recovered?.attachments.map(({ path, requestId }) => ({ path, requestId })))
+    .toEqual(originalPublication!.attachments.map(
+      ({ path, requestId }) => ({ path, requestId }),
+    ));
+  expect(recovered?.attachments.every(asset => asset.uploaded)).toBe(true);
+  expect(paths.filter(path => path.endsWith('/reports'))).toHaveLength(1);
+
   expect(paths.filter((path) => path.endsWith('/issue'))).toHaveLength(1);
   expect(paths.some((path) => path.endsWith('/attachments'))).toBe(true);
   await expect(page.getByLabel('Issue title')).toHaveValue(

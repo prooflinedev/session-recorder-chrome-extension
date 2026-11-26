@@ -187,17 +187,27 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       void rememberRepository(path).catch(() => dispatch({ type: 'error', message: 'Could not remember the repository selection.' }));
     } catch { /* An incomplete typed repository is saved only with this draft. */ }
   }
-  async function remember(publication?: Publication) {
+  async function remember(publication?: Publication, lockHeld = false) {
     dispatch({ type: 'publication', publication });
+
+    const save = async () => {
+      const stored = (await chrome.storage.local.get(draftKey))[draftKey] as
+        SavedDraft | undefined;
+      const next = stored
+        ? { ...stored, publication }
+        : snapshot({ publication });
+      await chrome.storage.local.set({ [draftKey]: next });
+    };
+
+    // Publication already owns the session lock. Acquiring it again here
+    // would deadlock, so write the checkpoint directly under that lock.
+    if (lockHeld) {
+      await save();
+      return;
+    }
+
     const write = writes.current.then(() =>
-      navigator.locks.request(draftKey, async () => {
-        const stored = (await chrome.storage.local.get(draftKey))[draftKey] as
-          SavedDraft | undefined;
-        const next = stored
-          ? { ...stored, publication }
-          : snapshot({ publication });
-        await chrome.storage.local.set({ [draftKey]: next });
-      }),
+      navigator.locks.request(draftKey, save),
     );
     writes.current = write.catch(() => {});
     await write;
@@ -251,23 +261,98 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
   function publish() {
     return run('publish', async (signal) => {
       if (!state.files.length) throw new Error('The report is still preparing.');
-      const settings = await loadSharingSettings();
-      if (settings.proofline?.publishing === 'proofline' || (state.publication && isProoflinePublication(state.publication))) {
-        await publishProoflineReport(settings.proofline!, state.files, state.draft.title, state.level, state.publication, remember, progress, signal);
-        progress('Private report published.');
-        return;
-      }
-      const config = settings.cloudflare;
-      const { apiToken: _secret, ...destination } = config;
-      const deployment = await publishReport(
-        config,
-        state.files,
-        progress,
-        signal,
-        (d) => remember({ deployment: d, destination, level: state.level }),
+
+      // Finish this tab's pending edits before entering the shared lock.
+      await writes.current;
+
+      // Acquire the lock before making external changes. If another tab is
+      // filing an issue, cancellation can stop us before creating a report.
+      await navigator.locks.request(
+        draftKey,
+        { mode: 'exclusive', signal },
+        async () => {
+          const stored = (await chrome.storage.local.get(draftKey))[draftKey] as
+            SavedDraft | undefined;
+
+          // Never resume using a stale publication from this tab if another
+          // tab has updated or removed it in the meantime.
+          const previous = stored ? stored.publication : state.publication;
+          const checkpoint = (publication?: Publication) =>
+            remember(publication, true);
+
+          signal.throwIfAborted();
+          const settings = await loadSharingSettings();
+
+          if (
+            settings.proofline?.publishing === 'proofline' ||
+            (previous && isProoflinePublication(previous))
+          ) {
+            await publishProoflineReport(
+              settings.proofline!,
+              state.files,
+              stored?.draft.title ?? state.draft.title,
+              state.level,
+              previous,
+              checkpoint,
+              progress,
+              signal,
+            );
+            progress('Private report published.');
+            return;
+          }
+
+          if (previous && !isProoflinePublication(previous)) {
+            if (publicationReady(previous)) {
+              await checkpoint(previous);
+              progress('Report published. File a GitHub issue to share its link.');
+              return;
+            }
+
+            if (settings.cloudflare.accountId !== previous.destination.accountId)
+              throw new Error(
+                'Select this report’s Cloudflare account in settings to finish its deployment.',
+              );
+
+            const deployment = await waitForDeployment(
+              {
+                ...previous.destination,
+                apiToken: settings.cloudflare.apiToken,
+              },
+              previous.deployment,
+              progress,
+              signal,
+            );
+
+            await checkpoint({ ...previous, deployment });
+            progress('Report published. File a GitHub issue to share its link.');
+            return;
+          }
+
+          const config = settings.cloudflare;
+          const { apiToken: _secret, ...destination } = config;
+
+          const deployment = await publishReport(
+            config,
+            state.files,
+            progress,
+            signal,
+            (created) =>
+              checkpoint({
+                deployment: created,
+                destination,
+                level: state.level,
+              }),
+          );
+
+          await checkpoint({
+            deployment,
+            destination,
+            level: state.level,
+          });
+
+          progress('Report published. File a GitHub issue to share its link.');
+        },
       );
-      await remember({ deployment, destination, level: state.level });
-      progress('Report published. File a GitHub issue to share its link.');
     });
   }
   function checkDeployment() {

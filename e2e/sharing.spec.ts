@@ -345,6 +345,10 @@ test('publish preserves concurrent issue and draft updates', async ({
   const deploymentGate = new Promise<void>((resolve) => {
     releaseDeployment = resolve;
   });
+  // Resolves the moment the deployment POST actually arrives at the mock, giving
+  // a deterministic signal that the request is in flight and storage injection
+  // is safe — independent of any UI status text timing.
+  let deploymentArrived = false;
   let deployments = 0;
 
   await context.route('https://api.cloudflare.com/client/v4/**', async (route) => {
@@ -365,7 +369,9 @@ test('publish preserves concurrent issue and draft updates', async ({
     else if (url.endsWith('/pages/assets/upload')) result = null;
     else if (url.endsWith('/pages/assets/upsert-hashes')) result = null;
     else if (url.endsWith('/deployments') && method === 'POST') {
-      // Hold Tab A here while we write the concurrent issue to shared storage.
+      // Signal that the POST has arrived before waiting, so the test can inject
+      // concurrent storage state without racing against UI text propagation.
+      deploymentArrived = true;
       await deploymentGate;
       deployments++;
       result = {
@@ -395,71 +401,199 @@ test('publish preserves concurrent issue and draft updates', async ({
   await expect(publishButton).toBeEnabled({ timeout: 30_000 });
 
   // Kick off Tab A's standalone publish.
-  await publishButton.click();
+  try {
+    await publishButton.click();
 
-  // Wait until Tab A has uploaded all files and is blocked waiting for the
-  // deployment-creation response (the gated step).
-  await expect(shareTab.getByRole('status')).toContainText('Creating protected deployment', {
-    timeout: 30_000,
-  });
+    await expect.poll(() => deploymentArrived, {
+      timeout: 10_000,
+    }).toBe(true);
 
-  // === Race-condition window ===
-  // Simulate Tab B having concurrently completed a full issue-filing workflow.
-  // Simulate another tab's persisted issue record and draft edits
-  // while the first tab's publication request is still in flight.
-  const filedIssue = {
-    number: 7,
-    url: 'https://github.com/owner/repo/issues/7',
-    repository: 'owner/repo',
-  };
-  await background.evaluate(
-    async ({ key, issue }: { key: string; issue: { number: number; url: string; repository: string } }) => {
-      const stored = await chrome.storage.local.get(key);
-      const existing = (stored[key] as Record<string, unknown>) ?? {};
-      await chrome.storage.local.set({
-        [key]: {
-          ...existing,
-          issue,
-          draft: {
-            title: "Updated in another tab",
-            body: "Concurrent user edits must survive",
+    // === Race-condition window ===
+    // Simulate Tab B having concurrently completed a full issue-filing workflow.
+    const filedIssue = {
+      number: 7,
+      url: 'https://github.com/owner/repo/issues/7',
+      repository: 'owner/repo',
+    };
+    await background.evaluate(
+      async ({ key, issue }: { key: string; issue: { number: number; url: string; repository: string } }) => {
+        const stored = await chrome.storage.local.get(key);
+        const existing = (stored[key] as Record<string, unknown>) ?? {};
+        await chrome.storage.local.set({
+          [key]: {
+            ...existing,
+            issue,
+            draft: {
+              title: 'Updated in another tab',
+              body: 'Concurrent user edits must survive',
+            },
+            draftSource: 'edited',
           },
-          draftSource: "edited",
+        });
+      },
+      { key: draftKey, issue: filedIssue },
+    );
+
+    // Let Tab A's deployment-creation request complete.
+    releaseDeployment();
+
+    // Wait for Tab A's publish to report success.
+    await expect(shareTab.getByRole('status')).toContainText('Report published', {
+      timeout: 30_000,
+    });
+
+    // Verify that publication persistence preserves concurrent updates.
+    // The publication update must not replace newer persisted issue or draft data.
+    const afterPublish = await background.evaluate(
+      async (key: string) => chrome.storage.local.get(key),
+      draftKey,
+    );
+    const savedDraft = afterPublish[draftKey] as {
+      issue?: { number: number; url: string; repository: string };
+      publication?: { deployment?: { id: string; url: string } };
+      draft: { title: string; body: string };
+      draftSource: string;
+    };
+    expect(
+      savedDraft.issue,
+      'issue written by another tab must survive a concurrent publish completing',
+    ).toEqual(filedIssue);
+    expect(
+      savedDraft.publication?.deployment,
+      'publication must carry the exact deployment ID and URL returned by the mock',
+    ).toMatchObject({ id: 'deployment-1', url: reportUrl });
+    expect(savedDraft.draft).toEqual({
+      title: 'Updated in another tab',
+      body: 'Concurrent user edits must survive',
+    });
+    expect(savedDraft.draftSource).toBe('edited');
+    expect(deployments, 'exactly one deployment must have been created').toBe(1);
+  } finally {
+    // Always unblock the route handler so the test does not hang on assertion failures.
+    releaseDeployment();
+  }
+});
+
+
+test('publish cancellation while the session lock is held', async ({
+  context,
+  background,
+  extensionId,
+}) => {
+  const page = await context.newPage();
+  await page.goto('/');
+
+  const started = await dispatch<{
+    ok: boolean;
+    session: { id: string };
+  }>(background, {
+    kind: 'session/start',
+    tabId: await tabIdForUrl(background, 'http://localhost:5319'),
+  });
+  expect(started.ok).toBe(true);
+  await dispatch(background, { kind: 'session/stop' });
+
+  const draftKey = `shareDraft:${started.session.id}`;
+  const accountId = 'a'.repeat(32);
+  const appId = '12345678-1234-1234-1234-123456789abc';
+
+  await background.evaluate(async ({ accountId, appId }) => {
+    await chrome.storage.local.set({
+      sharingSettings: {
+        cloudflare: {
+          apiToken: 'cf-token',
+          accountId,
+          projectName: 'reports',
+          accessAppId: appId,
+          teamDomain: 'team.cloudflareaccess.com',
         },
+        repository: 'owner/repo',
+        githubToken: 'gh-token',
+      },
+    });
+  }, { accountId, appId });
+
+  const shareTab = await context.newPage();
+  await shareTab.goto(
+    extUrl(extensionId, `share.html?session=${started.session.id}`),
+  );
+
+  await shareTab.locator('details.advanced-report > summary').click();
+  const publish = shareTab.getByRole('button', {
+    name: 'Publish report only',
+  });
+  await expect(publish).toBeEnabled({ timeout: 30_000 });
+
+  // Hold the same session lock from another extension page.
+  // This represents a second tab currently working with the draft.
+  const secondTab = await context.newPage();
+  await secondTab.goto(
+    extUrl(extensionId, `share.html?session=${started.session.id}`),
+  );
+
+  let externalRequests = 0;
+  await context.route('https://api.cloudflare.com/client/v4/**', async route => {
+    externalRequests++;
+    await route.abort();
+  });
+
+  // Keep this evaluation running until the test releases the lock.
+  const holdingLock = secondTab.evaluate(async ({ draftKey }) => {
+    await navigator.locks.request(draftKey, async () => {
+      (window as typeof window & {
+        __prooflineLockAcquired?: boolean;
+      }).__prooflineLockAcquired = true;
+
+      await new Promise<void>(resolve => {
+        (window as typeof window & {
+          __releaseProoflineLock?: () => void;
+        }).__releaseProoflineLock = resolve;
       });
-    },
-    { key: draftKey, issue: filedIssue },
-  );
+    });
+  }, { draftKey });
 
-  // Let Tab A's deployment-creation request complete.
-  releaseDeployment();
+  try {
+    await expect.poll(async () =>
+      secondTab.evaluate(() =>
+        (window as typeof window & {
+          __prooflineLockAcquired?: boolean;
+        }).__prooflineLockAcquired === true,
+      ),
+    ).toBe(true);
 
-  // Wait for Tab A's publish to report success.
-  await expect(shareTab.getByRole('status')).toContainText('Report published', {
-    timeout: 30_000,
-  });
+    await publish.click();
 
-  // Verify that publication persistence preserves concurrent updates.
-  // The publication update must not replace newer persisted issue or draft data.
-  const afterPublish = await background.evaluate(
-    async (key: string) => chrome.storage.local.get(key),
-    draftKey,
-  );
-  const savedDraft = afterPublish[draftKey] as {
-    issue?: { number: number; url: string; repository: string };
-    publication?: unknown;
-    draft: { title: string; body: string };
-    draftSource: string;
-  };
-  expect(
-    savedDraft.issue,
-    'issue written by another tab must survive a concurrent publish completing',
-  ).toEqual(filedIssue);
-  expect(savedDraft.publication, 'publication must be persisted after publish').toBeDefined();
-  expect(savedDraft.draft).toEqual({
-    title: "Updated in another tab",
-    body: "Concurrent user edits must survive",
-  });
-  expect(savedDraft.draftSource).toBe("edited");
-  expect(deployments, 'exactly one deployment must have been created').toBe(1);
+    await expect.poll(async () =>
+      shareTab.evaluate(async key => {
+        const locks = await navigator.locks.query();
+        return locks.pending?.some(lock => lock.name === key) ?? false;
+      }, draftKey),
+    ).toBe(true);
+
+    await expect(
+      shareTab.getByRole('button', { name: 'Cancel', exact: true }),
+    ).toBeVisible();
+
+    await shareTab.getByRole('button', {
+      name: 'Cancel',
+      exact: true,
+    }).click();
+
+    // Cancellation must finish before the competing tab releases its lock.
+    await expect(
+      shareTab.getByRole('button', { name: 'Cancel', exact: true }),
+    ).toHaveCount(0, { timeout: 5000 });
+
+    expect(
+      externalRequests,
+      'cancelled publication must not contact Cloudflare',
+    ).toBe(0);
+  } finally {
+    await secondTab.evaluate(() => {
+      (window as typeof window & {
+        __releaseProoflineLock?: () => void;
+      }).__releaseProoflineLock?.();
+    }).catch(() => {});
+    await holdingLock.catch(() => {});
+  }
 });
