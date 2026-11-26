@@ -32,6 +32,11 @@ import {
   type IssueDraft,
 } from '@/lib/sharing/summary';
 import { fileIssue } from '@/lib/sharing/file-issue';
+import {
+  waitWithSignal,
+  samePublication,
+  publicationOperationKey,
+} from '@/lib/sharing/concurrency';
 import { issueBody, repositoryPath } from '@/lib/sharing/github';
 import { initialShareState, shareReducer, type ShareState } from './reducer';
 
@@ -44,6 +49,7 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
   const preparation = useRef(0);
   const writes = useRef<Promise<void>>(Promise.resolve());
   const draftKey = `shareDraft:${sessionId}`;
+  const recoveryKey = `${draftKey}:publicationRecovery`;
   const progress = (message: string) => dispatch({ type: 'progress', message });
 
   async function prepare(data: Recording, level: VerbosityLevel) {
@@ -73,7 +79,7 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       const [session, settings, saved, events, assets] = await Promise.all([
         getSession(sessionId),
         loadSharingSettings(),
-        chrome.storage.local.get(draftKey),
+        chrome.storage.local.get([draftKey, recoveryKey]),
         getEvents(sessionId),
         getAssets(sessionId),
       ]);
@@ -82,7 +88,11 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       if (session.status !== 'stopped')
         throw new Error('Stop the recording before sharing it.');
       if (!active) return;
-      const draft = saved[draftKey] as SavedDraft | undefined;
+      const storedDraft = saved[draftKey] as SavedDraft | undefined;
+      const recovery = saved[recoveryKey] as Publication | undefined;
+      const draft = storedDraft && recovery
+        ? { ...storedDraft, publication: recovery }
+        : storedDraft;
       recording.current = { session, events, assets };
       dispatch({ type: 'loaded', session, settings, saved: draft });
       await prepare(recording.current, draft?.publication?.level ?? initialLevel);
@@ -115,14 +125,6 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
     };
   }, [sessionId, initialLevel, draftKey]);
 
-  /** Serialize explicit writes so typing and deployment creation cannot race. */
-  function persist(next: SavedDraft): Promise<void> {
-    const write = writes.current.then(() =>
-      chrome.storage.local.set({ [draftKey]: next }),
-    );
-    writes.current = write.catch(() => {});
-    return write;
-  }
   function snapshot(patch: Partial<SavedDraft> = {}): SavedDraft {
     return {
       draft: state.draft,
@@ -135,25 +137,39 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       ...patch,
     };
   }
-  function persistEdit(next: SavedDraft) {
-    const edited = snapshot(next);
+  function persistEdit(
+    patch: Partial<IssueDraft>,
+    repository?: string,
+  ) {
+    const fallback = snapshot();
     const write = writes.current.then(() =>
       navigator.locks.request(draftKey, async () => {
         const stored = (await chrome.storage.local.get(draftKey))[draftKey] as
           SavedDraft | undefined;
-        // Another share tab may already have filed the issue while this tab was editing.
-        const saved = stored
-          ? {
-              ...edited,
-              repository: stored.attempt?.repository ?? stored.issue?.repository ?? edited.repository,
-              publication: stored.publication,
-              issue: stored.issue,
-              attempt: stored.attempt,
-            }
-          : edited;
+        const latest = stored ?? fallback;
+
+        const draftSource =
+          patch.body !== undefined
+            ? 'edited'
+            : patch.title !== undefined && latest.draftSource === 'initial'
+              ? 'title-edited'
+              : latest.draftSource;
+
+        const saved: SavedDraft = {
+          ...latest,
+          draft: { ...latest.draft, ...patch },
+          draftSource,
+          repository:
+            latest.attempt?.repository ??
+            latest.issue?.repository ??
+            repository ??
+            latest.repository,
+        };
+
         await chrome.storage.local.set({ [draftKey]: saved });
       }),
     );
+
     writes.current = write.catch(() => {});
     void write.catch(() =>
       dispatch({
@@ -162,6 +178,7 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       }),
     );
   }
+
   function editDraft(patch: Partial<IssueDraft>) {
     const draft = { ...state.draft, ...patch };
     const draftSource =
@@ -170,48 +187,104 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
         : state.draftSource === 'initial'
           ? 'title-edited'
           : state.draftSource;
+
     dispatch({ type: 'draft', draft, source: draftSource });
-    persistEdit({
-      draft,
-      draftSource,
-      repository: state.repository,
-      publication: state.publication,
-    });
+    persistEdit(patch);
   }
+
   function editRepository(repository: string) {
     if (operation.current || state.attempt || state.issue) return;
     dispatch({ type: 'repository', repository });
-    persistEdit({ draft: state.draft, repository, publication: state.publication });
+    persistEdit({}, repository);
+
     try {
       const path = repositoryPath(repository);
-      void rememberRepository(path).catch(() => dispatch({ type: 'error', message: 'Could not remember the repository selection.' }));
-    } catch { /* An incomplete typed repository is saved only with this draft. */ }
-  }
-  async function remember(publication?: Publication, lockHeld = false) {
-    dispatch({ type: 'publication', publication });
-
-    const save = async () => {
-      const stored = (await chrome.storage.local.get(draftKey))[draftKey] as
-        SavedDraft | undefined;
-      const next = stored
-        ? { ...stored, publication }
-        : snapshot({ publication });
-      await chrome.storage.local.set({ [draftKey]: next });
-    };
-
-    // Publication already owns the session lock. Acquiring it again here
-    // would deadlock, so write the checkpoint directly under that lock.
-    if (lockHeld) {
-      await save();
-      return;
+      void rememberRepository(path).catch(() =>
+        dispatch({
+          type: 'error',
+          message: 'Could not remember the repository selection.',
+        }),
+      );
+    } catch {
+      /* An incomplete typed repository is saved only with this draft. */
     }
-
-    const write = writes.current.then(() =>
-      navigator.locks.request(draftKey, save),
-    );
-    writes.current = write.catch(() => {});
-    await write;
   }
+
+  async function readDraft(): Promise<SavedDraft> {
+    const records = await chrome.storage.local.get([
+      draftKey,
+      recoveryKey,
+    ]);
+    const stored = records[draftKey] as SavedDraft | undefined;
+    const recovery = records[recoveryKey] as Publication | undefined;
+    const latest = stored ?? snapshot();
+
+    return recovery
+      ? { ...latest, publication: recovery }
+      : latest;
+  }
+
+  async function updateDraft(
+    update: (latest: SavedDraft) => SavedDraft,
+    signal?: AbortSignal,
+  ): Promise<SavedDraft> {
+    return navigator.locks.request(
+      draftKey,
+      { mode: 'exclusive', ...(signal ? { signal } : {}) },
+      async () => {
+        const latest = await readDraft();
+        signal?.throwIfAborted();
+        const next = update(latest);
+        await chrome.storage.local.set({ [draftKey]: next });
+        return next;
+      },
+    );
+  }
+
+  async function withOperation(
+    signal: AbortSignal,
+    task: () => Promise<void>,
+  ) {
+    await waitWithSignal(writes.current, signal);
+    await navigator.locks.request(
+      publicationOperationKey(draftKey),
+      { mode: 'exclusive', signal },
+      async () => {
+        signal.throwIfAborted();
+
+        // Promote an interrupted publication checkpoint before
+        // starting another external operation.
+        // Ensure even a first-time publication has a durable draft.
+        // Also promote any recovery checkpoint left by an interrupted tab.
+        await updateDraft(latest => latest, signal);
+        await chrome.storage.local.remove(recoveryKey);
+
+        signal.throwIfAborted();
+        await task();
+      },
+    );
+  }
+
+  async function remember(publication?: Publication) {
+    // Persist recovery metadata before waiting for the draft lock.
+    if (publication)
+      await chrome.storage.local.set({ [recoveryKey]: publication });
+
+    await updateDraft(latest => ({ ...latest, publication }));
+    await chrome.storage.local.remove(recoveryKey);
+
+    dispatch({ type: 'publication', publication });
+  }
+
+  async function requirePublication(expected: Publication) {
+    const latest = await readDraft();
+    if (!samePublication(expected, latest.publication)) {
+      dispatch({ type: 'publication', publication: latest.publication });
+      throw new Error('The report changed in another tab. Review its current state before retrying.');
+    }
+    return latest.publication!;
+  }
+
   async function run(
     kind: ShareState['operation'],
     task: (signal: AbortSignal) => Promise<void>,
@@ -234,18 +307,21 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       dispatch({ type: 'finish' });
     }
   }
-  async function publishedConfig() {
+  async function publishedConfig(publication: Publication) {
     const current = (await loadSharingSettings()).cloudflare;
-    const publication = state.publication;
-    if (!publication || isProoflinePublication(publication)) throw new Error('No Cloudflare deployment to manage.');
+    if (isProoflinePublication(publication))
+      throw new Error('No Cloudflare deployment to manage.');
     if (current.accountId !== publication.destination.accountId)
       throw new Error(
         'Select this report’s Cloudflare account in settings to manage its deployment.',
       );
     return { ...publication.destination, apiToken: current.apiToken };
   }
+
   function generate() {
     return run('summary', async (signal) => {
+      await waitWithSignal(writes.current, signal);
+      const before = await readDraft();
       const config = await loadSharingSettings();
       progress('Generating issue summary…');
       const draft = await generateConfiguredSummary(
@@ -253,176 +329,261 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
         state.evidence,
         signal,
       );
-      dispatch({ type: 'draft', draft, source: 'generated' });
-      await persist(snapshot({ draft, draftSource: 'generated' }));
+
+      const saved = await updateDraft(latest => {
+        if (
+          latest.draft.title !== before.draft.title ||
+          latest.draft.body !== before.draft.body ||
+          latest.draftSource !== before.draftSource
+        )
+          throw new Error('The draft changed while generating the summary. Your edits were kept.');
+
+        return { ...latest, draft, draftSource: 'generated' };
+      }, signal);
+
+      dispatch({ type: 'draft', draft: saved.draft, source: 'generated' });
       progress('Summary ready.');
     });
   }
+
   function publish() {
+    const expected = state.publication;
+
     return run('publish', async (signal) => {
-      if (!state.files.length) throw new Error('The report is still preparing.');
+      await withOperation(signal, async () => {
+        const stored = await readDraft();
+        const previous = stored.publication;
 
-      // Finish this tab's pending edits before entering the shared lock.
-      await writes.current;
+        if (expected && !samePublication(expected, previous)) {
+          dispatch({ type: 'publication', publication: previous });
+          throw new Error('The report changed in another tab. Review its current state before retrying.');
+        }
 
-      // Acquire the lock before making external changes. If another tab is
-      // filing an issue, cancellation can stop us before creating a report.
-      await navigator.locks.request(
-        draftKey,
-        { mode: 'exclusive', signal },
-        async () => {
-          const stored = (await chrome.storage.local.get(draftKey))[draftKey] as
-            SavedDraft | undefined;
+        if (!expected && previous && previous.level !== state.level) {
+          dispatch({ type: 'publication', publication: previous });
+          throw new Error('Another tab published a report at a different detail level.');
+        }
 
-          // Never resume using a stale publication from this tab if another
-          // tab has updated or removed it in the meantime.
-          const previous = stored ? stored.publication : state.publication;
-          const checkpoint = (publication?: Publication) =>
-            remember(publication, true);
+        dispatch({ type: 'publication', publication: previous });
 
-          signal.throwIfAborted();
-          const settings = await loadSharingSettings();
+        const level = previous?.level ?? state.level;
+        const files = level === state.level
+          ? state.files
+          : recording.current
+            ? await buildHostedReport({ ...recording.current, level })
+            : [];
 
-          if (
-            settings.proofline?.publishing === 'proofline' ||
-            (previous && isProoflinePublication(previous))
-          ) {
-            await publishProoflineReport(
-              settings.proofline!,
-              state.files,
-              stored?.draft.title ?? state.draft.title,
-              state.level,
-              previous,
-              checkpoint,
-              progress,
-              signal,
-            );
-            progress('Private report published.');
-            return;
-          }
+        if (!files.length)
+          throw new Error('The report is still preparing.');
 
-          if (previous && !isProoflinePublication(previous)) {
-            if (publicationReady(previous)) {
-              await checkpoint(previous);
-              progress('Report published. File a GitHub issue to share its link.');
-              return;
-            }
+        if (level !== state.level)
+          await prepare(recording.current!, level);
 
-            if (settings.cloudflare.accountId !== previous.destination.accountId)
-              throw new Error(
-                'Select this report’s Cloudflare account in settings to finish its deployment.',
-              );
+        signal.throwIfAborted();
+        const settings = await loadSharingSettings();
 
+        if (
+          (previous && isProoflinePublication(previous)) ||
+          (!previous && settings.proofline?.publishing === 'proofline')
+        ) {
+          await publishProoflineReport(
+            settings.proofline!,
+            files,
+            stored.draft.title,
+            level,
+            previous,
+            remember,
+            progress,
+            signal,
+          );
+          progress('Private report published.');
+          return;
+        }
+
+        if (previous && !isProoflinePublication(previous)) {
+          if (!publicationReady(previous)) {
             const deployment = await waitForDeployment(
-              {
-                ...previous.destination,
-                apiToken: settings.cloudflare.apiToken,
-              },
+              await publishedConfig(previous),
               previous.deployment,
               progress,
               signal,
             );
-
-            await checkpoint({ ...previous, deployment });
-            progress('Report published. File a GitHub issue to share its link.');
-            return;
+            await remember({ ...previous, deployment });
           }
-
-          const config = settings.cloudflare;
-          const { apiToken: _secret, ...destination } = config;
-
-          const deployment = await publishReport(
-            config,
-            state.files,
-            progress,
-            signal,
-            (created) =>
-              checkpoint({
-                deployment: created,
-                destination,
-                level: state.level,
-              }),
-          );
-
-          await checkpoint({
-            deployment,
-            destination,
-            level: state.level,
-          });
-
           progress('Report published. File a GitHub issue to share its link.');
-        },
-      );
+          return;
+        }
+
+        const config = settings.cloudflare;
+        const { apiToken: _secret, ...destination } = config;
+
+        const deployment = await publishReport(
+          config,
+          files,
+          progress,
+          signal,
+          created => remember({ deployment: created, destination, level }),
+        );
+
+        await remember({ deployment, destination, level });
+        progress('Report published. File a GitHub issue to share its link.');
+      });
     });
   }
+
   function checkDeployment() {
-    if (state.publication && isProoflinePublication(state.publication)) return publish();
+    const expected = state.publication;
+    if (!expected) return;
+    if (isProoflinePublication(expected)) return publish();
+
     return run('check', async (signal) => {
-      if (!state.publication || isProoflinePublication(state.publication)) return;
-      const deployment = await waitForDeployment(
-        await publishedConfig(),
-        state.publication.deployment,
-        progress,
-        signal,
-      );
-      await remember({ ...state.publication, deployment });
-      progress('Report published.');
+      await withOperation(signal, async () => {
+        const current = await requirePublication(expected);
+        if (isProoflinePublication(current))
+          throw new Error('The report changed in another tab.');
+
+        dispatch({ type: 'publication', publication: current });
+
+        const deployment = await waitForDeployment(
+          await publishedConfig(current),
+          current.deployment,
+          progress,
+          signal,
+        );
+
+        const saved = await updateDraft(latest => {
+          if (!samePublication(current, latest.publication))
+            return latest;
+
+          return {
+            ...latest,
+            publication: { ...current, deployment },
+          };
+        }, signal);
+
+        dispatch({ type: 'publication', publication: saved.publication });
+
+        if (!samePublication(current, saved.publication))
+          throw new Error('The report changed in another tab.');
+
+        progress('Report published.');
+      });
     });
   }
+
   function unpublish() {
-    return run('delete', async () => {
-      if (!state.publication) return;
-      if (isProoflinePublication(state.publication)) {
-        const settings = await loadSharingSettings();
-        if (settings.proofline?.connection?.organizationId !== state.publication.organizationId) throw new Error('Reconnect the original Proofline workspace to delete this report.');
-        await prooflineRequest(settings.proofline, `/reports/${state.publication.id}`, { method: 'DELETE' });
+    const expected = state.publication;
+    if (!expected) return;
+
+    return run('delete', async (signal) => {
+      await withOperation(signal, async () => {
+        const publication = await requirePublication(expected);
+
+        if (isProoflinePublication(publication)) {
+          const settings = await loadSharingSettings();
+          if (
+            settings.proofline?.connection?.organizationId !==
+            publication.organizationId
+          )
+            throw new Error('Reconnect the original Proofline workspace to delete this report.');
+
+          signal.throwIfAborted();
+          await prooflineRequest(
+            settings.proofline,
+            `/reports/${publication.id}`,
+            { method: 'DELETE' },
+          );
+        } else {
+          const config = await publishedConfig(publication);
+          signal.throwIfAborted();
+          await deletePublishedReport(config, publication.deployment.id);
+        }
+
         await remember();
-        progress('Report deleted. Local recording kept.');
-        return;
-      }
-      await deletePublishedReport(
-        await publishedConfig(),
-        state.publication.deployment.id,
-      );
-      await remember();
-      progress('Report unpublished. Local recording kept.');
+        progress('Report unpublished. Local recording kept.');
+      });
     });
   }
+
   const finalBody = state.publication && publicationReady(state.publication)
     ? issueBody(state.draft, publicationUrl(state.publication))
     : '';
   function submitIssue() {
     return run('github', async (signal) => {
-      await writes.current;
-      await navigator.locks.request(
-        draftKey,
-        { mode: 'exclusive', signal },
-        async () => {
-          const stored = (await chrome.storage.local.get(draftKey))[draftKey] as
-            SavedDraft | undefined;
-          const saved = stored ? { ...stored, repository: stored.repository || state.repository } : snapshot();
-          await rememberRepository(saved.attempt?.repository ?? saved.repository);
-          const result = await fileIssue({
-            saved,
-            settings: await loadSharingSettings(),
-            files: state.files,
-            evidence: state.evidence,
-            level: state.level,
-            signal,
-            progress,
-            stage: (stage) => dispatch({ type: 'stage', stage }),
-            save: async (next) => {
-              await persist(next);
-              dispatch({ type: 'saved', saved: next });
-            },
-          });
-          dispatch({ type: 'saved', saved: result });
-          progress(`Issue #${result.issue!.number} created.`);
-          await chrome.tabs.create({ url: result.issue!.url });
-        },
-      );
+      await withOperation(signal, async () => {
+        const stored = await readDraft();
+        const saved = {
+          ...stored,
+          repository: stored.repository || state.repository,
+        };
+
+        const level = saved.publication?.level ?? state.level;
+        const files = level === state.level
+          ? state.files
+          : recording.current
+            ? await buildHostedReport({ ...recording.current, level })
+            : [];
+
+        signal.throwIfAborted();
+        await rememberRepository(saved.attempt?.repository ?? saved.repository);
+
+        const result = await fileIssue({
+          saved,
+          settings: await loadSharingSettings(),
+          files,
+          evidence: state.evidence,
+          level,
+          signal,
+          progress,
+          stage: stage => dispatch({ type: 'stage', stage }),
+          save: async (_next, patch) => {
+            if (patch.publication)
+              await chrome.storage.local.set({
+                [recoveryKey]: patch.publication,
+              });
+
+            const merged = await updateDraft(latest => {
+              const changes = { ...patch };
+
+              // Automatic summaries must not replace user edits
+              // made while the summary request was running.
+              if (
+                changes.draftSource === 'generated' &&
+                (
+                  latest.draft.title !== saved.draft.title ||
+                  latest.draft.body !== saved.draft.body ||
+                  latest.draftSource !== saved.draftSource
+                )
+              ) {
+                delete changes.draft;
+                delete changes.draftSource;
+              }
+
+              return {
+                ...latest,
+                ...changes,
+                repository:
+                  changes.attempt?.repository ??
+                  changes.issue?.repository ??
+                  latest.repository,
+              };
+            });
+
+            if (patch.publication)
+              await chrome.storage.local.remove(recoveryKey);
+
+            dispatch({ type: 'saved', saved: merged });
+            return merged;
+          },
+        });
+
+        dispatch({ type: 'saved', saved: await readDraft() });
+        progress(`Issue #${result.issue!.number} created.`);
+        await chrome.tabs.create({ url: result.issue!.url });
+      });
     });
   }
+
   function copyIssue() {
     return run('copy', async () => {
       await navigator.clipboard.writeText(finalBody);

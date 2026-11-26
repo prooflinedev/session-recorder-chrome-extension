@@ -27,7 +27,10 @@ interface FileIssueInput {
   files: ExportFile[];
   evidence: string;
   level: VerbosityLevel;
-  save: (draft: SavedDraft) => Promise<void>;
+  save: (
+    draft: SavedDraft,
+    patch: Partial<SavedDraft>,
+  ) => Promise<SavedDraft | void>;
   progress: (message: string) => void;
   signal: AbortSignal;
   stage?: (stage: FilingStage) => void;
@@ -38,7 +41,7 @@ export async function fileIssue(input: FileIssueInput): Promise<SavedDraft> {
   let saved = { ...input.saved };
   async function checkpoint(patch: Partial<SavedDraft>) {
     saved = { ...saved, ...patch };
-    await save(saved);
+    saved = (await save(saved, patch)) ?? saved;
   }
   if (saved.issue) return saved;
   signal.throwIfAborted();
@@ -122,8 +125,8 @@ export async function fileIssue(input: FileIssueInput): Promise<SavedDraft> {
   signal.throwIfAborted();
   input.stage?.('publish');
   if (
-    settings.proofline?.publishing === 'proofline' ||
-    (saved.publication && isProoflinePublication(saved.publication))
+    (saved.publication && isProoflinePublication(saved.publication)) ||
+    (!saved.publication && settings.proofline?.publishing === 'proofline')
   ) {
     await publishProoflineReport(
       settings.proofline!,
