@@ -185,6 +185,12 @@ function render(): void {
   h.appendChild(meta);
   root.appendChild(h);
 
+  const annotations = el('nav', 'r-annotations');
+  annotations.setAttribute('aria-label', 'Annotations');
+  annotations.appendChild(el('h2', undefined, 'Annotations'));
+  const annotationLinks = el('ul');
+  annotations.appendChild(annotationLinks);
+
   // Timeline (group consecutive net-requests into <details>)
   const tl = el('div', 'r-tl');
   let i = 0;
@@ -214,10 +220,25 @@ function render(): void {
       tl.appendChild(run.length >= 2 ? voiceGroup(run) : eventNode(e, mediaUrls));
       i = j;
     } else {
-      tl.appendChild(eventNode(e, mediaUrls));
+      const row = eventNode(e, mediaUrls);
+      tl.appendChild(row);
+      if (e.type === 'note' || e.type === 'marker' || e.type === 'annotation') {
+        row.id = `annotation-${e.id}`;
+        row.tabIndex = -1;
+        let title: string;
+        if (e.type === 'note') title = e.payload.text;
+        else if (e.type === 'marker') title = e.payload.name;
+        else title = e.payload.shapes.find((shape) => shape.text?.trim())?.text ?? 'Screenshot annotation';
+        const link = el('a', undefined, `${formatClock(e.t)} ${label(title)}`);
+        link.href = `#${encodeURIComponent(row.id)}`;
+        const item = el('li');
+        item.appendChild(link);
+        annotationLinks.appendChild(item);
+      }
       i += 1;
     }
   }
+  if (annotationLinks.childElementCount) root.appendChild(annotations);
   root.appendChild(tl);
 
   reportEl.replaceChildren(root);
