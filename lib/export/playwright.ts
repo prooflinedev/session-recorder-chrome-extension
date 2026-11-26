@@ -956,7 +956,7 @@ class ReproWriter {
     this.filled.set(loc.expr, { value: p.value, causes: this.causes });
     const method = type.startsWith('select') ? 'selectOption' : 'fill';
     if (p.redacted || p.value === REDACTION_MARKER) {
-      this.secretFill(loc, this.envFor(d, loc.expr), method, e.t);
+      this.secretFill(loc, d, method, e.t);
       return;
     }
     // Pauses while typing split one edit into several input events; keep the last value.
@@ -1103,10 +1103,23 @@ class ReproWriter {
    * origin of the field's own page and types into that same field, so a
    * navigation in between detaches it instead of sending the secret elsewhere.
    */
-  private secretFill(loc: Located, env: string, method: string, t: number): void {
+  private secretFill(
+    loc: Located,
+    d: ElementDescriptor,
+    method: string,
+    t: number,
+  ): void {
     const page = this.currentUrl !== undefined ? parseUrl(this.currentUrl) : undefined;
-    let expected = page ? lit(page.origin) : undefined;
-    if (page && page.origin === this.origin) {
+    if (!page) {
+      this.comment(
+        t,
+        `A redacted value typed here is left out: no page is open yet to check its site. Field: ${loc.expr}`,
+      );
+      return;
+    }
+    const env = this.envFor(d, loc.expr);
+    let expected = lit(page.origin);
+    if (page.origin === this.origin) {
       this.usesAppUrl = true;
       expected = 'appOrigin';
     }
@@ -1114,11 +1127,7 @@ class ReproWriter {
     this.steps.push(
       '{',
       `  const field = (await ${loc.expr}.elementHandle())!; // ${stamp(t)}${loc.weak ? ' weak locator, check it' : ''}`,
-      ...(expected
-        ? [
-            `  expect(await field.evaluate(() => location.origin), ${message}).toBe(${expected});`,
-          ]
-        : []),
+      `  expect(await field.evaluate(() => location.origin), ${message}).toBe(${expected});`,
       `  await field.${method}(process.env.${env} ?? '');`,
       '}',
     );

@@ -428,6 +428,31 @@ describe('buildPlaywrightRepro', () => {
     }
   });
 
+  it('leaves out a secret typed before the test has a page to check', () => {
+    const session = fixtureSession({ initialUrl: 'chrome://newtab/' });
+    const code =
+      buildPlaywrightRepro(
+        session,
+        [
+          input(1000, { tag: 'input', name: 'password' }, '«redacted»', {
+            redacted: true,
+            inputType: 'password',
+          }),
+          nav(2000, 'https://app.example.com/login', 'typed'),
+          click(3000, button('Sign in')),
+        ],
+        { level: 'L0' },
+      ) ?? '';
+    expect(code).toContain(
+      'A redacted value typed here is left out: no page is open yet to check its site.',
+    );
+    expect(code).not.toContain('REPRO_PASSWORD');
+    expect(steps(code)).toEqual([
+      "await page.goto(appUrl('/login'));",
+      "await page.getByRole('button', { name: 'Sign in', exact: true }).click();",
+    ]);
+  });
+
   it('gives each site its own variable for a secret field', () => {
     const pass = { tag: 'input', id: 'password' };
     const code = repro([
