@@ -9,6 +9,7 @@ import {
   DEFAULT_KEY_PATTERN,
   REDACTED,
   buildKeyMatcher,
+  isSecretValue,
   redactBody,
   redactHeaders,
   redactUrl,
@@ -353,5 +354,71 @@ describe('redactUrl', () => {
   it('matches param names after url-decoding', () => {
     const out = redactUrl('https://x.com/p?api%5Fkey=v&z=1', EMPTY_RULES);
     expect(out).toBe(`https://x.com/p?api%5Fkey=${REDACTED}&z=1`);
+  });
+});
+
+describe('isSecretValue', () => {
+  const JWT =
+    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+
+  it('detects a JWT on its own or inside a longer value', () => {
+    expect(isSecretValue(JWT)).toBe(true);
+    expect(isSecretValue(`Bearer ${JWT}`)).toBe(true);
+  });
+
+  it('detects card numbers that pass the Luhn check, with or without grouping', () => {
+    expect(isSecretValue('4111111111111111')).toBe(true);
+    expect(isSecretValue('4111 1111 1111 1111')).toBe(true);
+    expect(isSecretValue('5500-0000-0000-0004')).toBe(true);
+    expect(isSecretValue('378282246310005')).toBe(true);
+  });
+
+  it('leaves ordinary values alone', () => {
+    expect(isSecretValue('4111111111111112')).toBe(false); // fails Luhn
+    expect(isSecretValue('1234567890')).toBe(false); // too short
+    expect(isSecretValue('order 4111111111111111 shipped')).toBe(false); // not the whole value
+    expect(isSecretValue('2026-11-26')).toBe(false);
+    expect(isSecretValue('eyJ-not-a-token')).toBe(false);
+    expect(isSecretValue('hello world')).toBe(false);
+  });
+});
+
+describe('value-based redaction', () => {
+  const JWT =
+    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+
+  it('masks secret values under generic JSON keys, at any depth', () => {
+    const body = JSON.stringify({
+      data: JWT,
+      payment: { number: '4111 1111 1111 1111', holder: 'Jane Doe' },
+      items: [{ id: 42, ref: '5500000000000004' }],
+    });
+    const out = redactBody(body, 'application/json', EMPTY_RULES);
+    expect(out.redacted).toBe(true);
+    const parsed = JSON.parse(out.text);
+    expect(parsed.data).toBe(REDACTED);
+    expect(parsed.payment.number).toBe(REDACTED);
+    expect(parsed.payment.holder).toBe('Jane Doe');
+    expect(parsed.items[0]).toEqual({ id: 42, ref: REDACTED });
+  });
+
+  it('does not touch numbers stored as JSON numbers', () => {
+    const body = JSON.stringify({ id: 4111111111111111 });
+    expect(redactBody(body, 'application/json', EMPTY_RULES).redacted).toBe(false);
+  });
+
+  it('masks secret values in form bodies', () => {
+    const out = redactBody(
+      `cc=4111+1111+1111+1111&name=Jane&t=${JWT}`,
+      'application/x-www-form-urlencoded',
+      EMPTY_RULES,
+    );
+    expect(out.text).toBe(`cc=${REDACTED}&name=Jane&t=${REDACTED}`);
+  });
+
+  it('masks secret values in URL query params', () => {
+    expect(redactUrl(`https://x.com/cb?t=${JWT}&page=2`, EMPTY_RULES)).toBe(
+      `https://x.com/cb?t=${REDACTED}&page=2`,
+    );
   });
 });

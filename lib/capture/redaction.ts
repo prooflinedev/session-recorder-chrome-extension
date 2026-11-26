@@ -34,6 +34,42 @@ export const DEFAULT_KEY_PATTERN: RegExp =
   /token|secret|password|passwd|api[-_]?key|session|auth|credential|bearer/i;
 
 /**
+ * A JSON Web Token anywhere in the value: base64url header and payload that
+ * both decode to a JSON object (so both start with `eyJ`), then a signature.
+ */
+const JWT_VALUE_PATTERN = /\beyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/;
+
+/** A whole value that is 13–19 digits, optionally grouped by spaces or dashes. */
+const CARD_VALUE_PATTERN = /^\d(?:[ -]?\d){12,18}$/;
+
+/** Luhn checksum, the check digit every payment card number carries. */
+function passesLuhn(digits: string): boolean {
+  let sum = 0;
+  for (let i = 0; i < digits.length; i++) {
+    let d = digits.charCodeAt(digits.length - 1 - i) - 48;
+    if (i % 2 === 1) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    sum += d;
+  }
+  return sum % 10 === 0;
+}
+
+/**
+ * True if a string value is itself a secret, whatever key it sits under:
+ * it contains a JWT, or it is a payment card number (13–19 digits that pass
+ * the Luhn check). Key-based matching misses these when the key is generic,
+ * e.g. `{"data": "eyJ…"}` or `{"number": "4111 1111 1111 1111"}`.
+ */
+export function isSecretValue(value: string): boolean {
+  if (JWT_VALUE_PATTERN.test(value)) return true;
+  const trimmed = value.trim();
+  if (!CARD_VALUE_PATTERN.test(trimmed)) return false;
+  return passesLuhn(trimmed.replace(/[ -]/g, ''));
+}
+
+/**
  * Compile a set of extra regex source strings into predicates. Invalid patterns
  * are skipped rather than throwing, keeping the module robust to bad user input.
  */
@@ -123,6 +159,9 @@ function redactJsonValue(
     }
     return { value: obj, redacted };
   }
+  if (typeof value === 'string' && isSecretValue(value)) {
+    return { value: REDACTED, redacted: true };
+  }
   return { value, redacted: false };
 }
 
@@ -183,7 +222,7 @@ function redactForm(
     const eq = part.indexOf('=');
     if (eq === -1) return part;
     const rawKey = part.slice(0, eq);
-    if (matcher(safeDecode(rawKey))) {
+    if (matcher(safeDecode(rawKey)) || isSecretValue(safeDecode(part.slice(eq + 1)))) {
       redacted = true;
       return `${rawKey}=${REDACTED}`;
     }
@@ -256,7 +295,7 @@ export function redactUrl(url: string, rules: RedactionRules): string {
     const eq = part.indexOf('=');
     if (eq === -1) return part; // flag param, no value to redact
     const rawKey = part.slice(0, eq);
-    if (matcher(safeDecode(rawKey))) {
+    if (matcher(safeDecode(rawKey)) || isSecretValue(safeDecode(part.slice(eq + 1)))) {
       changed = true;
       return `${rawKey}=${REDACTED}`;
     }
