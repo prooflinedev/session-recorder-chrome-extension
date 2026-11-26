@@ -187,7 +187,7 @@ function typeErrors(code: string): string[] {
 /** The `whole` HAR entry filter exactly as the generated spec defines it. */
 function harFilter(code: string): (entry: unknown) => boolean {
   const start = code.indexOf('const whole = ');
-  const end = code.indexOf('< 400));', start) + '< 400));'.length;
+  const end = code.indexOf('));\n', start) + '));'.length;
   const js = ts.transpileModule(`${code.slice(start, end)}\nmodule.exports = whole;`, {
     compilerOptions: { module: ts.ModuleKind.CommonJS },
   }).outputText;
@@ -1035,13 +1035,19 @@ describe('buildPlaywrightRepro', () => {
       content: object,
       postData?: object,
       method = 'GET',
+      redirectURL = '',
     ) => ({
       request: postData ? { method, postData } : { method },
-      response: { status, content },
+      response: { status, redirectURL, content },
     });
     expect(whole(entry(200, { text: '[]' }))).toBe(true);
     expect(whole(entry(204, {}))).toBe(true);
-    expect(whole(entry(302, {}))).toBe(true);
+    expect(
+      whole(entry(302, {}, undefined, 'GET', 'https://app.example.com/home')),
+    ).toBe(true);
+    // A redirect without a target, or a 304 for a cache the test does not have.
+    expect(whole(entry(302, {}))).toBe(false);
+    expect(whole(entry(304, {}))).toBe(false);
     expect(whole(entry(200, { text: '[', comment: 'partial' }))).toBe(false);
     expect(whole(entry(200, {}))).toBe(false);
     expect(whole(entry(200, { text: '{}' }, { comment: 'partial' }))).toBe(false);
