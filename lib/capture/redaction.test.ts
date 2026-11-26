@@ -354,4 +354,91 @@ describe('redactUrl', () => {
     const out = redactUrl('https://x.com/p?api%5Fkey=v&z=1', EMPTY_RULES);
     expect(out).toBe(`https://x.com/p?api%5Fkey=${REDACTED}&z=1`);
   });
+
+  it('redacts Azure SAS sig, CloudFront/S3 Signature & AWSAccessKeyId, and Google key= params', () => {
+    const azure = redactUrl(
+      'https://acct.blob.core.windows.net/c/file.pdf?sv=2022-11-02&sp=rw&sig=FAKE_SAS_SIG',
+      EMPTY_RULES,
+    );
+    expect(azure).toBe(
+      `https://acct.blob.core.windows.net/c/file.pdf?sv=2022-11-02&sp=rw&sig=${REDACTED}`,
+    );
+
+    const s3 = redactUrl(
+      'https://cdn.example.com/report.pdf?AWSAccessKeyId=AKIAIOSFODNN7&Expires=1700000000&Signature=SECRET_SIG&Key-Pair-Id=K1',
+      EMPTY_RULES,
+    );
+    expect(s3).toBe(
+      `https://cdn.example.com/report.pdf?AWSAccessKeyId=${REDACTED}&Expires=1700000000&Signature=${REDACTED}&Key-Pair-Id=K1`,
+    );
+
+    const gapi = redactUrl(
+      'https://maps.googleapis.com/maps/api/js?key=AIzaFakeKey123&keyword=coffee',
+      EMPTY_RULES,
+    );
+    expect(gapi).toBe(
+      `https://maps.googleapis.com/maps/api/js?key=${REDACTED}&keyword=coffee`,
+    );
+  });
+
+  it('redacts user:password@ credentials in URLs and keeps username intact', () => {
+    expect(redactUrl('http://admin:FAKE_PASSWORD@localhost:5319/x', EMPTY_RULES)).toBe(
+      `http://admin:${REDACTED}@localhost:5319/x`,
+    );
+    expect(
+      redactUrl('https://svc:hunter2@internal.example.com/api?token=abc', EMPTY_RULES),
+    ).toBe(`https://svc:${REDACTED}@internal.example.com/api?token=${REDACTED}`);
+    expect(
+      redactUrl('//admin:password@files.example.com/file?sig=ABC', EMPTY_RULES),
+    ).toBe(`//admin:${REDACTED}@files.example.com/file?sig=${REDACTED}`);
+  });
+});
+
+describe('redactHeaders — URL-bearing headers (#63)', () => {
+  it('redacts query secrets and userinfo passwords inside Location, Referer, Content-Location, and Refresh', () => {
+    const out = redactHeaders(
+      [
+        { name: 'Location', value: 'https://files.example/r.pdf?token=SECRET&dl=1' },
+        { name: 'Referer', value: 'https://app.example.com/reset?session_token=XYZ&step=2' },
+        { name: 'Content-Location', value: '/download?sig=AZURE_SIG' },
+        { name: 'Refresh', value: '0; url="https://files.example/download?sig=SECRET"' },
+        { name: 'Refresh', value: '5; url=//admin:pass@files.example/r.pdf?token=T1' },
+        { name: 'Refresh', value: '10' },
+        { name: 'Content-Type', value: 'application/json' },
+      ],
+      EMPTY_RULES,
+    );
+    expect(out).toEqual([
+      { name: 'Location', value: `https://files.example/r.pdf?token=${REDACTED}&dl=1` },
+      { name: 'Referer', value: `https://app.example.com/reset?session_token=${REDACTED}&step=2` },
+      { name: 'Content-Location', value: `/download?sig=${REDACTED}` },
+      { name: 'Refresh', value: `0; url="https://files.example/download?sig=${REDACTED}"` },
+      { name: 'Refresh', value: `5; url=//admin:${REDACTED}@files.example/r.pdf?token=${REDACTED}` },
+      { name: 'Refresh', value: '10' },
+      { name: 'Content-Type', value: 'application/json' },
+    ]);
+  });
+});
+
+describe('redactBody — private_key and otp (#61)', () => {
+  it('redacts private_key, privateKey, and otp without matching prototype or keyword', () => {
+    const input = JSON.stringify({
+      private_key: '-----BEGIN PRIVATE KEY-----',
+      privateKey: 'pem-secret',
+      otp: '482910',
+      otpCode: '991122',
+      prototype: 'keep-me',
+      keyword: 'search-term',
+    });
+    const { text, redacted } = redactBody(input, 'application/json', EMPTY_RULES);
+    expect(redacted).toBe(true);
+    expect(JSON.parse(text)).toEqual({
+      private_key: REDACTED,
+      privateKey: REDACTED,
+      otp: REDACTED,
+      otpCode: REDACTED,
+      prototype: 'keep-me',
+      keyword: 'search-term',
+    });
+  });
 });
