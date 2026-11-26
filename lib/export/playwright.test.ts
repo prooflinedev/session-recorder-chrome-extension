@@ -516,6 +516,20 @@ describe('buildPlaywrightRepro', () => {
     ]);
   });
 
+  it("never gives a secret field one of the test's own variables", () => {
+    const code = repro([
+      input(1000, { tag: 'input', name: 'base_url' }, '«redacted»', { redacted: true }),
+      input(2000, { tag: 'input', name: 'replay_network' }, '«redacted»', {
+        redacted: true,
+      }),
+    ]);
+    expect(code).toContain("await field.fill(process.env.REPRO_BASE_URL_2 ?? '');");
+    expect(code).toContain(
+      "await field.fill(process.env.REPRO_REPLAY_NETWORK_2 ?? '');",
+    );
+    expect(code).not.toContain("fill(process.env.REPRO_BASE_URL ?? '')");
+  });
+
   it('gives each site its own variable for a secret field', () => {
     const pass = { tag: 'input', id: 'password' };
     const code = repro([

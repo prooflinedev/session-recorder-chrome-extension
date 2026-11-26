@@ -112,6 +112,9 @@ const MAX_HISTORY_WAIT_MS = 3000;
 /** How long the end-of-test re-check gives late errors to surface. */
 const FINAL_CHECK_WAIT_MS = 1000;
 
+/** Variables the test reads for its own settings; a redacted field never gets one. */
+const TEST_SETTINGS_ENV = new Set(['REPRO_BASE_URL', 'REPRO_REPLAY_NETWORK']);
+
 /** An input event this soon after a click on the same control is the change it caused. */
 const CLICK_CHANGE_WINDOW_MS = 2000;
 
@@ -1175,8 +1178,10 @@ class ReproWriter {
       .slice(0, 40);
     const base = `REPRO_${slug || 'INPUT'}`;
     let name = base;
-    for (let n = 2; this.envFields.some((f) => f.name === name); n += 1)
-      name = `${base}_${n}`;
+    const taken = (candidate: string) =>
+      TEST_SETTINGS_ENV.has(candidate) ||
+      this.envFields.some((f) => f.name === candidate);
+    for (let n = 2; taken(name); n += 1) name = `${base}_${n}`;
     this.envByTarget.set(key, name);
     const where =
       site === undefined || site === this.origin ? 'on the app' : `on ${site}`;
