@@ -11,7 +11,7 @@
  * the report, and changing the level in the side panel re-renders it too.
  */
 import { getSession, getEvents, getAssets } from '@/lib/storage';
-import { formatClock } from '@/lib/export/markdown';
+import { formatClock, renderReport } from '@/lib/export/markdown';
 import {
   applyLevel,
   collapseRepeatedRequests,
@@ -42,6 +42,8 @@ const titleEl = document.getElementById('bar-title') as HTMLElement;
 const metaEl = document.getElementById('bar-meta') as HTMLElement;
 const levelsEl = document.getElementById('bar-levels') as HTMLElement;
 const downloadBtn = document.getElementById('download') as HTMLButtonElement;
+const markdownBtn = document.getElementById('download-markdown') as HTMLButtonElement;
+const markdownStatus = document.getElementById('markdown-status') as HTMLElement;
 
 // Start at Standard — the same default as the side panel's export chooser, so
 // the two surfaces agree the moment a session stops. Selections sync both ways
@@ -126,6 +128,7 @@ async function load(): Promise<void> {
   }
   const assetsMeta: AssetMeta[] = assets.map(({ blob: _b, ...m }) => m);
   loaded = { session, events, assetsMeta, mediaUrls };
+  markdownBtn.disabled = false;
   renderLevels();
   render();
 }
@@ -545,6 +548,38 @@ downloadBtn.addEventListener('click', async () => {
   } finally {
     downloadBtn.disabled = false;
     downloadBtn.textContent = label;
+  }
+});
+
+markdownBtn.addEventListener('click', async () => {
+  if (!loaded?.session) return;
+  const { session, events, assetsMeta } = loaded;
+  const exportLevel = level;
+  markdownBtn.disabled = true;
+  markdownStatus.textContent = '';
+  let url: string | undefined;
+  try {
+    const context: TrimContext = {
+      assetsById: new Map(assetsMeta.map((asset) => [asset.id, asset])),
+      settings: session.settings,
+    };
+    const text = renderReport({
+      session,
+      events: applyLevel(events, exportLevel, context),
+      assets: assetsMeta,
+      level: exportLevel,
+      assetPath: () => undefined,
+    });
+    url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' }));
+    await chrome.downloads.download({ url, filename: `${sessionFolderName(session)}.md` });
+  } catch {
+    markdownStatus.textContent = 'Could not download Markdown. Try again.';
+  } finally {
+    if (url) {
+      const downloadUrl = url;
+      setTimeout(() => URL.revokeObjectURL(downloadUrl), 60_000);
+    }
+    markdownBtn.disabled = false;
   }
 });
 
