@@ -298,3 +298,1260 @@ test('files an issue in one click with an automatic summary and protected report
     animations: 'disabled',
   });
 });
+
+test('publish preserves concurrent issue and draft updates', async ({
+  context,
+  background,
+  extensionId,
+}) => {
+  // Record a minimal session for the share page.
+  const page = await context.newPage();
+  await page.goto('/');
+  const started = await dispatch<{ ok: boolean; session: { id: string } }>(background, {
+    kind: 'session/start',
+    tabId: await tabIdForUrl(background, 'http://localhost:5319'),
+  });
+  expect(started.ok).toBe(true);
+  await dispatch(background, { kind: 'session/stop' });
+  const sessionId = started.session.id;
+  const draftKey = `shareDraft:${sessionId}`;
+  const accountId = 'a'.repeat(32);
+  const appId = '12345678-1234-1234-1234-123456789abc';
+  const reportUrl = 'https://abc.reports.pages.dev';
+
+  await background.evaluate(
+    async ({ accountId, appId }: { accountId: string; appId: string }) => {
+      await chrome.storage.local.set({
+        sharingSettings: {
+          cloudflare: {
+            apiToken: 'cf-token',
+            accountId,
+            projectName: 'reports',
+            accessAppId: appId,
+            teamDomain: 'team.cloudflareaccess.com',
+          },
+          repository: 'owner/repo',
+          githubToken: 'gh-token',
+        },
+      });
+    },
+    { accountId, appId },
+  );
+
+  // Gate the Cloudflare deployment-creation step so we can inject issue data into
+  // storage while Tab A's publish operation is in-flight, simulating a concurrent
+  // Tab B that has just completed a full issue-filing workflow.
+  let releaseDeployment!: () => void;
+  const deploymentGate = new Promise<void>((resolve) => {
+    releaseDeployment = resolve;
+  });
+  // Resolves the moment the deployment POST actually arrives at the mock, giving
+  // a deterministic signal that the request is in flight and storage injection
+  // is safe — independent of any UI status text timing.
+  let deploymentArrived = false;
+  let deployments = 0;
+
+  await context.route('https://api.cloudflare.com/client/v4/**', async (route) => {
+    const url = route.request().url();
+    const method = route.request().method();
+    let result: unknown;
+    if (url.endsWith('/pages/projects/reports') && method !== 'POST')
+      result = {
+        name: 'reports',
+        subdomain: 'reports.pages.dev',
+        production_branch: 'main',
+        deployment_configs: { preview: { fail_open: false } },
+      };
+    else if (url.endsWith(`/access/apps/${appId}`))
+      result = { type: 'self_hosted', domain: '*.reports.pages.dev', aud: 'b'.repeat(64) };
+    else if (url.includes('/policies?')) result = [{ decision: 'allow' }];
+    else if (url.endsWith('/upload-token')) result = { jwt: 'upload-jwt' };
+    else if (url.endsWith('/pages/assets/upload')) result = null;
+    else if (url.endsWith('/pages/assets/upsert-hashes')) result = null;
+    else if (url.endsWith('/deployments') && method === 'POST') {
+      // Signal that the POST has arrived before waiting, so the test can inject
+      // concurrent storage state without racing against UI text propagation.
+      deploymentArrived = true;
+      await deploymentGate;
+      deployments++;
+      result = {
+        id: 'deployment-1',
+        url: reportUrl,
+        environment: 'preview',
+        latest_stage: { name: 'deploy', status: 'success' },
+      };
+    } else {
+      await route.abort();
+      return;
+    }
+    await route.fulfill({ json: { success: true, result } });
+  });
+  await context.route(
+    'https://team.cloudflareaccess.com/cdn-cgi/access/certs',
+    (route) => route.fulfill({ json: { keys: [] } }),
+  );
+
+  // Open the share page (Tab A).
+  const shareTab = await context.newPage();
+  await shareTab.goto(extUrl(extensionId, `share.html?session=${sessionId}`));
+
+  // Open the advanced section and wait for report-file preparation to finish.
+  await shareTab.locator('details.advanced-report > summary').click();
+  const publishButton = shareTab.getByRole('button', { name: 'Publish report only' });
+  await expect(publishButton).toBeEnabled({ timeout: 30_000 });
+
+  // Kick off Tab A's standalone publish.
+  try {
+    await publishButton.click();
+
+    await expect.poll(() => deploymentArrived, {
+      timeout: 10_000,
+    }).toBe(true);
+
+    // === Race-condition window ===
+    // Simulate Tab B having concurrently completed a full issue-filing workflow.
+    const filedIssue = {
+      number: 7,
+      url: 'https://github.com/owner/repo/issues/7',
+      repository: 'owner/repo',
+    };
+    await background.evaluate(
+      async ({ key, issue }: { key: string; issue: { number: number; url: string; repository: string } }) => {
+        const stored = await chrome.storage.local.get(key);
+        const existing = (stored[key] as Record<string, unknown>) ?? {};
+        await chrome.storage.local.set({
+          [key]: {
+            ...existing,
+            issue,
+            draft: {
+              title: 'Updated in another tab',
+              body: 'Concurrent user edits must survive',
+            },
+            draftSource: 'edited',
+          },
+        });
+      },
+      { key: draftKey, issue: filedIssue },
+    );
+
+    // Let Tab A's deployment-creation request complete.
+    releaseDeployment();
+
+    // Wait for Tab A's publish to report success.
+    await expect(shareTab.getByRole('status')).toContainText('Report published', {
+      timeout: 30_000,
+    });
+
+    // Verify that publication persistence preserves concurrent updates.
+    // The publication update must not replace newer persisted issue or draft data.
+    const afterPublish = await background.evaluate(
+      async (key: string) => chrome.storage.local.get(key),
+      draftKey,
+    );
+    const savedDraft = afterPublish[draftKey] as {
+      issue?: { number: number; url: string; repository: string };
+      publication?: { deployment?: { id: string; url: string } };
+      draft: { title: string; body: string };
+      draftSource: string;
+    };
+    expect(
+      savedDraft.issue,
+      'issue written by another tab must survive a concurrent publish completing',
+    ).toEqual(filedIssue);
+    expect(
+      savedDraft.publication?.deployment,
+      'publication must carry the exact deployment ID and URL returned by the mock',
+    ).toMatchObject({ id: 'deployment-1', url: reportUrl });
+    expect(savedDraft.draft).toEqual({
+      title: 'Updated in another tab',
+      body: 'Concurrent user edits must survive',
+    });
+    expect(savedDraft.draftSource).toBe('edited');
+    expect(deployments, 'exactly one deployment must have been created').toBe(1);
+  } finally {
+    // Always unblock the route handler so the test does not hang on assertion failures.
+    releaseDeployment();
+  }
+});
+
+
+test('publish cancellation while the session lock is held', async ({
+  context,
+  background,
+  extensionId,
+}) => {
+  const page = await context.newPage();
+  await page.goto('/');
+
+  const started = await dispatch<{
+    ok: boolean;
+    session: { id: string };
+  }>(background, {
+    kind: 'session/start',
+    tabId: await tabIdForUrl(background, 'http://localhost:5319'),
+  });
+  expect(started.ok).toBe(true);
+  await dispatch(background, { kind: 'session/stop' });
+
+  const draftKey = `shareDraft:${started.session.id}:operation`;
+  const accountId = 'a'.repeat(32);
+  const appId = '12345678-1234-1234-1234-123456789abc';
+
+  await background.evaluate(async ({ accountId, appId }) => {
+    await chrome.storage.local.set({
+      sharingSettings: {
+        cloudflare: {
+          apiToken: 'cf-token',
+          accountId,
+          projectName: 'reports',
+          accessAppId: appId,
+          teamDomain: 'team.cloudflareaccess.com',
+        },
+        repository: 'owner/repo',
+        githubToken: 'gh-token',
+      },
+    });
+  }, { accountId, appId });
+
+  const shareTab = await context.newPage();
+  await shareTab.goto(
+    extUrl(extensionId, `share.html?session=${started.session.id}`),
+  );
+
+  await shareTab.locator('details.advanced-report > summary').click();
+  const publish = shareTab.getByRole('button', {
+    name: 'Publish report only',
+  });
+  await expect(publish).toBeEnabled({ timeout: 30_000 });
+
+  // Hold the operation lock from another extension page.
+  // This represents a competing publication or issue-filing operation.
+  const secondTab = await context.newPage();
+  await secondTab.goto(
+    extUrl(extensionId, `share.html?session=${started.session.id}`),
+  );
+
+  let externalRequests = 0;
+  await context.route('https://api.cloudflare.com/client/v4/**', async route => {
+    externalRequests++;
+    await route.abort();
+  });
+
+  // Keep this evaluation running until the test releases the lock.
+  const holdingLock = secondTab.evaluate(async ({ draftKey }) => {
+    await navigator.locks.request(draftKey, async () => {
+      (window as typeof window & {
+        __prooflineLockAcquired?: boolean;
+      }).__prooflineLockAcquired = true;
+
+      await new Promise<void>(resolve => {
+        (window as typeof window & {
+          __releaseProoflineLock?: () => void;
+        }).__releaseProoflineLock = resolve;
+      });
+    });
+  }, { draftKey });
+
+  try {
+    await expect.poll(async () =>
+      secondTab.evaluate(() =>
+        (window as typeof window & {
+          __prooflineLockAcquired?: boolean;
+        }).__prooflineLockAcquired === true,
+      ),
+    ).toBe(true);
+
+    await publish.click();
+
+    await expect.poll(async () =>
+      shareTab.evaluate(async key => {
+        const locks = await navigator.locks.query();
+        return locks.pending?.some(lock => lock.name === key) ?? false;
+      }, draftKey),
+    ).toBe(true);
+
+    await expect(
+      shareTab.getByRole('button', { name: 'Cancel', exact: true }),
+    ).toBeVisible();
+
+    await shareTab.getByRole('button', {
+      name: 'Cancel',
+      exact: true,
+    }).click();
+
+    // Cancellation must finish before the competing tab releases its lock.
+    await expect(
+      shareTab.getByRole('button', { name: 'Cancel', exact: true }),
+    ).toHaveCount(0, { timeout: 5000 });
+
+    expect(
+      externalRequests,
+      'cancelled publication must not contact Cloudflare',
+    ).toBe(0);
+  } finally {
+    await secondTab.evaluate(() => {
+      (window as typeof window & {
+        __releaseProoflineLock?: () => void;
+      }).__releaseProoflineLock?.();
+    }).catch(() => {});
+    await secondTab.close();
+    await holdingLock.catch(() => {});
+  }
+});
+
+test('draft edits persist from another tab during publication', async ({
+  context,
+  background,
+  extensionId,
+}) => {
+  // Record a minimal session for the share page.
+  const page = await context.newPage();
+  await page.goto('/');
+  const started = await dispatch<{ ok: boolean; session: { id: string } }>(background, {
+    kind: 'session/start',
+    tabId: await tabIdForUrl(background, 'http://localhost:5319'),
+  });
+  expect(started.ok).toBe(true);
+  await dispatch(background, { kind: 'session/stop' });
+  const sessionId = started.session.id;
+  const draftKey = `shareDraft:${sessionId}`;
+  const accountId = 'a'.repeat(32);
+  const appId = '12345678-1234-1234-1234-123456789abc';
+  const reportUrl = 'https://abc.reports.pages.dev';
+
+  await background.evaluate(
+    async ({ accountId, appId }: { accountId: string; appId: string }) => {
+      await chrome.storage.local.set({
+        sharingSettings: {
+          cloudflare: {
+            apiToken: 'cf-token',
+            accountId,
+            projectName: 'reports',
+            accessAppId: appId,
+            teamDomain: 'team.cloudflareaccess.com',
+          },
+          repository: 'owner/repo',
+          githubToken: 'gh-token',
+        },
+      });
+    },
+    { accountId, appId },
+  );
+
+  // Block deployment creation while a second tab edits the draft.
+  let releaseDeployment!: () => void;
+  const deploymentGate = new Promise<void>((resolve) => {
+    releaseDeployment = resolve;
+  });
+  // Synchronize the second tab with the deployment POST.
+  let deploymentArrived = false;
+  let deployments = 0;
+
+  await context.route('https://api.cloudflare.com/client/v4/**', async (route) => {
+    const url = route.request().url();
+    const method = route.request().method();
+    let result: unknown;
+    if (url.endsWith('/pages/projects/reports') && method !== 'POST')
+      result = {
+        name: 'reports',
+        subdomain: 'reports.pages.dev',
+        production_branch: 'main',
+        deployment_configs: { preview: { fail_open: false } },
+      };
+    else if (url.endsWith(`/access/apps/${appId}`))
+      result = { type: 'self_hosted', domain: '*.reports.pages.dev', aud: 'b'.repeat(64) };
+    else if (url.includes('/policies?')) result = [{ decision: 'allow' }];
+    else if (url.endsWith('/upload-token')) result = { jwt: 'upload-jwt' };
+    else if (url.endsWith('/pages/assets/upload')) result = null;
+    else if (url.endsWith('/pages/assets/upsert-hashes')) result = null;
+    else if (url.endsWith('/deployments') && method === 'POST') {
+      // Signal that publication is in flight before editing in the second tab.
+      deploymentArrived = true;
+      await deploymentGate;
+      deployments++;
+      result = {
+        id: 'deployment-1',
+        url: reportUrl,
+        environment: 'preview',
+        latest_stage: { name: 'deploy', status: 'success' },
+      };
+    } else {
+      await route.abort();
+      return;
+    }
+    await route.fulfill({ json: { success: true, result } });
+  });
+  await context.route(
+    'https://team.cloudflareaccess.com/cdn-cgi/access/certs',
+    (route) => route.fulfill({ json: { keys: [] } }),
+  );
+
+  // Open the share page (Tab A).
+  const shareTab = await context.newPage();
+  await shareTab.goto(extUrl(extensionId, `share.html?session=${sessionId}`));
+
+  // Open the advanced section and wait for report-file preparation to finish.
+  await shareTab.locator('details.advanced-report > summary').click();
+  const publishButton = shareTab.getByRole('button', { name: 'Publish report only' });
+  await expect(publishButton).toBeEnabled({ timeout: 30_000 });
+
+  // Kick off Tab A's standalone publish.
+  try {
+    await publishButton.click();
+
+    await expect.poll(() => deploymentArrived, {
+      timeout: 10_000,
+    }).toBe(true);
+
+    const secondTab = await context.newPage();
+
+    try {
+      await secondTab.goto(
+        extUrl(extensionId, `share.html?session=${sessionId}`),
+      );
+
+      await secondTab.getByRole('button', {
+        name: 'Edit draft',
+        exact: true,
+      }).click();
+
+      const editor = secondTab.getByRole('textbox', {
+        name: 'Issue summary · Markdown',
+        exact: true,
+      });
+
+      await expect(editor).toBeEditable({ timeout: 30_000 });
+      await editor.fill('Concurrent user edits must survive');
+
+      await expect(editor)
+        .toHaveValue('Concurrent user edits must survive');
+
+      // Storage must reflect the edit BEFORE publication completes.
+      await expect.poll(async () => {
+        return background.evaluate(async key => {
+          const stored = await chrome.storage.local.get(key);
+          return stored[key]?.draft?.body;
+        }, draftKey);
+      }, { timeout: 5000 }).toBe('Concurrent user edits must survive');
+    } finally {
+      await secondTab.close();
+    }
+
+    // Let Tab A's deployment-creation request complete.
+    releaseDeployment();
+
+    // Wait for Tab A's publish to report success.
+    await expect(shareTab.getByRole('status')).toContainText('Report published', {
+      timeout: 30_000,
+    });
+
+    // Verify that publication persistence preserves concurrent updates.
+    // The publication update must not replace newer persisted issue or draft data.
+    const afterPublish = await background.evaluate(
+      async (key: string) => chrome.storage.local.get(key),
+      draftKey,
+    );
+    const savedDraft = afterPublish[draftKey] as {
+      issue?: { number: number; url: string; repository: string };
+      publication?: { deployment?: { id: string; url: string } };
+      draft: { title: string; body: string };
+      draftSource: string;
+    };
+    expect(
+      savedDraft.publication?.deployment,
+      'publication must carry the exact deployment ID and URL returned by the mock',
+    ).toMatchObject({ id: 'deployment-1', url: reportUrl });
+    expect(savedDraft.draft.body)
+      .toBe('Concurrent user edits must survive');
+    expect(savedDraft.draftSource).toBe('edited');
+    expect(deployments, 'exactly one deployment must have been created').toBe(1);
+  } finally {
+    // Always unblock the route handler so the test does not hang on assertion failures.
+    releaseDeployment();
+  }
+});
+
+test('draft edits persist while Cloudflare deployment is polling', async ({
+  context,
+  background,
+  extensionId,
+}) => {
+  // Record a minimal session for the share page.
+  const page = await context.newPage();
+  await page.goto('/');
+  const started = await dispatch<{ ok: boolean; session: { id: string } }>(background, {
+    kind: 'session/start',
+    tabId: await tabIdForUrl(background, 'http://localhost:5319'),
+  });
+  expect(started.ok).toBe(true);
+  await dispatch(background, { kind: 'session/stop' });
+  const sessionId = started.session.id;
+  const draftKey = `shareDraft:${sessionId}`;
+  const accountId = 'a'.repeat(32);
+  const appId = '12345678-1234-1234-1234-123456789abc';
+  const reportUrl = 'https://abc.reports.pages.dev';
+
+  await background.evaluate(
+    async ({ accountId, appId }: { accountId: string; appId: string }) => {
+      await chrome.storage.local.set({
+        sharingSettings: {
+          cloudflare: {
+            apiToken: 'cf-token',
+            accountId,
+            projectName: 'reports',
+            accessAppId: appId,
+            teamDomain: 'team.cloudflareaccess.com',
+          },
+          repository: 'owner/repo',
+          githubToken: 'gh-token',
+        },
+      });
+    },
+    { accountId, appId },
+  );
+
+  // Block deployment polling after the recovery checkpoint is saved.
+  let releaseDeployment!: () => void;
+  const deploymentGate = new Promise<void>((resolve) => {
+    releaseDeployment = resolve;
+  });
+  // Synchronize the second tab with the deployment status request.
+  let deploymentArrived = false;
+  let deployments = 0;
+
+  await context.route('https://api.cloudflare.com/client/v4/**', async (route) => {
+    const url = route.request().url();
+    const method = route.request().method();
+    let result: unknown;
+    if (url.endsWith('/pages/projects/reports') && method !== 'POST')
+      result = {
+        name: 'reports',
+        subdomain: 'reports.pages.dev',
+        production_branch: 'main',
+        deployment_configs: { preview: { fail_open: false } },
+      };
+    else if (url.endsWith(`/access/apps/${appId}`))
+      result = { type: 'self_hosted', domain: '*.reports.pages.dev', aud: 'b'.repeat(64) };
+    else if (url.includes('/policies?')) result = [{ decision: 'allow' }];
+    else if (url.endsWith('/upload-token')) result = { jwt: 'upload-jwt' };
+    else if (url.endsWith('/pages/assets/upload')) result = null;
+    else if (url.endsWith('/pages/assets/upsert-hashes')) result = null;
+    else if (url.endsWith('/deployments') && method === 'POST') {
+      deployments++;
+      result = {
+        id: 'deployment-1',
+        url: reportUrl,
+        environment: 'preview',
+        latest_stage: { name: 'deploy', status: 'active' },
+      };
+    } else if (
+      url.endsWith('/deployments/deployment-1') &&
+      method === 'GET'
+    ) {
+      deploymentArrived = true;
+      await deploymentGate;
+      result = {
+        id: 'deployment-1',
+        url: reportUrl,
+        environment: 'preview',
+        latest_stage: { name: 'deploy', status: 'success' },
+      };
+    } else {
+      await route.abort();
+      return;
+    }
+    await route.fulfill({ json: { success: true, result } });
+  });
+  await context.route(
+    'https://team.cloudflareaccess.com/cdn-cgi/access/certs',
+    (route) => route.fulfill({ json: { keys: [] } }),
+  );
+
+  // Open the share page (Tab A).
+  const shareTab = await context.newPage();
+  await shareTab.goto(extUrl(extensionId, `share.html?session=${sessionId}`));
+
+  // Open the advanced section and wait for report-file preparation to finish.
+  await shareTab.locator('details.advanced-report > summary').click();
+  const publishButton = shareTab.getByRole('button', { name: 'Publish report only' });
+  await expect(publishButton).toBeEnabled({ timeout: 30_000 });
+
+  // Kick off Tab A's standalone publish.
+  try {
+    await publishButton.click();
+
+    await expect.poll(() => deploymentArrived, {
+      timeout: 10_000,
+    }).toBe(true);
+
+    const checkpoint = await background.evaluate(
+      async key => (await chrome.storage.local.get(key))[key],
+      draftKey,
+    );
+
+    expect(checkpoint.publication.deployment).toMatchObject({
+      id: 'deployment-1',
+      url: reportUrl,
+      latest_stage: { name: 'deploy', status: 'active' },
+    });
+
+    const secondTab = await context.newPage();
+
+    try {
+      await secondTab.goto(
+        extUrl(extensionId, `share.html?session=${sessionId}`),
+      );
+
+      await secondTab.getByRole('button', {
+        name: 'Edit draft',
+        exact: true,
+      }).click();
+
+      const editor = secondTab.getByRole('textbox', {
+        name: 'Issue summary · Markdown',
+        exact: true,
+      });
+
+      await expect(editor).toBeEditable({ timeout: 30_000 });
+      await editor.fill('Concurrent user edits must survive');
+
+      await expect(editor)
+        .toHaveValue('Concurrent user edits must survive');
+
+      // Storage must reflect the edit BEFORE publication completes.
+      await expect.poll(async () => {
+        return background.evaluate(async key => {
+          const stored = await chrome.storage.local.get(key);
+          return stored[key]?.draft?.body;
+        }, draftKey);
+      }, { timeout: 5000 }).toBe('Concurrent user edits must survive');
+    } finally {
+      await secondTab.close();
+    }
+
+    // Let Tab A's deployment status request complete.
+    releaseDeployment();
+
+    // Wait for Tab A's publish to report success.
+    await expect(shareTab.getByRole('status')).toContainText('Report published', {
+      timeout: 30_000,
+    });
+
+    // Verify that publication persistence preserves concurrent updates.
+    // The publication update must not replace newer persisted issue or draft data.
+    const afterPublish = await background.evaluate(
+      async (key: string) => chrome.storage.local.get(key),
+      draftKey,
+    );
+    const savedDraft = afterPublish[draftKey] as {
+      issue?: { number: number; url: string; repository: string };
+      publication?: { deployment?: { id: string; url: string } };
+      draft: { title: string; body: string };
+      draftSource: string;
+    };
+    expect(
+      savedDraft.publication?.deployment,
+      'publication must carry the exact deployment ID and URL returned by the mock',
+    ).toMatchObject({ id: 'deployment-1', url: reportUrl });
+    expect(savedDraft.draft.body)
+      .toBe('Concurrent user edits must survive');
+    expect(savedDraft.draftSource).toBe('edited');
+    expect(deployments, 'exactly one deployment must have been created').toBe(1);
+  } finally {
+    // Always unblock the route handler so the test does not hang on assertion failures.
+    releaseDeployment();
+  }
+});
+
+test('recovers a deployment when the publishing tab closes before checkpoint promotion', async ({
+  context,
+  background,
+  extensionId,
+}) => {
+  // Record a minimal session for the share page.
+  const page = await context.newPage();
+  await page.goto('/');
+  const started = await dispatch<{ ok: boolean; session: { id: string } }>(background, {
+    kind: 'session/start',
+    tabId: await tabIdForUrl(background, 'http://localhost:5319'),
+  });
+  expect(started.ok).toBe(true);
+  await dispatch(background, { kind: 'session/stop' });
+  const sessionId = started.session.id;
+  const draftKey = `shareDraft:${sessionId}`;
+  const accountId = 'a'.repeat(32);
+  const appId = '12345678-1234-1234-1234-123456789abc';
+  const reportUrl = 'https://abc.reports.pages.dev';
+
+  await background.evaluate(
+    async ({ accountId, appId }: { accountId: string; appId: string }) => {
+      await chrome.storage.local.set({
+        sharingSettings: {
+          cloudflare: {
+            apiToken: 'cf-token',
+            accountId,
+            projectName: 'reports',
+            accessAppId: appId,
+            teamDomain: 'team.cloudflareaccess.com',
+          },
+          repository: 'owner/repo',
+          githubToken: 'gh-token',
+        },
+      });
+    },
+    { accountId, appId },
+  );
+
+  // Block deployment creation while a second tab edits the draft.
+  let releaseDeployment!: () => void;
+  const deploymentGate = new Promise<void>((resolve) => {
+    releaseDeployment = resolve;
+  });
+  // Synchronize the second tab with the deployment POST.
+  let deploymentArrived = false;
+  let deployments = 0;
+
+  await context.route('https://api.cloudflare.com/client/v4/**', async (route) => {
+    const url = route.request().url();
+    const method = route.request().method();
+    let result: unknown;
+    if (url.endsWith('/pages/projects/reports') && method !== 'POST')
+      result = {
+        name: 'reports',
+        subdomain: 'reports.pages.dev',
+        production_branch: 'main',
+        deployment_configs: { preview: { fail_open: false } },
+      };
+    else if (url.endsWith(`/access/apps/${appId}`))
+      result = { type: 'self_hosted', domain: '*.reports.pages.dev', aud: 'b'.repeat(64) };
+    else if (url.includes('/policies?')) result = [{ decision: 'allow' }];
+    else if (url.endsWith('/upload-token')) result = { jwt: 'upload-jwt' };
+    else if (url.endsWith('/pages/assets/upload')) result = null;
+    else if (url.endsWith('/pages/assets/upsert-hashes')) result = null;
+    else if (url.endsWith('/deployments') && method === 'POST') {
+      // Signal that publication is in flight before editing in the second tab.
+      deploymentArrived = true;
+      await deploymentGate;
+      deployments++;
+      result = {
+        id: 'deployment-1',
+        url: reportUrl,
+        environment: 'preview',
+        latest_stage: { name: 'deploy', status: 'success' },
+      };
+    } else {
+      await route.abort();
+      return;
+    }
+    await route.fulfill({ json: { success: true, result } });
+  });
+  await context.route(
+    'https://team.cloudflareaccess.com/cdn-cgi/access/certs',
+    (route) => route.fulfill({ json: { keys: [] } }),
+  );
+
+  // Open the share page (Tab A).
+  const shareTab = await context.newPage();
+  await shareTab.goto(extUrl(extensionId, `share.html?session=${sessionId}`));
+
+  // Open the advanced section and wait for report-file preparation to finish.
+  await shareTab.locator('details.advanced-report > summary').click();
+  const publishButton = shareTab.getByRole('button', { name: 'Publish report only' });
+  await expect(publishButton).toBeEnabled({ timeout: 30_000 });
+
+  const recoveryKey = `${draftKey}:publicationRecovery`;
+  const lockTab = await context.newPage();
+
+  try {
+    await publishButton.click();
+
+    await expect.poll(() => deploymentArrived, {
+      timeout: 10_000,
+    }).toBe(true);
+
+    await lockTab.goto(
+      extUrl(extensionId, `share.html?session=${sessionId}`),
+    );
+
+    // Hold the draft lock after the deployment request has started.
+    await lockTab.evaluate(async key => {
+      await new Promise<void>(resolve => {
+        void navigator.locks.request(key, async () => {
+          resolve();
+          await new Promise<void>(() => {});
+        });
+      });
+    }, draftKey);
+
+    releaseDeployment();
+
+    // The recovery record must be durable even while the draft
+    // checkpoint is blocked by another tab.
+    await expect.poll(async () => {
+      return background.evaluate(async key => {
+        const records = await chrome.storage.local.get(key);
+        return records[key]?.deployment?.id;
+      }, recoveryKey);
+    }, { timeout: 5000 }).toBe('deployment-1');
+
+    const interrupted = await background.evaluate(
+      async keys => chrome.storage.local.get(keys),
+      [draftKey, recoveryKey],
+    );
+
+    expect(interrupted[draftKey].publication).toBeUndefined();
+    expect(interrupted[recoveryKey].deployment).toMatchObject({
+      id: 'deployment-1',
+      url: reportUrl,
+    });
+
+    // Destroy the publishing document before releasing the lock.
+    await shareTab.close();
+    await lockTab.close();
+
+    const reopened = await context.newPage();
+
+    try {
+      await reopened.goto(
+        extUrl(extensionId, `share.html?session=${sessionId}`),
+      );
+
+      await reopened.locator('details.advanced-report > summary').click();
+
+      await expect(reopened.getByRole('button', {
+        name: 'Publish report only',
+        exact: true,
+      })).toHaveCount(0);
+
+      const recoveredLink = reopened
+        .getByRole('complementary', { name: 'Report details' })
+        .getByRole('link', {
+          name: /Open published report|Deployment created/,
+        });
+
+      await expect(recoveredLink).toBeVisible();
+      await expect(recoveredLink).toHaveAttribute('href', reportUrl);
+
+      expect(deployments).toBe(1);
+
+      const recovered = await background.evaluate(
+        async keys => chrome.storage.local.get(keys),
+        [draftKey, recoveryKey],
+      );
+
+      const publication =
+        recovered[recoveryKey] ?? recovered[draftKey]?.publication;
+
+      expect(publication?.deployment).toMatchObject({
+        id: 'deployment-1',
+        url: reportUrl,
+      });
+    } finally {
+      await reopened.close();
+    }
+  } finally {
+    releaseDeployment();
+    await shareTab.close();
+    await lockTab.close();
+  }
+});
+
+test('preserves edited source when updating a legacy saved draft', async ({
+  context,
+  background,
+  extensionId,
+}) => {
+  const page = await context.newPage();
+  await page.goto('/');
+
+  const started = await dispatch<{
+    ok: boolean;
+    session: { id: string };
+  }>(background, {
+    kind: 'session/start',
+    tabId: await tabIdForUrl(background, 'http://localhost:5319'),
+  });
+
+  expect(started.ok).toBe(true);
+  await dispatch(background, { kind: 'session/stop' });
+
+  const sessionId = started.session.id;
+  const draftKey = `shareDraft:${sessionId}`;
+
+  await background.evaluate(async (key) => {
+    await chrome.storage.local.set({
+      [key]: {
+        draft: {
+          title: 'Legacy title',
+          body: 'Legacy summary',
+        },
+        repository: 'owner/repo',
+      },
+    });
+  }, draftKey);
+
+  const shareTab = await context.newPage();
+  await shareTab.goto(
+    extUrl(extensionId, `share.html?session=${sessionId}`),
+  );
+
+  await shareTab.getByRole('button', {
+    name: 'Edit draft',
+    exact: true,
+  }).click();
+
+  await shareTab.getByRole('textbox', {
+    name: 'Issue title',
+    exact: true,
+  }).fill('Updated legacy title');
+
+  await expect.poll(async () =>
+    background.evaluate(async (key) => {
+      const stored = (await chrome.storage.local.get(key))[key];
+      return {
+        draft: stored?.draft,
+        draftSource: stored?.draftSource,
+      };
+    }, draftKey),
+  ).toEqual({
+    draft: {
+      title: 'Updated legacy title',
+      body: 'Legacy summary',
+    },
+    draftSource: 'edited',
+  });
+});
+
+test('retries a failed title save on the next draft edit', async ({
+  context,
+  background,
+  extensionId,
+}) => {
+  const page = await context.newPage();
+  await page.goto('/');
+
+  const started = await dispatch<{
+    ok: boolean;
+    session: { id: string };
+  }>(background, {
+    kind: 'session/start',
+    tabId: await tabIdForUrl(
+      background,
+      'http://localhost:5319',
+    ),
+  });
+
+  expect(started.ok).toBe(true);
+  await dispatch(background, { kind: 'session/stop' });
+
+  const sessionId = started.session.id;
+  const draftKey = `shareDraft:${sessionId}`;
+  const shareUrl = extUrl(
+    extensionId,
+    `share.html?session=${sessionId}`,
+  );
+
+  await background.evaluate(async (key) => {
+    await chrome.storage.local.set({
+      [key]: {
+        draft: {
+          title: 'Original title',
+          body: 'Original summary',
+        },
+        repository: 'owner/repo',
+        draftSource: 'edited',
+      },
+    });
+  }, draftKey);
+
+  const shareTab = await context.newPage();
+
+  try {
+    await shareTab.goto(shareUrl);
+
+    await shareTab.getByRole('button', {
+      name: 'Edit draft',
+      exact: true,
+    }).click();
+
+    await shareTab.evaluate((key) => {
+      const original = chrome.storage.local.set.bind(
+        chrome.storage.local,
+      );
+      let rejected = false;
+
+      chrome.storage.local.set = (async (
+        items: Record<string, unknown>,
+      ) => {
+        if (!rejected && key in items) {
+          rejected = true;
+          throw new Error('Simulated storage failure');
+        }
+
+        await original(items);
+      }) as typeof chrome.storage.local.set;
+    }, draftKey);
+
+    await shareTab.getByRole('textbox', {
+      name: 'Issue title',
+      exact: true,
+    }).fill('Recovered title');
+
+    await expect(
+      shareTab.getByText(
+        'Could not save this draft locally. Keep this tab open.',
+        { exact: true },
+      ),
+    ).toBeVisible();
+
+    const readDraft = () =>
+      background.evaluate(async (key) => {
+        const stored = (await chrome.storage.local.get(key))[key];
+        return stored?.draft;
+      }, draftKey);
+
+    expect(await readDraft()).toEqual({
+      title: 'Original title',
+      body: 'Original summary',
+    });
+
+    await shareTab.getByRole('textbox', {
+      name: 'Issue summary · Markdown',
+      exact: true,
+    }).fill('Recovered summary');
+
+    await expect.poll(readDraft).toEqual({
+      title: 'Recovered title',
+      body: 'Recovered summary',
+    });
+
+    await shareTab.reload();
+
+    await shareTab.getByRole('button', {
+      name: 'Edit draft',
+      exact: true,
+    }).click();
+
+    await expect(
+      shareTab.getByRole('textbox', {
+        name: 'Issue title',
+        exact: true,
+      }),
+    ).toHaveValue('Recovered title');
+
+    await expect(
+      shareTab.getByRole('textbox', {
+        name: 'Issue summary · Markdown',
+        exact: true,
+      }),
+    ).toHaveValue('Recovered summary');
+  } finally {
+    await shareTab.close();
+    await page.close();
+  }
+});
+
+test('recovers a deployment after a failed recovery checkpoint write', async ({
+  context,
+  background,
+  extensionId,
+}) => {
+  // Record a minimal session for the share page.
+  const page = await context.newPage();
+  await page.goto('/');
+  const started = await dispatch<{ ok: boolean; session: { id: string } }>(background, {
+    kind: 'session/start',
+    tabId: await tabIdForUrl(background, 'http://localhost:5319'),
+  });
+  expect(started.ok).toBe(true);
+  await dispatch(background, { kind: 'session/stop' });
+  const sessionId = started.session.id;
+  const draftKey = `shareDraft:${sessionId}`;
+  const accountId = 'a'.repeat(32);
+  const appId = '12345678-1234-1234-1234-123456789abc';
+  const reportUrl = 'https://abc.reports.pages.dev';
+
+  await background.evaluate(
+    async ({ accountId, appId }: { accountId: string; appId: string }) => {
+      await chrome.storage.local.set({
+        sharingSettings: {
+          cloudflare: {
+            apiToken: 'cf-token',
+            accountId,
+            projectName: 'reports',
+            accessAppId: appId,
+            teamDomain: 'team.cloudflareaccess.com',
+          },
+          repository: 'owner/repo',
+          githubToken: 'gh-token',
+        },
+      });
+    },
+    { accountId, appId },
+  );
+
+  // Control the deployment response to inject a checkpoint failure.
+  let releaseDeployment!: () => void;
+  const deploymentGate = new Promise<void>((resolve) => {
+    releaseDeployment = resolve;
+  });
+  // Synchronize the second tab with the deployment POST.
+  let deploymentArrived = false;
+  let deployments = 0;
+
+  await context.route('https://api.cloudflare.com/client/v4/**', async (route) => {
+    const url = route.request().url();
+    const method = route.request().method();
+    let result: unknown;
+    if (url.endsWith('/pages/projects/reports') && method !== 'POST')
+      result = {
+        name: 'reports',
+        subdomain: 'reports.pages.dev',
+        production_branch: 'main',
+        deployment_configs: { preview: { fail_open: false } },
+      };
+    else if (url.endsWith(`/access/apps/${appId}`))
+      result = { type: 'self_hosted', domain: '*.reports.pages.dev', aud: 'b'.repeat(64) };
+    else if (url.includes('/policies?')) result = [{ decision: 'allow' }];
+    else if (url.endsWith('/upload-token')) result = { jwt: 'upload-jwt' };
+    else if (url.endsWith('/pages/assets/upload')) result = null;
+    else if (url.endsWith('/pages/assets/upsert-hashes')) result = null;
+    else if (url.endsWith('/deployments') && method === 'POST') {
+      // Signal that the deployment request has arrived.
+      deploymentArrived = true;
+      await deploymentGate;
+      deployments++;
+      result = {
+        id: 'deployment-1',
+        url: reportUrl,
+        environment: 'preview',
+        latest_stage: { name: 'deploy', status: 'success' },
+      };
+    } else {
+      await route.abort();
+      return;
+    }
+    await route.fulfill({ json: { success: true, result } });
+  });
+  await context.route(
+    'https://team.cloudflareaccess.com/cdn-cgi/access/certs',
+    (route) => route.fulfill({ json: { keys: [] } }),
+  );
+
+  // Open the share page (Tab A).
+  const shareTab = await context.newPage();
+  await shareTab.goto(extUrl(extensionId, `share.html?session=${sessionId}`));
+
+  // Open the advanced section and wait for report-file preparation to finish.
+  await shareTab.locator('details.advanced-report > summary').click();
+  const publishButton = shareTab.getByRole('button', { name: 'Publish report only' });
+  await expect(publishButton).toBeEnabled({ timeout: 30_000 });
+
+  const recoveryKey = `${draftKey}:publicationRecovery`;
+
+  try {
+    await shareTab.evaluate(key => {
+      const original = chrome.storage.local.set.bind(
+        chrome.storage.local,
+      );
+      let rejected = false;
+
+      chrome.storage.local.set = (async (
+        items: Record<string, unknown>,
+      ) => {
+        if (!rejected && key in items) {
+          rejected = true;
+          throw new Error('Simulated checkpoint storage failure');
+        }
+
+        await original(items);
+      }) as typeof chrome.storage.local.set;
+    }, recoveryKey);
+
+    await publishButton.click();
+
+    await expect.poll(() => deploymentArrived, {
+      timeout: 10_000,
+    }).toBe(true);
+
+    releaseDeployment();
+
+    await expect(shareTab.getByText(
+      'Could not save the report checkpoint. Keep this tab open and retry.',
+      { exact: true },
+    )).toBeVisible();
+
+    expect(deployments).toBe(1);
+
+    const records = await background.evaluate(
+      async keys => chrome.storage.local.get(keys),
+      [draftKey, recoveryKey],
+    );
+
+    expect(records[recoveryKey]).toBeUndefined();
+    expect(records[draftKey].publication).toBeUndefined();
+
+    const reportLink = shareTab
+      .getByRole('complementary', { name: 'Report details' })
+      .getByRole('link', { name: 'Open published report' });
+
+    await expect(reportLink).toBeVisible();
+    await expect(reportLink).toHaveAttribute('href', reportUrl);
+
+    // Unpublishing must first reconcile the unsaved checkpoint.
+    // Reject deletion so the reconciled report remains available.
+    let deletionRequests = 0;
+
+    await context.route(
+      url =>
+        url.hostname === 'api.cloudflare.com' &&
+        url.pathname.endsWith('/deployments/deployment-1') &&
+        url.searchParams.get('force') === 'true',
+      async route => {
+        deletionRequests++;
+        await route.fulfill({
+          status: 503,
+          json: {
+            success: false,
+            errors: [{ message: 'Temporary deletion failure' }],
+          },
+        });
+      },
+    );
+
+    await shareTab.getByRole('button', {
+      name: 'Unpublish report…',
+      exact: true,
+    }).click();
+
+    await shareTab.getByRole('button', {
+      name: 'Delete deployment',
+      exact: true,
+    }).click();
+
+    await expect.poll(async () => {
+      return background.evaluate(async key => {
+        const records = await chrome.storage.local.get(key);
+        return records[key]?.publication?.deployment;
+      }, draftKey);
+    }).toMatchObject({
+      id: 'deployment-1',
+      url: reportUrl,
+    });
+
+    await expect.poll(() => deletionRequests).toBeGreaterThan(0);
+
+    expect(deployments).toBe(1);
+
+    const recovered = await background.evaluate(
+      async key => chrome.storage.local.get(key),
+      recoveryKey,
+    );
+
+    expect(recovered[recoveryKey]).toBeUndefined();
+  } finally {
+    releaseDeployment();
+    await shareTab.close();
+    await page.close();
+  }
+});

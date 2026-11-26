@@ -32,6 +32,11 @@ import {
   type IssueDraft,
 } from '@/lib/sharing/summary';
 import { fileIssue } from '@/lib/sharing/file-issue';
+import {
+  waitWithSignal,
+  samePublication,
+  publicationOperationKey,
+} from '@/lib/sharing/concurrency';
 import { issueBody, repositoryPath } from '@/lib/sharing/github';
 import { initialShareState, shareReducer, type ShareState } from './reducer';
 
@@ -42,8 +47,11 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
   const recording = useRef<Recording>();
   const operation = useRef<AbortController>();
   const preparation = useRef(0);
+  const pendingPublication = useRef<Publication>();
+
   const writes = useRef<Promise<void>>(Promise.resolve());
   const draftKey = `shareDraft:${sessionId}`;
+  const recoveryKey = `${draftKey}:publicationRecovery`;
   const progress = (message: string) => dispatch({ type: 'progress', message });
 
   async function prepare(data: Recording, level: VerbosityLevel) {
@@ -73,7 +81,7 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       const [session, settings, saved, events, assets] = await Promise.all([
         getSession(sessionId),
         loadSharingSettings(),
-        chrome.storage.local.get(draftKey),
+        chrome.storage.local.get([draftKey, recoveryKey]),
         getEvents(sessionId),
         getAssets(sessionId),
       ]);
@@ -82,7 +90,11 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       if (session.status !== 'stopped')
         throw new Error('Stop the recording before sharing it.');
       if (!active) return;
-      const draft = saved[draftKey] as SavedDraft | undefined;
+      const storedDraft = saved[draftKey] as SavedDraft | undefined;
+      const recovery = saved[recoveryKey] as Publication | undefined;
+      const draft = storedDraft && recovery
+        ? { ...storedDraft, publication: recovery }
+        : storedDraft;
       recording.current = { session, events, assets };
       dispatch({ type: 'loaded', session, settings, saved: draft });
       await prepare(recording.current, draft?.publication?.level ?? initialLevel);
@@ -115,14 +127,6 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
     };
   }, [sessionId, initialLevel, draftKey]);
 
-  /** Serialize explicit writes so typing and deployment creation cannot race. */
-  function persist(next: SavedDraft): Promise<void> {
-    const write = writes.current.then(() =>
-      chrome.storage.local.set({ [draftKey]: next }),
-    );
-    writes.current = write.catch(() => {});
-    return write;
-  }
   function snapshot(patch: Partial<SavedDraft> = {}): SavedDraft {
     return {
       draft: state.draft,
@@ -135,25 +139,52 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       ...patch,
     };
   }
-  function persistEdit(next: SavedDraft) {
-    const edited = snapshot(next);
+  const pendingEdit = useRef<{
+    draft: Partial<IssueDraft>;
+    repository?: string;
+  }>({ draft: {} });
+
+  function persistEdit(
+    patch: Partial<IssueDraft>,
+    repository?: string,
+  ) {
+    const fallback = snapshot();
     const write = writes.current.then(() =>
       navigator.locks.request(draftKey, async () => {
+        pendingEdit.current = {
+          draft: { ...pendingEdit.current.draft, ...patch },
+          repository: repository ?? pendingEdit.current.repository,
+        };
+        const pending = pendingEdit.current;
         const stored = (await chrome.storage.local.get(draftKey))[draftKey] as
           SavedDraft | undefined;
-        // Another share tab may already have filed the issue while this tab was editing.
-        const saved = stored
-          ? {
-              ...edited,
-              repository: stored.attempt?.repository ?? stored.issue?.repository ?? edited.repository,
-              publication: stored.publication,
-              issue: stored.issue,
-              attempt: stored.attempt,
-            }
-          : edited;
+        const latest = stored
+          ? { ...stored, draftSource: stored.draftSource ?? 'edited' as const }
+          : fallback;
+
+        const draftSource =
+          pending.draft.body !== undefined
+            ? 'edited'
+            : pending.draft.title !== undefined && latest.draftSource === 'initial'
+              ? 'title-edited'
+              : latest.draftSource;
+
+        const saved: SavedDraft = {
+          ...latest,
+          draft: { ...latest.draft, ...pending.draft },
+          draftSource,
+          repository:
+            latest.attempt?.repository ??
+            latest.issue?.repository ??
+            pending.repository ??
+            latest.repository,
+        };
+
         await chrome.storage.local.set({ [draftKey]: saved });
+        pendingEdit.current = { draft: {} };
       }),
     );
+
     writes.current = write.catch(() => {});
     void write.catch(() =>
       dispatch({
@@ -162,6 +193,7 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       }),
     );
   }
+
   function editDraft(patch: Partial<IssueDraft>) {
     const draft = { ...state.draft, ...patch };
     const draftSource =
@@ -170,27 +202,133 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
         : state.draftSource === 'initial'
           ? 'title-edited'
           : state.draftSource;
+
     dispatch({ type: 'draft', draft, source: draftSource });
-    persistEdit({
-      draft,
-      draftSource,
-      repository: state.repository,
-      publication: state.publication,
-    });
+    persistEdit(patch);
   }
+
   function editRepository(repository: string) {
     if (operation.current || state.attempt || state.issue) return;
     dispatch({ type: 'repository', repository });
-    persistEdit({ draft: state.draft, repository, publication: state.publication });
+    persistEdit({}, repository);
+
     try {
       const path = repositoryPath(repository);
-      void rememberRepository(path).catch(() => dispatch({ type: 'error', message: 'Could not remember the repository selection.' }));
-    } catch { /* An incomplete typed repository is saved only with this draft. */ }
+      void rememberRepository(path).catch(() =>
+        dispatch({
+          type: 'error',
+          message: 'Could not remember the repository selection.',
+        }),
+      );
+    } catch {
+      /* An incomplete typed repository is saved only with this draft. */
+    }
   }
+
+  async function readDraft(): Promise<SavedDraft> {
+    const records = await chrome.storage.local.get([
+      draftKey,
+      recoveryKey,
+    ]);
+    const stored = records[draftKey] as SavedDraft | undefined;
+    const recovery = records[recoveryKey] as Publication | undefined;
+    const latest = stored
+      ? { ...stored, draftSource: stored.draftSource ?? 'edited' as const }
+      : snapshot();
+
+    return recovery
+      ? { ...latest, publication: recovery }
+      : latest;
+  }
+
+  async function updateDraft(
+    update: (latest: SavedDraft) => SavedDraft,
+    signal?: AbortSignal,
+  ): Promise<SavedDraft> {
+    return navigator.locks.request(
+      draftKey,
+      { mode: 'exclusive', ...(signal ? { signal } : {}) },
+      async () => {
+        const latest = await readDraft();
+        signal?.throwIfAborted();
+        const next = update(latest);
+        await chrome.storage.local.set({ [draftKey]: next });
+        return next;
+      },
+    );
+  }
+
+  async function withOperation(
+    signal: AbortSignal,
+    task: () => Promise<void>,
+  ) {
+    await waitWithSignal(writes.current, signal);
+    await navigator.locks.request(
+      publicationOperationKey(draftKey),
+      { mode: 'exclusive', signal },
+      async () => {
+        signal.throwIfAborted();
+
+        // Promote an interrupted publication checkpoint before
+        // starting another external operation.
+        // Ensure even a first-time publication has a durable draft.
+        // Also promote any recovery checkpoint left by an interrupted tab.
+        const pending = pendingPublication.current;
+
+        if (pending) {
+          const latest = await readDraft();
+
+          if (
+            latest.publication &&
+            !samePublication(pending, latest.publication)
+          )
+            throw new Error(
+              'Another report exists. Resolve the unsaved publication before continuing.',
+            );
+
+          await remember(pending);
+        }
+
+        await updateDraft(latest => latest, signal);
+        await chrome.storage.local.remove(recoveryKey);
+
+        signal.throwIfAborted();
+        await task();
+      },
+    );
+  }
+
   async function remember(publication?: Publication) {
+    // Persist recovery metadata before waiting for the draft lock.
+    if (publication) {
+      pendingPublication.current = publication;
+      dispatch({ type: 'publication', publication });
+
+      try {
+        await chrome.storage.local.set({ [recoveryKey]: publication });
+      } catch {
+        throw new Error(
+          'Could not save the report checkpoint. Keep this tab open and retry.',
+        );
+      }
+    }
+
+    await updateDraft(latest => ({ ...latest, publication }));
+    await chrome.storage.local.remove(recoveryKey);
+    pendingPublication.current = undefined;
+
     dispatch({ type: 'publication', publication });
-    await persist(snapshot({ publication }));
   }
+
+  async function requirePublication(expected: Publication) {
+    const latest = await readDraft();
+    if (!samePublication(expected, latest.publication)) {
+      dispatch({ type: 'publication', publication: latest.publication });
+      throw new Error('The report changed in another tab. Review its current state before retrying.');
+    }
+    return latest.publication!;
+  }
+
   async function run(
     kind: ShareState['operation'],
     task: (signal: AbortSignal) => Promise<void>,
@@ -213,18 +351,21 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       dispatch({ type: 'finish' });
     }
   }
-  async function publishedConfig() {
+  async function publishedConfig(publication: Publication) {
     const current = (await loadSharingSettings()).cloudflare;
-    const publication = state.publication;
-    if (!publication || isProoflinePublication(publication)) throw new Error('No Cloudflare deployment to manage.');
+    if (isProoflinePublication(publication))
+      throw new Error('No Cloudflare deployment to manage.');
     if (current.accountId !== publication.destination.accountId)
       throw new Error(
         'Select this report’s Cloudflare account in settings to manage its deployment.',
       );
     return { ...publication.destination, apiToken: current.apiToken };
   }
+
   function generate() {
     return run('summary', async (signal) => {
+      await waitWithSignal(writes.current, signal);
+      const before = await readDraft();
       const config = await loadSharingSettings();
       progress('Generating issue summary…');
       const draft = await generateConfiguredSummary(
@@ -232,101 +373,256 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
         state.evidence,
         signal,
       );
-      dispatch({ type: 'draft', draft, source: 'generated' });
-      await persist(snapshot({ draft, draftSource: 'generated' }));
+
+      const saved = await updateDraft(latest => {
+        if (
+          latest.draft.title !== before.draft.title ||
+          latest.draft.body !== before.draft.body ||
+          latest.draftSource !== before.draftSource
+        )
+          throw new Error('The draft changed while generating the summary. Your edits were kept.');
+
+        return { ...latest, draft, draftSource: 'generated' };
+      }, signal);
+
+      dispatch({ type: 'draft', draft: saved.draft, source: 'generated' });
       progress('Summary ready.');
     });
   }
+
   function publish() {
+    const expected = state.publication;
+
     return run('publish', async (signal) => {
-      if (!state.files.length) throw new Error('The report is still preparing.');
-      const settings = await loadSharingSettings();
-      if (settings.proofline?.publishing === 'proofline' || (state.publication && isProoflinePublication(state.publication))) {
-        await publishProoflineReport(settings.proofline!, state.files, state.draft.title, state.level, state.publication, remember, progress, signal);
-        progress('Private report published.');
-        return;
-      }
-      const config = settings.cloudflare;
-      const { apiToken: _secret, ...destination } = config;
-      const deployment = await publishReport(
-        config,
-        state.files,
-        progress,
-        signal,
-        (d) => remember({ deployment: d, destination, level: state.level }),
-      );
-      await remember({ deployment, destination, level: state.level });
-      progress('Report published. File a GitHub issue to share its link.');
-    });
-  }
-  function checkDeployment() {
-    if (state.publication && isProoflinePublication(state.publication)) return publish();
-    return run('check', async (signal) => {
-      if (!state.publication || isProoflinePublication(state.publication)) return;
-      const deployment = await waitForDeployment(
-        await publishedConfig(),
-        state.publication.deployment,
-        progress,
-        signal,
-      );
-      await remember({ ...state.publication, deployment });
-      progress('Report published.');
-    });
-  }
-  function unpublish() {
-    return run('delete', async () => {
-      if (!state.publication) return;
-      if (isProoflinePublication(state.publication)) {
+      await withOperation(signal, async () => {
+        const stored = await readDraft();
+        const previous = stored.publication;
+
+        if (expected && !samePublication(expected, previous)) {
+          dispatch({ type: 'publication', publication: previous });
+          throw new Error('The report changed in another tab. Review its current state before retrying.');
+        }
+
+        if (!expected && previous && previous.level !== state.level) {
+          dispatch({ type: 'publication', publication: previous });
+          throw new Error('Another tab published a report at a different detail level.');
+        }
+
+        dispatch({ type: 'publication', publication: previous });
+
+        const level = previous?.level ?? state.level;
+        const files = level === state.level
+          ? state.files
+          : recording.current
+            ? await buildHostedReport({ ...recording.current, level })
+            : [];
+
+        if (!files.length)
+          throw new Error('The report is still preparing.');
+
+        if (level !== state.level)
+          await prepare(recording.current!, level);
+
+        signal.throwIfAborted();
         const settings = await loadSharingSettings();
-        if (settings.proofline?.connection?.organizationId !== state.publication.organizationId) throw new Error('Reconnect the original Proofline workspace to delete this report.');
-        await prooflineRequest(settings.proofline, `/reports/${state.publication.id}`, { method: 'DELETE' });
-        await remember();
-        progress('Report deleted. Local recording kept.');
-        return;
-      }
-      await deletePublishedReport(
-        await publishedConfig(),
-        state.publication.deployment.id,
-      );
-      await remember();
-      progress('Report unpublished. Local recording kept.');
+
+        if (
+          (previous && isProoflinePublication(previous)) ||
+          (!previous && settings.proofline?.publishing === 'proofline')
+        ) {
+          await publishProoflineReport(
+            settings.proofline!,
+            files,
+            stored.draft.title,
+            level,
+            previous,
+            remember,
+            progress,
+            signal,
+          );
+          progress('Private report published.');
+          return;
+        }
+
+        if (previous && !isProoflinePublication(previous)) {
+          if (!publicationReady(previous)) {
+            const deployment = await waitForDeployment(
+              await publishedConfig(previous),
+              previous.deployment,
+              progress,
+              signal,
+            );
+            await remember({ ...previous, deployment });
+          }
+          progress('Report published. File a GitHub issue to share its link.');
+          return;
+        }
+
+        const config = settings.cloudflare;
+        const { apiToken: _secret, ...destination } = config;
+
+        const deployment = await publishReport(
+          config,
+          files,
+          progress,
+          signal,
+          created => remember({ deployment: created, destination, level }),
+        );
+
+        await remember({ deployment, destination, level });
+        progress('Report published. File a GitHub issue to share its link.');
+      });
     });
   }
+
+  function checkDeployment() {
+    const expected = state.publication;
+    if (!expected) return;
+    if (isProoflinePublication(expected)) return publish();
+
+    return run('check', async (signal) => {
+      await withOperation(signal, async () => {
+        const current = await requirePublication(expected);
+        if (isProoflinePublication(current))
+          throw new Error('The report changed in another tab.');
+
+        dispatch({ type: 'publication', publication: current });
+
+        const deployment = await waitForDeployment(
+          await publishedConfig(current),
+          current.deployment,
+          progress,
+          signal,
+        );
+
+        const saved = await updateDraft(latest => {
+          if (!samePublication(current, latest.publication))
+            return latest;
+
+          return {
+            ...latest,
+            publication: { ...current, deployment },
+          };
+        }, signal);
+
+        dispatch({ type: 'publication', publication: saved.publication });
+
+        if (!samePublication(current, saved.publication))
+          throw new Error('The report changed in another tab.');
+
+        progress('Report published.');
+      });
+    });
+  }
+
+  function unpublish() {
+    const expected = state.publication;
+    if (!expected) return;
+
+    return run('delete', async (signal) => {
+      await withOperation(signal, async () => {
+        const publication = await requirePublication(expected);
+
+        if (isProoflinePublication(publication)) {
+          const settings = await loadSharingSettings();
+          if (
+            settings.proofline?.connection?.organizationId !==
+            publication.organizationId
+          )
+            throw new Error('Reconnect the original Proofline workspace to delete this report.');
+
+          signal.throwIfAborted();
+          await prooflineRequest(
+            settings.proofline,
+            `/reports/${publication.id}`,
+            { method: 'DELETE' },
+          );
+        } else {
+          const config = await publishedConfig(publication);
+          signal.throwIfAborted();
+          await deletePublishedReport(config, publication.deployment.id);
+        }
+
+        await remember();
+        progress('Report unpublished. Local recording kept.');
+      });
+    });
+  }
+
   const finalBody = state.publication && publicationReady(state.publication)
     ? issueBody(state.draft, publicationUrl(state.publication))
     : '';
   function submitIssue() {
     return run('github', async (signal) => {
-      await writes.current;
-      await navigator.locks.request(
-        draftKey,
-        { mode: 'exclusive', signal },
-        async () => {
-          const stored = (await chrome.storage.local.get(draftKey))[draftKey] as
-            SavedDraft | undefined;
-          const saved = stored ? { ...stored, repository: stored.repository || state.repository } : snapshot();
-          await rememberRepository(saved.attempt?.repository ?? saved.repository);
-          const result = await fileIssue({
-            saved,
-            settings: await loadSharingSettings(),
-            files: state.files,
-            evidence: state.evidence,
-            level: state.level,
-            signal,
-            progress,
-            stage: (stage) => dispatch({ type: 'stage', stage }),
-            save: async (next) => {
-              await persist(next);
-              dispatch({ type: 'saved', saved: next });
-            },
-          });
-          dispatch({ type: 'saved', saved: result });
-          progress(`Issue #${result.issue!.number} created.`);
-          await chrome.tabs.create({ url: result.issue!.url });
-        },
-      );
+      await withOperation(signal, async () => {
+        const stored = await readDraft();
+        const saved = {
+          ...stored,
+          repository: stored.repository || state.repository,
+        };
+
+        const level = saved.publication?.level ?? state.level;
+        const files = level === state.level
+          ? state.files
+          : recording.current
+            ? await buildHostedReport({ ...recording.current, level })
+            : [];
+
+        signal.throwIfAborted();
+        await rememberRepository(saved.attempt?.repository ?? saved.repository);
+
+        const result = await fileIssue({
+          saved,
+          settings: await loadSharingSettings(),
+          files,
+          evidence: state.evidence,
+          level,
+          signal,
+          progress,
+          stage: stage => dispatch({ type: 'stage', stage }),
+          save: async (_next, patch) => {
+            if (patch.publication)
+              await remember(patch.publication);
+
+            const merged = await updateDraft(latest => {
+              const changes = { ...patch };
+
+              // Automatic summaries must not replace user edits
+              // made while the summary request was running.
+              if (
+                changes.draftSource === 'generated' &&
+                (
+                  latest.draft.title !== saved.draft.title ||
+                  latest.draft.body !== saved.draft.body ||
+                  latest.draftSource !== saved.draftSource
+                )
+              ) {
+                delete changes.draft;
+                delete changes.draftSource;
+              }
+
+              return {
+                ...latest,
+                ...changes,
+                repository:
+                  changes.attempt?.repository ??
+                  changes.issue?.repository ??
+                  latest.repository,
+              };
+            });
+
+            dispatch({ type: 'saved', saved: merged });
+            return merged;
+          },
+        });
+
+        dispatch({ type: 'saved', saved: await readDraft() });
+        progress(`Issue #${result.issue!.number} created.`);
+        await chrome.tabs.create({ url: result.issue!.url });
+      });
     });
   }
+
   function copyIssue() {
     return run('copy', async () => {
       await navigator.clipboard.writeText(finalBody);

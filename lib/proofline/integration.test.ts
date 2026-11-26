@@ -269,7 +269,10 @@ it.each(['cancelled', 'failed'] as const)(
         signal: new AbortController().signal,
       }),
     ).rejects.toThrow(status === 'cancelled' ? 'cancelled' : 'could not submit');
-    expect(save).toHaveBeenCalledWith(expect.objectContaining({ attempt: undefined }));
+    expect(save).toHaveBeenCalledWith(
+        expect.objectContaining({ attempt: undefined }),
+        expect.objectContaining({ attempt: undefined }),
+      );
     expect(fetcher).toHaveBeenCalledTimes(1);
   },
 );
@@ -365,6 +368,7 @@ it.each([
     if (outcome === 'failed' || outcome === 'policy-after-admission')
       expect(save).toHaveBeenCalledWith(
         expect.objectContaining({ summaryRequestId: undefined }),
+        expect.objectContaining({ summaryRequestId: undefined }),
       );
     else expect(save).not.toHaveBeenCalled();
   },
@@ -446,7 +450,10 @@ it.each(['pending', 'submitting'] as const)(
       expect(save).not.toHaveBeenCalled();
       complete = true;
       expect((await fileIssue(input)).issue?.number).toBe(42);
-      expect(save).toHaveBeenCalledWith(expect.objectContaining({ attempt: undefined }));
+      expect(save).toHaveBeenCalledWith(
+        expect.objectContaining({ attempt: undefined }),
+        expect.objectContaining({ attempt: undefined }),
+      );
     } finally {
       vi.useRealTimers();
     }
