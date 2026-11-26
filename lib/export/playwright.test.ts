@@ -890,6 +890,29 @@ describe('buildPlaywrightRepro', () => {
     ]);
   });
 
+  it('waits as long as a slow error took to appear, up to 30 seconds', () => {
+    const code = repro([
+      click(1000, button('Export')),
+      ev('error', 9000, {
+        message: 'TypeError: report is undefined',
+        origin: 'exception',
+      }),
+      click(10_000, button('Sync')),
+      ev('error', 50_000, { message: 'TypeError: sync failed', origin: 'exception' }),
+    ]);
+    const waits = beforeFinalCheck(code)
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('await page.waitForTimeout('));
+    expect(waits).toEqual([
+      'await page.waitForTimeout(8500);',
+      'await page.waitForTimeout(30000);',
+    ]);
+    expect(header(code)).toContain('(at most 30 seconds)');
+    // The test's own timeout leaves room for the waits.
+    expect(code).toContain('test.setTimeout(80000);');
+  });
+
   it('runs every check again at the end, for errors that now come later', () => {
     const code = repro([
       click(1000, button('Pay')),

@@ -106,7 +106,8 @@ const MODIFIER_KEYS: Record<string, string> = {
 
 /** Waits last as long as the recording took to get there, plus this. */
 const WAIT_SLACK_MS = 500;
-const MAX_CHECK_WAIT_MS = 5000;
+/** An error recorded later than this after its step is waited for this long. */
+const MAX_CHECK_WAIT_MS = 30_000;
 const MAX_HISTORY_WAIT_MS = 3000;
 /** How long the end-of-test re-check gives late errors to surface. */
 const FINAL_CHECK_WAIT_MS = 1000;
@@ -729,7 +730,7 @@ class ReproWriter {
       '//',
       ...commentBlock(
         this.checks > 0
-          ? 'It replays the recording in one tab and fails if an uncaught error or a failing API call from the recording happens again while it runs. Each check waits about as long as the recording took to hit it, and all of them run again at the end, so an error that now comes a little later still fails the test, but one after the test ends does not. A pass means those failures did not come back in that time, not that the bug is fixed, so add an assertion for the outcome you expect.'
+          ? `It replays the recording in one tab and fails if an uncaught error or a failing API call from the recording happens again while it runs. Each check waits about as long as the recording took to hit it (at most ${MAX_CHECK_WAIT_MS / 1000} seconds), and all of them run again at the end, so an error that now comes a little later still fails the test, but one after the test ends does not. A pass means those failures did not come back in that time, not that the bug is fixed, so add an assertion for the outcome you expect.`
           : 'It replays the recording in one tab. No uncaught error or failing API call was recorded, so add an assertion for what you expected at the end of the test.',
       ),
       '//',
