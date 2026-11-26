@@ -109,7 +109,7 @@ Follow these steps in order:
 - trust the blockquotes. Markers and notes are you narrating your own intent. We never trim them, and they are the best anchor for what you expected.
 - follow `linkedRequestId`. Errors point at the network request that caused them. At every level we preserve that request's body, so the agent can inspect the exact failing payload.
 - escalate verbosity surgically. If the agent needs one full body, re-export at L1 or L0 rather than dumping the whole session at full fidelity.
-- run the repro. When the zip has `repro.spec.ts`, ask the agent to run it with `npx playwright test repro.spec.ts` before its change and confirm it fails for the reported reason, then run it again after. A pass only shows the fix works once the test has failed first. If it already passes, it is not checking the bug yet, so add an assertion for it. Either way, asserting the expected outcome, such as the right total, makes the pass mean more than the absence of the recorded error.
+- run the repro. When the zip has `repro.spec.ts`, ask the agent to run it with `npx playwright test repro.spec.ts` before its change and confirm it fails for the reported reason, then run it again after. A pass after that only shows the recorded error was not seen while the test ran: a change that delays the error, or hides it behind a wrong result, passes too. If the test already passes before the change, it is not checking the bug yet. Either way, ask the agent to assert the expected outcome, such as the right total, so a pass also checks the result.
 
 ## Local and hosted reports
 
