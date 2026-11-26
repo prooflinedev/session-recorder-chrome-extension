@@ -388,16 +388,22 @@ describe('redactUrl', () => {
     expect(
       redactUrl('https://svc:hunter2@internal.example.com/api?token=abc', EMPTY_RULES),
     ).toBe(`https://svc:${REDACTED}@internal.example.com/api?token=${REDACTED}`);
+    expect(
+      redactUrl('//admin:password@files.example.com/file?sig=ABC', EMPTY_RULES),
+    ).toBe(`//admin:${REDACTED}@files.example.com/file?sig=${REDACTED}`);
   });
 });
 
 describe('redactHeaders — URL-bearing headers (#63)', () => {
-  it('redacts query secrets and userinfo passwords inside Location, Referer, and Content-Location', () => {
+  it('redacts query secrets and userinfo passwords inside Location, Referer, Content-Location, and Refresh', () => {
     const out = redactHeaders(
       [
         { name: 'Location', value: 'https://files.example/r.pdf?token=SECRET&dl=1' },
         { name: 'Referer', value: 'https://app.example.com/reset?session_token=XYZ&step=2' },
         { name: 'Content-Location', value: '/download?sig=AZURE_SIG' },
+        { name: 'Refresh', value: '0; url="https://files.example/download?sig=SECRET"' },
+        { name: 'Refresh', value: '5; url=//admin:pass@files.example/r.pdf?token=T1' },
+        { name: 'Refresh', value: '10' },
         { name: 'Content-Type', value: 'application/json' },
       ],
       EMPTY_RULES,
@@ -406,6 +412,9 @@ describe('redactHeaders — URL-bearing headers (#63)', () => {
       { name: 'Location', value: `https://files.example/r.pdf?token=${REDACTED}&dl=1` },
       { name: 'Referer', value: `https://app.example.com/reset?session_token=${REDACTED}&step=2` },
       { name: 'Content-Location', value: `/download?sig=${REDACTED}` },
+      { name: 'Refresh', value: `0; url="https://files.example/download?sig=${REDACTED}"` },
+      { name: 'Refresh', value: `5; url=//admin:${REDACTED}@files.example/r.pdf?token=${REDACTED}` },
+      { name: 'Refresh', value: '10' },
       { name: 'Content-Type', value: 'application/json' },
     ]);
   });

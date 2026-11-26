@@ -4,6 +4,7 @@ import { SessionBuilder } from '@/lib/fixtures/session-builder';
 import type { NetRequestPayload, SessionEvent } from '@/lib/session/types';
 import { buildBundle, type ExportFile } from './bundle';
 import { buildHar } from './har';
+import { REDACTED, redactHeaders } from '@/lib/capture/redaction';
 
 function firstRequest(events: SessionEvent[]): NetRequestPayload {
   const e = events.find((ev) => ev.type === 'net-request');
@@ -152,5 +153,28 @@ describe('network.har in the export bundle', () => {
     const quiet = new SessionBuilder().click('Save').build();
     const files = await buildBundle({ ...quiet, level: 'L0' });
     expect(harFile(files)).toBeUndefined();
+  });
+
+  it('never leaks signed URL secrets in response.redirectURL after header redaction', () => {
+    const { session, events } = new SessionBuilder()
+      .net('GET', 'https://app.example.com/download', { status: 302 })
+      .build();
+    const req = firstRequest(events);
+    req.responseHeaders = redactHeaders(
+      [
+        {
+          name: 'Location',
+          value: 'https://acct.blob.core.windows.net/c/report.pdf?sv=2022-11-02&sig=SUPER_SECRET_SAS',
+        },
+      ],
+      { headerNames: [], bodyKeyPatterns: [], urlParamPatterns: [] },
+    );
+
+    const har = buildHar(session, events) as any;
+    const redirectUrl: string = har.log.entries[0].response.redirectURL;
+    expect(redirectUrl).not.toContain('SUPER_SECRET_SAS');
+    expect(redirectUrl).toBe(
+      `https://acct.blob.core.windows.net/c/report.pdf?sv=2022-11-02&sig=${REDACTED}`,
+    );
   });
 });

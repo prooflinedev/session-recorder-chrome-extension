@@ -95,9 +95,20 @@ function buildUrlMatcher(rules: RedactionRules): (name: string) => boolean {
 }
 
 /**
+ * Redact the URL inside a `Refresh` header (e.g. `0; url="https://...?sig=..."`)
+ * while preserving the delay, `url=` prefix, and surrounding quotes.
+ */
+function redactRefreshHeader(value: string, rules: RedactionRules): string {
+  const match = /^(\s*\d+\s*;\s*(?:url\s*=\s*)?)(["']?)([^"'\r\n]+)(\2\s*)$/i.exec(value);
+  if (!match) return value;
+  const [, prefix, quote, rawUrl, suffix] = match;
+  return `${prefix}${quote}${redactUrl(rawUrl!.trim(), rules)}${suffix}`;
+}
+
+/**
  * Return a new header array with blocklisted (and custom) header values masked,
- * and URL-bearing headers (`Location`, `Referer`, `Content-Location`) scrubbed
- * via `redactUrl`. Comparison is case-insensitive on the header name.
+ * and URL-bearing headers (`Location`, `Referer`, `Content-Location`, `Refresh`)
+ * scrubbed via `redactUrl`. Comparison is case-insensitive on the header name.
  */
 export function redactHeaders(
   headers: NetHeader[],
@@ -111,6 +122,9 @@ export function redactHeaders(
     const lower = h.name.toLowerCase();
     if (blocked.has(lower)) {
       return { name: h.name, value: REDACTED };
+    }
+    if (lower === 'refresh' && h.value) {
+      return { name: h.name, value: redactRefreshHeader(h.value, rules) };
     }
     if (URL_HEADER_NAMES.has(lower) && h.value) {
       return { name: h.name, value: redactUrl(h.value, rules) };
@@ -258,17 +272,18 @@ export function redactBody(
 }
 
 /**
- * Redact `user:password@` credentials in a URL authority while preserving the
+ * Redact `user:password@` credentials in a URL authority (including
+ * protocol-relative URLs like `//user:pass@host/path`) while preserving the
  * username and host.
  */
 function redactUrlUserinfo(url: string): string {
-  const match = /^([a-z][a-z0-9+.-]*:\/\/)([^/?#@\s]+)@/i.exec(url);
+  const match = /^((?:[a-z][a-z0-9+.-]*:)?\/\/)([^/?#@\s]+)@/i.exec(url);
   if (!match) return url;
-  const [, scheme, userinfo] = match;
+  const [, prefix, userinfo] = match;
   const colonIdx = userinfo!.indexOf(':');
   if (colonIdx === -1) return url;
   const user = userinfo!.slice(0, colonIdx);
-  return `${scheme}${user}:${REDACTED}@${url.slice(match[0].length)}`;
+  return `${prefix}${user}:${REDACTED}@${url.slice(match[0].length)}`;
 }
 
 /**
