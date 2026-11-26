@@ -298,3 +298,168 @@ test('files an issue in one click with an automatic summary and protected report
     animations: 'disabled',
   });
 });
+
+test('publish preserves concurrent issue and draft updates', async ({
+  context,
+  background,
+  extensionId,
+}) => {
+  // Record a minimal session for the share page.
+  const page = await context.newPage();
+  await page.goto('/');
+  const started = await dispatch<{ ok: boolean; session: { id: string } }>(background, {
+    kind: 'session/start',
+    tabId: await tabIdForUrl(background, 'http://localhost:5319'),
+  });
+  expect(started.ok).toBe(true);
+  await dispatch(background, { kind: 'session/stop' });
+  const sessionId = started.session.id;
+  const draftKey = `shareDraft:${sessionId}`;
+  const accountId = 'a'.repeat(32);
+  const appId = '12345678-1234-1234-1234-123456789abc';
+  const reportUrl = 'https://abc.reports.pages.dev';
+
+  await background.evaluate(
+    async ({ accountId, appId }: { accountId: string; appId: string }) => {
+      await chrome.storage.local.set({
+        sharingSettings: {
+          cloudflare: {
+            apiToken: 'cf-token',
+            accountId,
+            projectName: 'reports',
+            accessAppId: appId,
+            teamDomain: 'team.cloudflareaccess.com',
+          },
+          repository: 'owner/repo',
+          githubToken: 'gh-token',
+        },
+      });
+    },
+    { accountId, appId },
+  );
+
+  // Gate the Cloudflare deployment-creation step so we can inject issue data into
+  // storage while Tab A's publish operation is in-flight, simulating a concurrent
+  // Tab B that has just completed a full issue-filing workflow.
+  let releaseDeployment!: () => void;
+  const deploymentGate = new Promise<void>((resolve) => {
+    releaseDeployment = resolve;
+  });
+  let deployments = 0;
+
+  await context.route('https://api.cloudflare.com/client/v4/**', async (route) => {
+    const url = route.request().url();
+    const method = route.request().method();
+    let result: unknown;
+    if (url.endsWith('/pages/projects/reports') && method !== 'POST')
+      result = {
+        name: 'reports',
+        subdomain: 'reports.pages.dev',
+        production_branch: 'main',
+        deployment_configs: { preview: { fail_open: false } },
+      };
+    else if (url.endsWith(`/access/apps/${appId}`))
+      result = { type: 'self_hosted', domain: '*.reports.pages.dev', aud: 'b'.repeat(64) };
+    else if (url.includes('/policies?')) result = [{ decision: 'allow' }];
+    else if (url.endsWith('/upload-token')) result = { jwt: 'upload-jwt' };
+    else if (url.endsWith('/pages/assets/upload')) result = null;
+    else if (url.endsWith('/pages/assets/upsert-hashes')) result = null;
+    else if (url.endsWith('/deployments') && method === 'POST') {
+      // Hold Tab A here while we write the concurrent issue to shared storage.
+      await deploymentGate;
+      deployments++;
+      result = {
+        id: 'deployment-1',
+        url: reportUrl,
+        environment: 'preview',
+        latest_stage: { name: 'deploy', status: 'success' },
+      };
+    } else {
+      await route.abort();
+      return;
+    }
+    await route.fulfill({ json: { success: true, result } });
+  });
+  await context.route(
+    'https://team.cloudflareaccess.com/cdn-cgi/access/certs',
+    (route) => route.fulfill({ json: { keys: [] } }),
+  );
+
+  // Open the share page (Tab A).
+  const shareTab = await context.newPage();
+  await shareTab.goto(extUrl(extensionId, `share.html?session=${sessionId}`));
+
+  // Open the advanced section and wait for report-file preparation to finish.
+  await shareTab.locator('details.advanced-report > summary').click();
+  const publishButton = shareTab.getByRole('button', { name: 'Publish report only' });
+  await expect(publishButton).toBeEnabled({ timeout: 30_000 });
+
+  // Kick off Tab A's standalone publish.
+  await publishButton.click();
+
+  // Wait until Tab A has uploaded all files and is blocked waiting for the
+  // deployment-creation response (the gated step).
+  await expect(shareTab.getByRole('status')).toContainText('Creating protected deployment', {
+    timeout: 30_000,
+  });
+
+  // === Race-condition window ===
+  // Simulate Tab B having concurrently completed a full issue-filing workflow.
+  // Simulate another tab's persisted issue record and draft edits
+  // while the first tab's publication request is still in flight.
+  const filedIssue = {
+    number: 7,
+    url: 'https://github.com/owner/repo/issues/7',
+    repository: 'owner/repo',
+  };
+  await background.evaluate(
+    async ({ key, issue }: { key: string; issue: { number: number; url: string; repository: string } }) => {
+      const stored = await chrome.storage.local.get(key);
+      const existing = (stored[key] as Record<string, unknown>) ?? {};
+      await chrome.storage.local.set({
+        [key]: {
+          ...existing,
+          issue,
+          draft: {
+            title: "Updated in another tab",
+            body: "Concurrent user edits must survive",
+          },
+          draftSource: "edited",
+        },
+      });
+    },
+    { key: draftKey, issue: filedIssue },
+  );
+
+  // Let Tab A's deployment-creation request complete.
+  releaseDeployment();
+
+  // Wait for Tab A's publish to report success.
+  await expect(shareTab.getByRole('status')).toContainText('Report published', {
+    timeout: 30_000,
+  });
+
+  // Verify that publication persistence preserves concurrent updates.
+  // The publication update must not replace newer persisted issue or draft data.
+  const afterPublish = await background.evaluate(
+    async (key: string) => chrome.storage.local.get(key),
+    draftKey,
+  );
+  const savedDraft = afterPublish[draftKey] as {
+    issue?: { number: number; url: string; repository: string };
+    publication?: unknown;
+    draft: { title: string; body: string };
+    draftSource: string;
+  };
+  expect(
+    savedDraft.issue,
+    'issue written by another tab must survive a concurrent publish completing',
+  ).toEqual(filedIssue);
+  expect(savedDraft.publication, 'publication must be persisted after publish').toBeDefined();
+  expect(savedDraft.draft).toEqual({
+    title: "Updated in another tab",
+    body: "Concurrent user edits must survive",
+  });
+  expect(savedDraft.draftSource).toBe("edited");
+  expect(deployments, 'exactly one deployment must have been created').toBe(1);
+});

@@ -189,7 +189,18 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
   }
   async function remember(publication?: Publication) {
     dispatch({ type: 'publication', publication });
-    await persist(snapshot({ publication }));
+    const write = writes.current.then(() =>
+      navigator.locks.request(draftKey, async () => {
+        const stored = (await chrome.storage.local.get(draftKey))[draftKey] as
+          SavedDraft | undefined;
+        const next = stored
+          ? { ...stored, publication }
+          : snapshot({ publication });
+        await chrome.storage.local.set({ [draftKey]: next });
+      }),
+    );
+    writes.current = write.catch(() => {});
+    await write;
   }
   async function run(
     kind: ShareState['operation'],
