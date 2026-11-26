@@ -626,6 +626,8 @@ class ReproWriter {
   finish(): string | null {
     if (!this.opened || (this.actions === 0 && this.checks === 0)) return null;
     const replayHar = this.harReplayable && this.opts.harPath !== undefined;
+    // Replayed app calls move to REPRO_BASE_URL, which needs appOrigin.
+    if (replayHar && this.origin !== undefined) this.usesAppUrl = true;
 
     const out: string[] = [...this.header(), ''];
     out.push("import { test, expect } from '@playwright/test';");
@@ -658,14 +660,17 @@ class ReproWriter {
     if (replayHar && this.opts.harPath !== undefined) {
       body.push(
         `// ${oneLine(this.opts.harPath)} holds the responses from the recording. REPRO_REPLAY_NETWORK=1`,
-        '// answers requests with the ones recorded whole, for bugs that need the same data.',
-        '// A request still goes to the server when its response body was cut or never captured',
-        '// (only a 204 or a redirect with a target has none), when it sent a body that was not',
-        '// recorded (only GET, HEAD and OPTIONS replay without one), or when the file lacks it.',
+        '// answers the API calls (fetch and XHR) recorded whole, for bugs that need the same data.',
+        '// The page, its scripts and styles always load from the server, so a fix shows, and',
+        "// the app's calls follow REPRO_BASE_URL. A call still goes to the server when its",
+        '// response body was cut or never captured (only a 204 or a redirect with a target has',
+        '// none), when it sent a body that was not recorded (only GET, HEAD and OPTIONS replay',
+        '// without one), or when the file lacks it.',
         '// Leave it unset when checking a backend fix: replayed responses keep the old failures.',
         "if (process.env.REPRO_REPLAY_NETWORK === '1') {",
         '  type HarEntry = {',
-        '    request: { method: string; postData?: { comment?: string } };',
+        '    _resourceType?: string;',
+        '    request: { method: string; url: string; postData?: { comment?: string } };',
         '    response: {',
         '      status: number;',
         '      redirectURL: string;',
@@ -682,8 +687,22 @@ class ReproWriter {
         '      entry.response.status === 204 ||',
         "      (entry.response.status >= 300 && entry.response.status < 400 && entry.response.redirectURL !== ''));",
         `  const file = path.join(path.dirname(test.info().file), ${lit(this.opts.harPath)});`,
+        "  const apiCall = (entry: HarEntry) => ['fetch', 'xhr'].includes(entry._resourceType ?? '');",
         "  const recorded = JSON.parse(readFileSync(file, 'utf8'));",
-        '  recorded.log.entries = recorded.log.entries.filter(whole);',
+        '  recorded.log.entries = recorded.log.entries.filter(',
+        '    (entry: HarEntry) => apiCall(entry) && whole(entry),',
+        '  );',
+        ...(this.origin !== undefined
+          ? [
+              `  const recordedOrigin = ${lit(this.origin)};`,
+              '  for (const entry of recorded.log.entries) {',
+              '    const url = new URL(entry.request.url);',
+              '    if (url.origin === recordedOrigin) {',
+              '      entry.request.url = appOrigin + url.pathname + url.search;',
+              '    }',
+              '  }',
+            ]
+          : []),
         "  const har = test.info().outputPath('replay.har');",
         '  writeFileSync(har, JSON.stringify(recorded));',
         "  await page.routeFromHAR(har, { notFound: 'fallback' });",

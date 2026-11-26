@@ -204,11 +204,12 @@ function typeErrors(code: string): string[] {
 async function replayedEntries(
   spec: string,
   har: string,
+  appOrigin: string,
 ): Promise<{ request: { url: string } }[]> {
   const start = spec.indexOf("if (process.env.REPRO_REPLAY_NETWORK === '1') {");
   const end = spec.indexOf('\n  }\n', start) + '\n  }'.length;
   const js = ts.transpileModule(
-    `module.exports = async ({ process, readFileSync, writeFileSync, path, test, page }) => {\n${spec.slice(start, end)}\n};`,
+    `module.exports = async ({ process, readFileSync, writeFileSync, path, test, page, appOrigin }) => {\n${spec.slice(start, end)}\n};`,
     {
       compilerOptions: {
         module: ts.ModuleKind.CommonJS,
@@ -240,6 +241,7 @@ async function replayedEntries(
         routed.push(file);
       },
     },
+    appOrigin,
   });
   expect(routed).toEqual(['out/replay.har']);
   return JSON.parse(written.get('out/replay.har') ?? '{}').log.entries;
@@ -1149,9 +1151,7 @@ describe('buildPlaywrightRepro', () => {
     expect(full).toContain(
       "const file = path.join(path.dirname(test.info().file), 'network.har');",
     );
-    expect(full).toContain(
-      'recorded.log.entries = recorded.log.entries.filter(whole);',
-    );
+    expect(full).toContain('(entry: HarEntry) => apiCall(entry) && whole(entry),');
     expect(full).toContain("await page.routeFromHAR(har, { notFound: 'fallback' });");
     expect(full).toContain('// Leave it unset when checking a backend fix');
 
@@ -1311,7 +1311,7 @@ describe('repro.spec.ts in the export bundle', () => {
     }
   });
 
-  it('replays only the network.har entries recorded whole', async () => {
+  it('replays only the API calls network.har recorded whole, on the replay server', async () => {
     const { session, events, assets } = new SessionBuilder()
       .click('Load')
       .net('GET', 'https://app.example.com/api/items', { resBody: '[1,2]' })
@@ -1321,6 +1321,11 @@ describe('repro.spec.ts in the export bundle', () => {
         resBody: '[1]',
       })
       .net('POST', 'https://app.example.com/api/save', { resBody: '{"ok":true}' })
+      .net('GET', 'https://app.example.com/assets/app.js', {
+        resBody: 'render()',
+        mime: 'application/javascript',
+      })
+      .net('GET', 'https://api.partner.com/v1/rates', { resBody: '{"eur":1}' })
       .build();
     const cut = events.find(
       (e) => e.type === 'net-request' && e.payload.url.endsWith('/api/report'),
@@ -1333,16 +1338,19 @@ describe('repro.spec.ts in the export bundle', () => {
     const har = JSON.parse(file(files, 'network.har') ?? '') as {
       log: { entries: { request: { url: string } }[] };
     };
-    expect(har.log.entries).toHaveLength(4);
-    // What the spec hands to routeFromHAR: the cut response and the POST whose payload
-    // was not recorded are left to the server.
+    expect(har.log.entries).toHaveLength(6);
+    // What the spec hands to routeFromHAR with REPRO_BASE_URL on another server: the
+    // cut response, the POST whose payload was not recorded and the page's script are
+    // left to the server, and the app's calls move to the replay server.
     const replayed = await replayedEntries(
       file(files, 'repro.spec.ts') ?? '',
       file(files, 'network.har') ?? '',
+      'http://localhost:3000',
     );
     expect(replayed.map((e) => e.request.url)).toEqual([
-      'https://app.example.com/api/items',
-      'https://app.example.com/api/search',
+      'http://localhost:3000/api/items',
+      'http://localhost:3000/api/search',
+      'https://api.partner.com/v1/rates',
     ]);
   });
 
