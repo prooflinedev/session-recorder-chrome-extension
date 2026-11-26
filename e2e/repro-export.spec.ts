@@ -107,9 +107,9 @@ test('exports a Playwright test that replays the recording', async ({
 
   // Run the exported test on its own, against the page it was recorded on.
   // The appended checks only pass if the exported steps really ran against the page.
-  const tabCheck = "  await expect(page.locator('#f-pass')).not.toBeFocused();\n";
+  const tabCheck = "  await expect(page.locator('#f-token')).toBeFocused();\n";
   const checked = spec
-    // Right after the Tab press, focus must have left the password field.
+    // Right after the Tab press, focus must be on the field after the password.
     .replace(
       /(await page\.locator\('#f-pass'\)\.press\('Tab'\);[^\n]*\n)/,
       `$1${tabCheck}`,

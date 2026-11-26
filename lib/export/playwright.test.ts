@@ -1325,6 +1325,8 @@ describe('repro.spec.ts in the export bundle', () => {
       const files = await buildBundle({ session, events, assets, level });
       const report = file(files, 'report.md') ?? '';
       expect(report).toContain('`repro.spec.ts`');
+      // The file the report names ships at that level too.
+      expect(file(files, 'repro.spec.ts'), level).toContain('@playwright/test');
       expect(approxBytes, level).toBe(new TextEncoder().encode(report).length);
     }
   });
