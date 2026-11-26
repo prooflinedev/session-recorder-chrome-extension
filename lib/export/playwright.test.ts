@@ -714,6 +714,37 @@ describe('buildPlaywrightRepro', () => {
     expect(steps(hashBack()).slice(-3)).toEqual(expected);
   });
 
+  it('opens the page when Back or Forward lands on an entry it cannot place', () => {
+    const route = (
+      t: number,
+      url: string,
+      method: 'pushState' | 'replaceState' | 'popstate',
+      qualifiers: string[] = [],
+    ) => ev('spa-route', t, { url, method, transitionQualifiers: qualifiers });
+    // history.replaceState() reaches the recorder as pushState, so the test's history
+    // has an entry the browser's does not.
+    const replaced = repro([
+      click(1000, { tag: 'a', text: 'Orders' }),
+      route(1100, 'https://app.example.com/orders', 'pushState'),
+      route(1200, 'https://app.example.com/orders?tab=open', 'pushState'),
+      route(3000, 'https://app.example.com/dashboard', 'popstate', ['forward_back']),
+    ]);
+    expect(steps(replaced).at(-1)).toBe("await page.goto(appUrl('/dashboard'));");
+    expect(replaced).toContain('an entry the test cannot place in its history');
+
+    // Picked from the Back button's menu, two entries back.
+    const jumped = repro([
+      nav(1000, 'https://app.example.com/docs#intro', 'typed'),
+      click(2000, { tag: 'a', text: 'Setup' }),
+      route(2100, 'https://app.example.com/docs#setup', 'replaceState'),
+      click(3000, { tag: 'a', text: 'Deploy' }),
+      route(3100, 'https://app.example.com/docs#deploy', 'replaceState'),
+      route(5000, 'https://app.example.com/docs#intro', 'popstate', ['forward_back']),
+    ]);
+    expect(steps(jumped).at(-1)).toBe("await page.goto(appUrl('/docs#intro'));");
+    expect(jumped).not.toContain("url.hash === '#intro'");
+  });
+
   it('waits for a query-only navigation to leave the old query', () => {
     const code = repro([
       nav(1000, 'https://app.example.com/contacts?page=1', 'typed'),

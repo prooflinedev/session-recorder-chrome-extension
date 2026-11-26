@@ -815,7 +815,7 @@ class ReproWriter {
     const traversal = transitionQualifiers?.includes('forward_back') === true;
     if (this.opened && traversal) {
       if (url === this.currentUrl || this.historyMove(url, e.t, true)) return;
-      this.goto(url, e.t, true);
+      this.unplacedMove(url, e.t);
       return;
     }
     if (!this.opened || BROWSER_NAVIGATIONS.has(type)) {
@@ -837,8 +837,10 @@ class ReproWriter {
     const { url, method } = e.payload;
     if (!this.opened || !isWebUrl(url) || url === this.currentUrl) return;
     if (method === 'popstate') {
-      if (this.historyMove(url, e.t, true)) return;
-    } else if (e.payload.transitionQualifiers === undefined) {
+      if (!this.historyMove(url, e.t, true)) this.unplacedMove(url, e.t);
+      return;
+    }
+    if (e.payload.transitionQualifiers === undefined) {
       // Older recordings label Back and Forward as pushState, or replaceState on a
       // hash change, so infer them.
       if (this.historyMove(url, e.t)) return;
@@ -883,6 +885,22 @@ class ReproWriter {
     this.historyIndex += back ? -1 : 1;
     this.currentUrl = url;
     return true;
+  }
+
+  /**
+   * A Back or Forward to an entry that is not next to the current one in the test's
+   * history: picked several entries away from the Back menu, or past a
+   * `history.replaceState()`, which Chrome reports like a new entry. Opening the
+   * page reaches the same URL instead of waiting for a move nothing makes.
+   */
+  private unplacedMove(url: string, t: number): void {
+    const u = parseUrl(url);
+    const where = u ? u.pathname + u.search + u.hash : url;
+    this.comment(
+      t,
+      `Back or Forward to ${where}, an entry the test cannot place in its history, so it opens the page.`,
+    );
+    this.goto(url, t, true);
   }
 
   private click(e: EventOf<'click'>): void {
