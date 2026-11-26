@@ -132,12 +132,25 @@ function beforeFinalCheck(code: string): string {
   return at === -1 ? code : code.slice(0, at);
 }
 
-/** Assertions the test runs at its checkpoints, leaving out the commented-out ones. */
+/** Assertions the test runs at its checkpoints. A check in any kind of comment does not count. */
 function activeChecks(code: string): string[] {
-  return beforeFinalCheck(code)
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith('expect('));
+  const end = beforeFinalCheck(code).length;
+  const source = ts.createSourceFile(
+    'repro.spec.ts',
+    code,
+    ts.ScriptTarget.ES2022,
+    true,
+  );
+  const checks: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isExpressionStatement(node) && node.getStart(source) < end) {
+      const text = node.getText(source);
+      if (text.startsWith('expect(')) checks.push(text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return checks;
 }
 
 /** Assertions left commented out for the developer to opt into. */
@@ -182,6 +195,54 @@ function typeErrors(code: string): string[] {
   return ts
     .getPreEmitDiagnostics(program)
     .map((d) => ts.flattenDiagnosticMessageText(d.messageText, '\n'));
+}
+
+/**
+ * Runs the spec's network replay block against `har`, with stand-ins for the file
+ * system and Playwright, and returns the HAR entries it hands to `routeFromHAR`.
+ */
+async function replayedEntries(
+  spec: string,
+  har: string,
+): Promise<{ request: { url: string } }[]> {
+  const start = spec.indexOf("if (process.env.REPRO_REPLAY_NETWORK === '1') {");
+  const end = spec.indexOf('\n  }\n', start) + '\n  }'.length;
+  const js = ts.transpileModule(
+    `module.exports = async ({ process, readFileSync, writeFileSync, path, test, page }) => {\n${spec.slice(start, end)}\n};`,
+    {
+      compilerOptions: {
+        module: ts.ModuleKind.CommonJS,
+        target: ts.ScriptTarget.ES2022,
+      },
+    },
+  ).outputText;
+  const mod: { exports?: (deps: object) => Promise<void> } = {};
+  new Function('module', js)(mod);
+  const written = new Map<string, string>();
+  const routed: string[] = [];
+  await mod.exports?.({
+    process: { env: { REPRO_REPLAY_NETWORK: '1' } },
+    readFileSync: (file: string) => {
+      expect(file).toBe('bundle/network.har');
+      return har;
+    },
+    writeFileSync: (file: string, text: string) => written.set(file, text),
+    path: { join: (...parts: string[]) => parts.join('/'), dirname: () => 'bundle' },
+    test: {
+      info: () => ({
+        file: 'bundle/repro.spec.ts',
+        outputPath: (name: string) => `out/${name}`,
+      }),
+    },
+    page: {
+      routeFromHAR: async (file: string, options: { notFound?: string }) => {
+        expect(options.notFound).toBe('fallback');
+        routed.push(file);
+      },
+    },
+  });
+  expect(routed).toEqual(['out/replay.har']);
+  return JSON.parse(written.get('out/replay.har') ?? '{}').log.entries;
 }
 
 /** The `whole` HAR entry filter exactly as the generated spec defines it. */
@@ -1009,6 +1070,11 @@ describe('buildPlaywrightRepro', () => {
     ]);
     expect(commentedChecks(code)).toEqual([cartCheck]);
     expect(activeChecks(code)).toEqual([cartCheck]);
+    // Nor does one inside a block comment.
+    const lines = code.split('\n');
+    const at = lines.findIndex((line) => line.trim() === cartCheck);
+    lines.splice(at, 1, '/*', lines[at] ?? '', '*/');
+    expect(activeChecks(lines.join('\n'))).toEqual([]);
     // The required check belongs after Retry, the step that hit the linked failure.
     const flow = beforeFinalCheck(code)
       .split('\n')
@@ -1268,9 +1334,13 @@ describe('repro.spec.ts in the export bundle', () => {
       log: { entries: { request: { url: string } }[] };
     };
     expect(har.log.entries).toHaveLength(4);
-    const whole = harFilter(file(files, 'repro.spec.ts') ?? '');
-    // The cut response and the POST whose payload was not recorded go to the server.
-    expect(har.log.entries.filter(whole).map((e) => e.request.url)).toEqual([
+    // What the spec hands to routeFromHAR: the cut response and the POST whose payload
+    // was not recorded are left to the server.
+    const replayed = await replayedEntries(
+      file(files, 'repro.spec.ts') ?? '',
+      file(files, 'network.har') ?? '',
+    );
+    expect(replayed.map((e) => e.request.url)).toEqual([
       'https://app.example.com/api/items',
       'https://app.example.com/api/search',
     ]);
