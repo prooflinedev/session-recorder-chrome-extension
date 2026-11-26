@@ -1190,9 +1190,13 @@ describe('buildPlaywrightRepro', () => {
     expect(
       whole(entry(302, {}, undefined, 'GET', 'https://app.example.com/home')),
     ).toBe(true);
-    // A redirect without a target, or a 304 for a cache the test does not have.
+    // A redirect without a target, or a 304 for a cache the test does not have, even
+    // when the response carried a Location header.
     expect(whole(entry(302, {}))).toBe(false);
     expect(whole(entry(304, {}))).toBe(false);
+    expect(
+      whole(entry(304, {}, undefined, 'GET', 'https://app.example.com/home')),
+    ).toBe(false);
     expect(whole(entry(200, { text: '[', comment: 'partial' }))).toBe(false);
     expect(whole(entry(200, {}))).toBe(false);
     expect(whole(entry(200, { text: '{}' }, { comment: 'partial' }))).toBe(false);

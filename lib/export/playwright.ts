@@ -685,7 +685,7 @@ class ReproWriter {
         '    !entry.response.content.comment &&',
         '    (entry.response.content.text !== undefined ||',
         '      entry.response.status === 204 ||',
-        "      (entry.response.status >= 300 && entry.response.status < 400 && entry.response.redirectURL !== ''));",
+        "      ([301, 302, 303, 307, 308].includes(entry.response.status) && entry.response.redirectURL !== ''));",
         `  const file = path.join(path.dirname(test.info().file), ${lit(this.opts.harPath)});`,
         "  const apiCall = (entry: HarEntry) => ['fetch', 'xhr'].includes(entry._resourceType ?? '');",
         "  const recorded = JSON.parse(readFileSync(file, 'utf8'));",
