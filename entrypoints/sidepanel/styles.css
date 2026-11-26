@@ -592,6 +592,17 @@ button {
   padding: 20px 0;
 }
 
+.sessions__search {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.sessions__search input {
+  min-width: 0;
+  font: inherit;
+}
+
 .sessions__list {
   list-style: none;
   margin: 0;

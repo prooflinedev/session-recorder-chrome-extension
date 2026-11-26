@@ -190,3 +190,33 @@ export async function fulfillWebsiteRequest(route: Route, secrets: string[]): Pr
     await route.fulfill({ contentType: 'text/html', body: '<p>Website fixture</p>' });
   else await route.fulfill({ status: 404, json: { message: 'Not Found' } });
 }
+
+export async function seedReport(
+  page: import('@playwright/test').Page,
+  extensionId: string,
+  recordings: { session: import('../lib/session/types').Session; events: import('../lib/session/types').SessionEvent[] }[],
+): Promise<void> {
+  // Open the real report first so the extension initializes its own schema.
+  await page.goto(extUrl(extensionId, 'report.html?session=fixture-setup'));
+  await expect(page.getByText('Session not found.')).toBeVisible();
+  await page.evaluate(async (fixtures) => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('session-recorder');
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(['sessions', 'events'], 'readwrite');
+        tx.oncomplete = () => resolve();
+        tx.onabort = () => reject(tx.error);
+        for (const { session, events } of fixtures) {
+          tx.objectStore('sessions').put(session);
+          for (const event of events) tx.objectStore('events').put(event);
+        }
+      });
+    } finally {
+      db.close();
+    }
+  }, recordings);
+}
