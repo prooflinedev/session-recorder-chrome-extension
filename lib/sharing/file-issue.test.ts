@@ -128,6 +128,36 @@ describe('one-click issue filing', () => {
     expect(waitForDeployment).not.toHaveBeenCalled();
     expect(vi.mocked(createGitHubIssue).mock.calls[0]![2].title).toBe('Session');
   });
+  it('submits validated text while preserving concurrent draft edits', async () => {
+    const input = fixture();
+    input.saved.draftSource = 'edited';
+
+    const editedDraft = {
+      title: 'Concurrent title',
+      body: '',
+    };
+
+    const result = await fileIssue({
+      ...input,
+      save: async (value, patch) => {
+        const merged = patch.publication || patch.attempt
+          ? { ...value, draft: editedDraft }
+          : value;
+
+        input.snapshots.push(merged);
+        return merged;
+      },
+    });
+
+    expect(createGitHubIssue).toHaveBeenCalledOnce();
+    expect(vi.mocked(createGitHubIssue).mock.calls[0]![2]).toEqual({
+      title: 'Session',
+      body: 'Evidence',
+    });
+    expect(result.draft).toEqual(editedDraft);
+    expect(result.issue).toEqual(issue);
+  });
+
   it('needs no model key to file a manually written issue', async () => {
     const input = fixture();
     input.settings.models.openai.apiKey = '';

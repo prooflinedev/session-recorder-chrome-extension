@@ -47,6 +47,8 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
   const recording = useRef<Recording>();
   const operation = useRef<AbortController>();
   const preparation = useRef(0);
+  const pendingPublication = useRef<Publication>();
+
   const writes = useRef<Promise<void>>(Promise.resolve());
   const draftKey = `shareDraft:${sessionId}`;
   const recoveryKey = `${draftKey}:publicationRecovery`;
@@ -137,6 +139,11 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
       ...patch,
     };
   }
+  const pendingEdit = useRef<{
+    draft: Partial<IssueDraft>;
+    repository?: string;
+  }>({ draft: {} });
+
   function persistEdit(
     patch: Partial<IssueDraft>,
     repository?: string,
@@ -144,29 +151,37 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
     const fallback = snapshot();
     const write = writes.current.then(() =>
       navigator.locks.request(draftKey, async () => {
+        pendingEdit.current = {
+          draft: { ...pendingEdit.current.draft, ...patch },
+          repository: repository ?? pendingEdit.current.repository,
+        };
+        const pending = pendingEdit.current;
         const stored = (await chrome.storage.local.get(draftKey))[draftKey] as
           SavedDraft | undefined;
-        const latest = stored ?? fallback;
+        const latest = stored
+          ? { ...stored, draftSource: stored.draftSource ?? 'edited' as const }
+          : fallback;
 
         const draftSource =
-          patch.body !== undefined
+          pending.draft.body !== undefined
             ? 'edited'
-            : patch.title !== undefined && latest.draftSource === 'initial'
+            : pending.draft.title !== undefined && latest.draftSource === 'initial'
               ? 'title-edited'
               : latest.draftSource;
 
         const saved: SavedDraft = {
           ...latest,
-          draft: { ...latest.draft, ...patch },
+          draft: { ...latest.draft, ...pending.draft },
           draftSource,
           repository:
             latest.attempt?.repository ??
             latest.issue?.repository ??
-            repository ??
+            pending.repository ??
             latest.repository,
         };
 
         await chrome.storage.local.set({ [draftKey]: saved });
+        pendingEdit.current = { draft: {} };
       }),
     );
 
@@ -217,7 +232,9 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
     ]);
     const stored = records[draftKey] as SavedDraft | undefined;
     const recovery = records[recoveryKey] as Publication | undefined;
-    const latest = stored ?? snapshot();
+    const latest = stored
+      ? { ...stored, draftSource: stored.draftSource ?? 'edited' as const }
+      : snapshot();
 
     return recovery
       ? { ...latest, publication: recovery }
@@ -256,6 +273,22 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
         // starting another external operation.
         // Ensure even a first-time publication has a durable draft.
         // Also promote any recovery checkpoint left by an interrupted tab.
+        const pending = pendingPublication.current;
+
+        if (pending) {
+          const latest = await readDraft();
+
+          if (
+            latest.publication &&
+            !samePublication(pending, latest.publication)
+          )
+            throw new Error(
+              'Another report exists. Resolve the unsaved publication before continuing.',
+            );
+
+          await remember(pending);
+        }
+
         await updateDraft(latest => latest, signal);
         await chrome.storage.local.remove(recoveryKey);
 
@@ -267,11 +300,22 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
 
   async function remember(publication?: Publication) {
     // Persist recovery metadata before waiting for the draft lock.
-    if (publication)
-      await chrome.storage.local.set({ [recoveryKey]: publication });
+    if (publication) {
+      pendingPublication.current = publication;
+      dispatch({ type: 'publication', publication });
+
+      try {
+        await chrome.storage.local.set({ [recoveryKey]: publication });
+      } catch {
+        throw new Error(
+          'Could not save the report checkpoint. Keep this tab open and retry.',
+        );
+      }
+    }
 
     await updateDraft(latest => ({ ...latest, publication }));
     await chrome.storage.local.remove(recoveryKey);
+    pendingPublication.current = undefined;
 
     dispatch({ type: 'publication', publication });
   }
@@ -538,9 +582,7 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
           stage: stage => dispatch({ type: 'stage', stage }),
           save: async (_next, patch) => {
             if (patch.publication)
-              await chrome.storage.local.set({
-                [recoveryKey]: patch.publication,
-              });
+              await remember(patch.publication);
 
             const merged = await updateDraft(latest => {
               const changes = { ...patch };
@@ -568,9 +610,6 @@ export function useShareReport(sessionId: string, initialLevel: VerbosityLevel) 
                   latest.repository,
               };
             });
-
-            if (patch.publication)
-              await chrome.storage.local.remove(recoveryKey);
 
             dispatch({ type: 'saved', saved: merged });
             return merged;

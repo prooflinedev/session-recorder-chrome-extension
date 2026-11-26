@@ -120,7 +120,8 @@ export async function fileIssue(input: FileIssueInput): Promise<SavedDraft> {
     if (saved.draftSource === 'title-edited') draft.title = saved.draft.title;
     await checkpoint({ draft, draftSource: 'generated', summaryRequestId: undefined });
   }
-  if (!saved.draft.title.trim() || !saved.draft.body.trim())
+  const submissionDraft = { ...saved.draft };
+  if (!submissionDraft.title.trim() || !submissionDraft.body.trim())
     throw new Error('Add an issue title and summary.');
   signal.throwIfAborted();
   input.stage?.('publish');
@@ -131,7 +132,7 @@ export async function fileIssue(input: FileIssueInput): Promise<SavedDraft> {
     await publishProoflineReport(
       settings.proofline!,
       files,
-      saved.draft.title,
+      submissionDraft.title,
       level,
       saved.publication,
       (publication) => checkpoint({ publication }),
@@ -208,7 +209,7 @@ export async function fileIssue(input: FileIssueInput): Promise<SavedDraft> {
       ? await fileProoflineIssue(
           settings.proofline!,
           attempt,
-          saved.draft,
+          submissionDraft,
           signal,
           false,
           progress,
@@ -216,7 +217,7 @@ export async function fileIssue(input: FileIssueInput): Promise<SavedDraft> {
       : await createGitHubIssue(
           attempt,
           token,
-          saved.draft,
+          submissionDraft,
           publicationUrl(saved.publication!),
           signal,
         );
