@@ -31,7 +31,24 @@ export const DEFAULT_HEADER_BLOCKLIST: string[] = [
  * Keys (JSON/form) whose values are considered sensitive by default.
  */
 export const DEFAULT_KEY_PATTERN: RegExp =
-  /token|secret|password|passwd|api[-_]?key|session|auth|credential|bearer/i;
+  /token|secret|password|passwd|api[-_]?key|private[-_]?key|session|auth|credential|bearer|(?:^|[^a-z])otp(?:[^a-z]|(?=[A-Z])|$)/i;
+
+/**
+ * Exact URL query-param names (lowercased via /i) that carry signed-URL
+ * credentials or API keys (Azure SAS, AWS/CloudFront, GCP, Google APIs).
+ */
+export const DEFAULT_URL_PARAM_PATTERN: RegExp =
+  /^(?:key|sig|signature|x-amz-signature|x-amz-credential|x-amz-security-token|awsaccesskeyid|x-goog-signature|x-goog-credential|googleaccessid)$/i;
+
+/**
+ * Headers whose values are URLs and should have URL secret rules applied
+ * (e.g., redirect `Location` or `Referer` carrying signed query tokens).
+ */
+export const URL_HEADER_NAMES: ReadonlySet<string> = new Set([
+  'location',
+  'referer',
+  'content-location',
+]);
 
 /**
  * Compile a set of extra regex source strings into predicates. Invalid patterns
@@ -68,16 +85,19 @@ export function buildKeyMatcher(rules: RedactionRules): (key: string) => boolean
     DEFAULT_KEY_PATTERN.test(key) || extra.some((re) => re.test(key));
 }
 
-/** Build a predicate for URL query-param names (default pattern + urlParamPatterns). */
+/** Build a predicate for URL query-param names (default patterns + urlParamPatterns). */
 function buildUrlMatcher(rules: RedactionRules): (name: string) => boolean {
   const extra = compilePatterns(rules.urlParamPatterns);
   return (name: string): boolean =>
-    DEFAULT_KEY_PATTERN.test(name) || extra.some((re) => re.test(name));
+    DEFAULT_KEY_PATTERN.test(name) ||
+    DEFAULT_URL_PARAM_PATTERN.test(name) ||
+    extra.some((re) => re.test(name));
 }
 
 /**
- * Return a new header array with blocklisted (and custom) header values masked.
- * Comparison is case-insensitive on the header name. Input is never mutated.
+ * Return a new header array with blocklisted (and custom) header values masked,
+ * and URL-bearing headers (`Location`, `Referer`, `Content-Location`) scrubbed
+ * via `redactUrl`. Comparison is case-insensitive on the header name.
  */
 export function redactHeaders(
   headers: NetHeader[],
@@ -87,11 +107,16 @@ export function redactHeaders(
     ...DEFAULT_HEADER_BLOCKLIST,
     ...rules.headerNames.map((n) => n.toLowerCase()),
   ]);
-  return headers.map((h) =>
-    blocked.has(h.name.toLowerCase())
-      ? { name: h.name, value: REDACTED }
-      : { name: h.name, value: h.value },
-  );
+  return headers.map((h) => {
+    const lower = h.name.toLowerCase();
+    if (blocked.has(lower)) {
+      return { name: h.name, value: REDACTED };
+    }
+    if (URL_HEADER_NAMES.has(lower) && h.value) {
+      return { name: h.name, value: redactUrl(h.value, rules) };
+    }
+    return { name: h.name, value: h.value };
+  });
 }
 
 /** Recursively clone a parsed JSON value, masking values under matching keys. */
@@ -233,23 +258,38 @@ export function redactBody(
 }
 
 /**
- * Redact matching query-param VALUES in a URL while preserving the rest of its
- * structure (scheme/host/path/hash/param order/encoding). Works on absolute and
- * relative URLs; a URL without a query string is returned unchanged.
+ * Redact `user:password@` credentials in a URL authority while preserving the
+ * username and host.
+ */
+function redactUrlUserinfo(url: string): string {
+  const match = /^([a-z][a-z0-9+.-]*:\/\/)([^/?#@\s]+)@/i.exec(url);
+  if (!match) return url;
+  const [, scheme, userinfo] = match;
+  const colonIdx = userinfo!.indexOf(':');
+  if (colonIdx === -1) return url;
+  const user = userinfo!.slice(0, colonIdx);
+  return `${scheme}${user}:${REDACTED}@${url.slice(match[0].length)}`;
+}
+
+/**
+ * Redact URL userinfo passwords (`user:pass@`) and matching query-param VALUES
+ * while preserving the rest of the URL structure (scheme/host/path/hash/param
+ * order/encoding). Works on absolute and relative URLs.
  */
 export function redactUrl(url: string, rules: RedactionRules): string {
+  const safeUrl = redactUrlUserinfo(url);
   const matcher = buildUrlMatcher(rules);
 
-  const hashIdx = url.indexOf('#');
-  const hash = hashIdx === -1 ? '' : url.slice(hashIdx);
-  const base = hashIdx === -1 ? url : url.slice(0, hashIdx);
+  const hashIdx = safeUrl.indexOf('#');
+  const hash = hashIdx === -1 ? '' : safeUrl.slice(hashIdx);
+  const base = hashIdx === -1 ? safeUrl : safeUrl.slice(0, hashIdx);
 
   const qIdx = base.indexOf('?');
-  if (qIdx === -1) return url;
+  if (qIdx === -1) return safeUrl;
 
   const head = base.slice(0, qIdx);
   const query = base.slice(qIdx + 1);
-  if (query.length === 0) return url;
+  if (query.length === 0) return safeUrl;
 
   let changed = false;
   const parts = query.split('&').map((part) => {
@@ -263,7 +303,7 @@ export function redactUrl(url: string, rules: RedactionRules): string {
     return part;
   });
 
-  return changed ? `${head}?${parts.join('&')}${hash}` : url;
+  return changed ? `${head}?${parts.join('&')}${hash}` : safeUrl;
 }
 
 /** Apply the same URL rules to web/socket URLs embedded in browser diagnostics. */
