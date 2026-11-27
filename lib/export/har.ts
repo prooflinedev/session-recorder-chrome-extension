@@ -124,9 +124,15 @@ function body(
 
 function queryString(url: string): NetHeader[] {
   try {
-    return [...new URL(url).searchParams].map(([name, value]) => ({ name, value }));
+    const u = new URL(url);
+    return [...u.searchParams].map(([name, value]) => ({ name, value }));
   } catch {
-    return [];
+    try {
+      const u = new URL(url, 'http://localhost');
+      return [...u.searchParams].map(([name, value]) => ({ name, value }));
+    } catch {
+      return [];
+    }
   }
 }
 
