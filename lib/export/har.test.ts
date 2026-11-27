@@ -63,6 +63,18 @@ describe('buildHar', () => {
     expect(entry.comment).toBeUndefined();
   });
 
+  it('extracts query parameters from relative request URLs', () => {
+    const { session, events } = new SessionBuilder()
+      .net('GET', '/cart/coupon?dry=1&x=a%20b', { status: 200 })
+      .build();
+    const har = buildHar(session, events) as any;
+
+    expect(har.log.entries[0].request.queryString).toEqual([
+      { name: 'dry', value: '1' },
+      { name: 'x', value: 'a b' },
+    ]);
+  });
+
   it('keeps binary bodies base64 with their decoded size', () => {
     const { session, events } = new SessionBuilder()
       .net('GET', 'https://cdn.example.com/pixel.png', { mime: 'image/png' })
