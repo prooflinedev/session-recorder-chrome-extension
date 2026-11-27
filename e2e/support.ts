@@ -77,35 +77,47 @@ async function startOfflineHttpsFixture(): Promise<{
 }
 
 type Fixtures = {
+  allowTabCapture: boolean;
   context: BrowserContext;
   background: Worker;
   extensionId: string;
 };
 
 export const test = base.extend<Fixtures>({
-  context: async ({}, use) => {
+  allowTabCapture: [false, { option: true }],
+  context: async ({ allowTabCapture }, use) => {
     const headed = !!process.env.HEADED;
     const offline = await startOfflineHttpsFixture();
     try {
+      const args = [
+        `--disable-extensions-except=${EXT_PATH}`,
+        `--load-extension=${EXT_PATH}`,
+        '--host-resolver-rules=MAP * 127.0.0.1, EXCLUDE localhost, EXCLUDE 127.0.0.1',
+        `--testing-fixed-https-port=${offline.port}`,
+        '--disable-background-networking',
+        '--disable-sync',
+        '--disable-domain-reliability',
+        '--no-pings',
+        // Fake media devices interfere with real tabCapture. Video suites
+        // explicitly leave the microphone off; other suites use synthetic devices.
+        ...(!allowTabCapture ? ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] : []),
+        '--no-first-run',
+        '--no-default-browser-check',
+      ];
+      if (allowTabCapture) {
+        const probe = await chromium.launchPersistentContext('', { channel: 'chromium', headless: true, args });
+        try {
+          const worker = probe.serviceWorkers()[0] || await probe.waitForEvent('serviceworker');
+          args.push(`--allowlisted-extension-id=${new URL(worker.url()).host}`);
+        } finally {
+          await probe.close();
+        }
+      }
       const context = await chromium.launchPersistentContext('', {
         channel: 'chromium',
         headless: !headed,
         ignoreHTTPSErrors: true,
-        args: [
-          `--disable-extensions-except=${EXT_PATH}`,
-          `--load-extension=${EXT_PATH}`,
-          '--host-resolver-rules=MAP * 127.0.0.1, EXCLUDE localhost, EXCLUDE 127.0.0.1',
-          `--testing-fixed-https-port=${offline.port}`,
-          '--disable-background-networking',
-          '--disable-sync',
-          '--disable-domain-reliability',
-          '--no-pings',
-          // Automated recordings use synthetic devices; never prompt for a real mic.
-          '--use-fake-device-for-media-stream',
-          '--use-fake-ui-for-media-stream',
-          '--no-first-run',
-          '--no-default-browser-check',
-        ],
+        args,
       });
       try {
         await use(context);

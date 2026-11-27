@@ -1,6 +1,6 @@
 # Privacy Policy — Session Recorder by Proofline
 
-_Last updated: 2026-10-30_
+_Last updated: 2026-11-27_
 
 Session Recorder is a Chrome extension that records a session of you using a web
 app — interactions, network traffic, console logs, screenshots, voice narration,
@@ -30,11 +30,14 @@ recording:
 - Console logs, exceptions, and failed requests
 - Clicks, inputs, scrolls, keystrokes, and page navigations
 - Screenshots of the recorded tab
+- Optional cursor spotlight and click highlight overlays rendered onto the recorded tab (disabled by default; when enabled, embedded into captured screenshots and video without adding extra pointer trajectory telemetry)
 - Microphone audio, when you start voice narration
 - Files you upload to the app or attach yourself
 
 All of this is written to local browser storage. You can export a local ZIP or
 explicitly publish the selected report to Proofline or your Cloudflare Pages project.
+
+Cursor effects are presentation aids that permanently alter screenshot and video pixels. They cannot be removed after capture. The overlay uses pointer coordinates only in page memory and ignores page-dispatched synthetic pointer/click events. Existing interaction capture is unchanged; the effects do not add a stored pointer trajectory, network requests or external services. Page scripts can inspect or alter the injected overlay, so it is not a tamper-proof record of physical input.
 
 ## Redaction
 

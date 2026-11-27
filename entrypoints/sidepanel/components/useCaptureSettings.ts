@@ -1,7 +1,12 @@
 import { useEffect, useReducer, useRef } from 'react';
 import type { CaptureSettings, Session } from '@/lib/session/types';
-import { STORAGE_KEYS, makeDefaultSettings } from '@/lib/session/settings';
+import {
+  STORAGE_KEYS,
+  makeDefaultSettings,
+  normalizeCaptureSettings,
+} from '@/lib/session/settings';
 import { PROVIDERS, transcribe, type TranscriptionConfig } from '@/lib/transcription';
+import { patchDefaultSettings } from '@/lib/session/settings-storage';
 import { deleteSession, listSessions, storageEstimate } from '@/lib/storage';
 import { parseLines, silentWavBlob } from './settings-utils';
 
@@ -13,13 +18,15 @@ interface State {
   saved: Record<string, boolean>;
   tx: TranscriptionConfig;
   settings: CaptureSettings;
+  videoFromStart: boolean;
   redaction: RedactionDraft;
   storage: { usage: number; quota: number };
   sessions: Session[];
   testState: { status: 'idle' | 'testing' | 'ok' | 'error'; message: string };
 }
 type Action =
-  | { type: 'loaded'; tx: TranscriptionConfig; settings: CaptureSettings }
+  | { type: 'loaded'; tx: TranscriptionConfig; settings: CaptureSettings; videoFromStart: boolean }
+  | { type: 'video'; on: boolean }
   | { type: 'tx'; patch: Partial<TranscriptionConfig> }
   | { type: 'settings'; patch: Partial<CaptureSettings> }
   | { type: 'redaction'; patch: Partial<RedactionDraft> }
@@ -36,6 +43,7 @@ function initial(): State {
     saved: {},
     tx: { provider: 'openai', apiKey: '' },
     settings: makeDefaultSettings(),
+    videoFromStart: false,
     redaction: { headers: '', bodyKeys: '', urlParams: '' },
     storage: { usage: 0, quota: 0 },
     sessions: [],
@@ -51,6 +59,7 @@ export function captureSettingsReducer(s: State, a: Action): State {
         loaded: true,
         tx: a.tx,
         settings: a.settings,
+        videoFromStart: a.videoFromStart,
         redaction: {
           headers: r.headerNames.join('\n'),
           bodyKeys: r.bodyKeyPatterns.join('\n'),
@@ -58,6 +67,8 @@ export function captureSettingsReducer(s: State, a: Action): State {
         },
       };
     }
+    case 'video':
+      return { ...s, videoFromStart: a.on };
     case 'tx':
       return {
         ...s,
@@ -98,19 +109,20 @@ export function useCaptureSettings() {
       chrome.storage.local.get([
         STORAGE_KEYS.transcription,
         STORAGE_KEYS.defaultSettings,
+        STORAGE_KEYS.videoFromStart,
       ]),
       storageEstimate(),
       listSessions(),
     ])
       .then(([stored, storage, sessions]) => {
         if (!active) return;
-        const settings = {
-          ...makeDefaultSettings(),
-          ...stored[STORAGE_KEYS.defaultSettings],
-        };
+        const settings = normalizeCaptureSettings(
+          stored[STORAGE_KEYS.defaultSettings] as Partial<CaptureSettings> | undefined,
+        );
         dispatch({
           type: 'loaded',
           settings,
+          videoFromStart: stored[STORAGE_KEYS.videoFromStart] === true,
           tx: { provider: 'openai', apiKey: '', ...stored[STORAGE_KEYS.transcription] },
         });
         dispatch({ type: 'storage', storage, sessions });
@@ -122,8 +134,15 @@ export function useCaptureSettings() {
             message: 'Could not load settings. Reload this page.',
           });
       });
+    const onStorageChange = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
+      if (area === 'local' && changes[STORAGE_KEYS.videoFromStart]) {
+        dispatch({ type: 'video', on: changes[STORAGE_KEYS.videoFromStart]!.newValue === true });
+      }
+    };
+    chrome.storage.onChanged.addListener(onStorageChange);
     return () => {
       active = false;
+      chrome.storage.onChanged.removeListener(onStorageChange);
     };
   }, []);
   const providerMeta = PROVIDERS.find((p) => p.id === state.tx.provider);
@@ -167,11 +186,6 @@ export function useCaptureSettings() {
         }),
       persistSettings: (section: string) =>
         run(async () => {
-          const stored = await chrome.storage.local.get(STORAGE_KEYS.defaultSettings);
-          const current = {
-            ...makeDefaultSettings(),
-            ...stored[STORAGE_KEYS.defaultSettings],
-          };
           const customRedaction = {
             headerNames: parseLines(state.redaction.headers).map((h) =>
               h.toLowerCase(),
@@ -184,19 +198,15 @@ export function useCaptureSettings() {
             ...customRedaction.urlParamPatterns,
           ])
             new RegExp(pattern, 'i');
-          const next =
+          const { redactionEnabled, customRedaction: _redaction, ...capture } = state.settings;
+          const patch =
             section === 'redaction'
               ? {
-                  ...current,
-                  redactionEnabled: state.settings.redactionEnabled,
+                  redactionEnabled,
                   customRedaction,
                 }
-              : {
-                  ...state.settings,
-                  redactionEnabled: current.redactionEnabled,
-                  customRedaction: current.customRedaction,
-                };
-          await chrome.storage.local.set({ [STORAGE_KEYS.defaultSettings]: next });
+              : capture;
+          await patchDefaultSettings(patch);
           dispatch({ type: 'saved', section });
         }),
       runTest: () =>

@@ -8,7 +8,14 @@
  */
 
 import React from 'react';
-import { ChevronDown, Video, Mic, FileJson2 } from 'lucide-react';
+import {
+  ChevronDown,
+  Video,
+  Mic,
+  FileJson2,
+  CircleDot,
+  MousePointerClick,
+} from 'lucide-react';
 import { CAPTURE_DETAIL_LEVELS } from '@/lib/session/settings';
 import { VoiceSetupModal } from './VoiceSetupModal';
 import { useRecordSetup } from './useRecordSetup';
@@ -20,12 +27,14 @@ function OptionRow({
   hint,
   on,
   onChange,
+  disabled = false,
 }: {
   icon: React.ReactNode;
   label: string;
   hint: string;
   on: boolean;
   onChange: (on: boolean) => void;
+  disabled?: boolean;
 }): React.JSX.Element {
   return (
     <button
@@ -33,6 +42,8 @@ function OptionRow({
       className="detail-opt"
       role="switch"
       aria-checked={on}
+      disabled={disabled}
+      title={disabled ? 'Enable Video to use cursor effects' : undefined}
       onClick={() => onChange(!on)}
     >
       <span className={`detail-opt__icon${on ? ' detail-opt__icon--on' : ''}`}>
@@ -51,12 +62,15 @@ function OptionRow({
 
 export function RecordButton(): React.JSX.Element {
   const {
+    ready,
     busy,
     localError,
     detail,
     videoFromStart,
     micFromStart,
     apiSpec,
+    cursorSpotlight,
+    clickHighlight,
     open,
     voiceSetupOpen,
     wrapRef,
@@ -66,6 +80,8 @@ export function RecordButton(): React.JSX.Element {
     onVideo,
     onMicFromStart,
     onApiSpec,
+    onCursorSpotlight,
+    onClickHighlight,
     setVoiceSetupOpen,
     toggleOptions,
   } = useRecordSetup();
@@ -87,7 +103,7 @@ export function RecordButton(): React.JSX.Element {
           type="button"
           className="record-split__main"
           onClick={() => void record()}
-          disabled={busy}
+          disabled={busy || !ready}
           aria-label="Start recording"
         >
           <span className="record-btn__dot" />
@@ -99,6 +115,7 @@ export function RecordButton(): React.JSX.Element {
           onClick={toggleOptions}
           aria-label="Capture options"
           aria-expanded={open}
+          disabled={!ready}
         >
           <ChevronDown size={16} strokeWidth={2.5} />
         </button>
@@ -149,6 +166,31 @@ export function RecordButton(): React.JSX.Element {
               on={apiSpec}
               onChange={onApiSpec}
             />
+
+            <div className="detail-pop__sep" role="separator" />
+            <div className="detail-pop__head">
+              <span>Cursor effects</span>
+            </div>
+            <OptionRow
+              icon={<CircleDot size={15} strokeWidth={1.9} />}
+              label="Cursor spotlight"
+              hint="Subtle halo around the pointer"
+              on={cursorSpotlight}
+              onChange={onCursorSpotlight}
+              disabled={!videoFromStart}
+            />
+            <OptionRow
+              icon={<MousePointerClick size={15} strokeWidth={1.9} />}
+              label="Highlight clicks"
+              hint="Expanding ripple at each click"
+              on={clickHighlight}
+              onChange={onClickHighlight}
+              disabled={!videoFromStart}
+            />
+            <p className="detail-pop__note">
+              {!videoFromStart && 'Enable Video to use cursor effects. '}
+              Rendered on the page while video is recording and embedded permanently in captured video and screenshots.
+            </p>
           </div>
         )}
       </div>

@@ -6,27 +6,35 @@ import {
   loadVideoFromStart,
   saveCaptureApiSpec,
   saveCaptureDetail,
+  saveClickHighlight,
+  saveCursorSpotlight,
   saveMicFromStart,
   saveVideoFromStart,
   useSidepanel,
 } from '../store';
 import { isTranscriptionConfigured } from './VoiceSetupModal';
 interface State {
+  ready: boolean;
   busy: boolean;
   localError?: string;
   detail: number;
   videoFromStart: boolean;
   micFromStart: boolean;
   apiSpec: boolean;
+  cursorSpotlight: boolean;
+  clickHighlight: boolean;
   open: boolean;
   voiceSetupOpen: boolean;
 }
 const initial: State = {
+  ready: false,
   busy: false,
   detail: 2,
   videoFromStart: false,
   micFromStart: false,
   apiSpec: false,
+  cursorSpotlight: false,
+  clickHighlight: false,
   open: false,
   voiceSetupOpen: false,
 };
@@ -43,6 +51,8 @@ export function useRecordSetup() {
     videoFromStart,
     micFromStart,
     apiSpec,
+    cursorSpotlight,
+    clickHighlight,
     open,
     voiceSetupOpen,
   } = state;
@@ -52,6 +62,8 @@ export function useRecordSetup() {
   const setVideoFromStart = (videoFromStart: boolean) => update({ videoFromStart });
   const setMicFromStart = (micFromStart: boolean) => update({ micFromStart });
   const setApiSpec = (apiSpec: boolean) => update({ apiSpec });
+  const setCursorSpotlight = (cursorSpotlight: boolean) => update({ cursorSpotlight });
+  const setClickHighlight = (clickHighlight: boolean) => update({ clickHighlight });
   const setOpen = (open: boolean) => update({ open });
   const setVoiceSetupOpen = (voiceSetupOpen: boolean) => update({ voiceSetupOpen });
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -66,8 +78,11 @@ export function useRecordSetup() {
       if (cancelled) return;
       setDetail(detailIndexFromSettings(s));
       setApiSpec(s.captureApiSpec);
+      setCursorSpotlight(s.cursorSpotlight);
+      setClickHighlight(s.clickHighlight);
       setVideoFromStart(video);
       setMicFromStart(mic);
+      update({ ready: true });
     });
     return () => {
       cancelled = true;
@@ -87,7 +102,7 @@ export function useRecordSetup() {
   }, [open]);
 
   const record = async () => {
-    if (busy) return;
+    if (busy || !state.ready) return;
     // Mic will start with the session but no transcription provider is set up
     // yet: offer voice setup BEFORE recording begins. `start()` below re-runs
     // once the modal resolves.
@@ -99,7 +114,7 @@ export function useRecordSetup() {
   };
 
   const start = async () => {
-    if (busy) return;
+    if (busy || !state.ready) return;
     setBusy(true);
     setLocalError(undefined);
     try {
@@ -111,13 +126,13 @@ export function useRecordSetup() {
       }
       // Pass the choices explicitly: the storage writes are async, so the
       // override is what makes a quick change-then-Record race-free.
-      // From-start video/mic are handled by the background (it reads the
-      // persisted switches), so they start reliably even if this panel view
-      // unmounts the moment recording begins.
+      // Media choices travel with Start too: persistence can still be pending.
       const res = await startRecording(tabId, {
         ...(settingsForDetail(detail) ?? {}),
         captureApiSpec: apiSpec,
-      });
+        cursorSpotlight,
+        clickHighlight,
+      }, { video: videoFromStart, mic: micFromStart });
       if (!res.ok) {
         setLocalError(res.error ?? 'Could not start recording.');
         return;
@@ -147,6 +162,16 @@ export function useRecordSetup() {
     void saveCaptureApiSpec(on);
   };
 
+  const onCursorSpotlight = (on: boolean) => {
+    setCursorSpotlight(on);
+    void saveCursorSpotlight(on);
+  };
+
+  const onClickHighlight = (on: boolean) => {
+    setClickHighlight(on);
+    void saveClickHighlight(on);
+  };
+
   return {
     ...state,
     wrapRef,
@@ -156,6 +181,8 @@ export function useRecordSetup() {
     onVideo,
     onMicFromStart,
     onApiSpec,
+    onCursorSpotlight,
+    onClickHighlight,
     setVoiceSetupOpen,
     toggleOptions: () => setOpen(!open),
   };

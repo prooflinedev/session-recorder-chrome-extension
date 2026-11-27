@@ -4,6 +4,7 @@ import {
   CAPTURE_DETAIL_LEVELS,
   DEFAULT_SETTINGS,
   detailIndexFromSettings,
+  normalizeCaptureSettings,
   settingsForDetail,
 } from './settings';
 import type { CaptureSettings } from './types';
@@ -90,5 +91,56 @@ describe('detailIndexFromSettings', () => {
     expect(detailIndexFromSettings({ ...base, screenshotPolicy: 'on-demand' })).toBe(0);
     expect(detailIndexFromSettings({ ...base, screenshotPolicy: 'key-moments' })).toBe(1);
     expect(detailIndexFromSettings({ ...base, screenshotPolicy: 'every-interaction' })).toBe(2);
+  });
+});
+
+describe('cursor effect settings and backward compatibility', () => {
+  it('disables cursor spotlight and click highlight by default', () => {
+    expect(DEFAULT_SETTINGS.cursorSpotlight).toBe(false);
+    expect(DEFAULT_SETTINGS.clickHighlight).toBe(false);
+  });
+
+  it('normalizes legacy stored settings missing cursor effect fields', () => {
+    const legacy = {
+      screenshotPolicy: 'key-moments',
+      redactionEnabled: false,
+    } as Partial<CaptureSettings>;
+    const normalized = normalizeCaptureSettings(legacy);
+    expect(normalized.screenshotPolicy).toBe('key-moments');
+    expect(normalized.redactionEnabled).toBe(false);
+    expect(normalized.cursorSpotlight).toBe(false);
+    expect(normalized.clickHighlight).toBe(false);
+  });
+
+  it('coerces non-boolean cursor effect values safely and preserves independent toggles', () => {
+    const malformed = {
+      cursorSpotlight: 'yes' as unknown as boolean,
+      clickHighlight: 1 as unknown as boolean,
+    };
+    expect(normalizeCaptureSettings(malformed)).toMatchObject({
+      cursorSpotlight: false,
+      clickHighlight: false,
+    });
+
+    const spotlightOnly = normalizeCaptureSettings({ cursorSpotlight: true });
+    expect(spotlightOnly.cursorSpotlight).toBe(true);
+    expect(spotlightOnly.clickHighlight).toBe(false);
+
+    const clicksOnly = normalizeCaptureSettings({ clickHighlight: true });
+    expect(clicksOnly.cursorSpotlight).toBe(false);
+    expect(clicksOnly.clickHighlight).toBe(true);
+  });
+
+  it('keeps capture-detail presets independent of cursor effect toggles', () => {
+    const overrides = settingsForDetail(0) ?? {};
+    expect(overrides).not.toHaveProperty('cursorSpotlight');
+    expect(overrides).not.toHaveProperty('clickHighlight');
+    const merged: CaptureSettings = {
+      ...normalizeCaptureSettings({ cursorSpotlight: true, clickHighlight: true }),
+      ...overrides,
+    };
+    expect(merged.cursorSpotlight).toBe(true);
+    expect(merged.clickHighlight).toBe(true);
+    expect(detailIndexFromSettings(merged)).toBe(0);
   });
 });

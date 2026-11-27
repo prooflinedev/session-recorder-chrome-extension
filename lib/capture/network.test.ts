@@ -18,6 +18,8 @@ const SETTINGS: CaptureSettings = {
   screenshotQuality: 70,
   screenshotDedupThreshold: 4,
   captureApiSpec: false,
+  cursorSpotlight: false,
+  clickHighlight: false,
 };
 
 function makeCapturer(overrides: Partial<NetworkDeps> = {}): {

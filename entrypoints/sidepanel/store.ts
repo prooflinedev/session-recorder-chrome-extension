@@ -11,7 +11,7 @@
  */
 
 import { create } from 'zustand';
-import { onBroadcast, sendMessage, type AppState } from '@/lib/messaging';
+import { onBroadcast, sendMessage, type AppState, type RecordingMediaOptions } from '@/lib/messaging';
 import type {
   CaptureSettings,
   ScreenshotPolicy,
@@ -19,10 +19,11 @@ import type {
   SessionEvent,
 } from '@/lib/session/types';
 import {
-  DEFAULT_SETTINGS,
+  normalizeCaptureSettings,
   settingsForDetail,
   STORAGE_KEYS,
 } from '@/lib/session/settings';
+import { patchDefaultSettings } from '@/lib/session/settings-storage';
 
 /** How many recent events the ticker keeps in memory. */
 const MAX_TICKER = 30;
@@ -61,6 +62,7 @@ export interface SidepanelStore {
   startRecording: (
     tabId: number,
     settings?: Partial<CaptureSettings>,
+    media?: RecordingMediaOptions,
   ) => Promise<{ ok: boolean; error?: string }>;
   stopRecording: () => Promise<void>;
   pauseRecording: () => Promise<void>;
@@ -185,9 +187,9 @@ export const useSidepanel = create<SidepanelStore>((set, get) => ({
     }
   },
 
-  startRecording: async (tabId, settings) => {
+  startRecording: async (tabId, settings, media) => {
     try {
-      const res = await sendMessage({ kind: 'session/start', tabId, settings });
+      const res = await sendMessage({ kind: 'session/start', tabId, settings, media });
       if (res.ok) {
         set({ error: undefined, ...(res.session ? { session: res.session } : {}) });
         await get().refresh();
@@ -312,9 +314,9 @@ export async function loadDefaultSettings(): Promise<CaptureSettings> {
     const raw = stored[STORAGE_KEYS.defaultSettings] as
       | Partial<CaptureSettings>
       | undefined;
-    return { ...DEFAULT_SETTINGS, ...(raw ?? {}) };
+    return normalizeCaptureSettings(raw);
   } catch {
-    return { ...DEFAULT_SETTINGS };
+    return normalizeCaptureSettings();
   }
 }
 
@@ -322,9 +324,7 @@ export async function loadDefaultSettings(): Promise<CaptureSettings> {
 export async function saveScreenshotPolicy(
   policy: ScreenshotPolicy,
 ): Promise<void> {
-  const current = await loadDefaultSettings();
-  const next: CaptureSettings = { ...current, screenshotPolicy: policy };
-  await chrome.storage.local.set({ [STORAGE_KEYS.defaultSettings]: next });
+  await patchDefaultSettings({ screenshotPolicy: policy });
 }
 
 /**
@@ -335,16 +335,22 @@ export async function saveScreenshotPolicy(
 export async function saveCaptureDetail(index: number): Promise<void> {
   const overrides = settingsForDetail(index);
   if (!overrides) return;
-  const current = await loadDefaultSettings();
-  const next: CaptureSettings = { ...current, ...overrides };
-  await chrome.storage.local.set({ [STORAGE_KEYS.defaultSettings]: next });
+  await patchDefaultSettings(overrides);
 }
 
 /** Persist the API-spec capture opt-in into the global capture defaults. */
 export async function saveCaptureApiSpec(on: boolean): Promise<void> {
-  const current = await loadDefaultSettings();
-  const next: CaptureSettings = { ...current, captureApiSpec: on };
-  await chrome.storage.local.set({ [STORAGE_KEYS.defaultSettings]: next });
+  await patchDefaultSettings({ captureApiSpec: on });
+}
+
+/** Persist the cursor-spotlight opt-in into the global capture defaults. */
+export async function saveCursorSpotlight(on: boolean): Promise<void> {
+  await patchDefaultSettings({ cursorSpotlight: on });
+}
+
+/** Persist the click-highlight opt-in into the global capture defaults. */
+export async function saveClickHighlight(on: boolean): Promise<void> {
+  await patchDefaultSettings({ clickHighlight: on });
 }
 
 /** Whether tab-video capture should start automatically with a recording. */

@@ -339,6 +339,35 @@ export function SettingsForm(): React.JSX.Element {
                 openapi.json to exports. Increases storage use.
               </p>
 
+              <label className="settings__toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.cursorSpotlight}
+                  disabled={!state.videoFromStart}
+                  onChange={(e) => patchSettings({ cursorSpotlight: e.target.checked })}
+                />
+                <span>Cursor spotlight</span>
+              </label>
+              <p className="settings__hint">
+                Shows a subtle halo around the mouse cursor while video is recording.
+                Embedded permanently into captured video and screenshots.
+                {!state.videoFromStart && ' Enable Video in recording options to change or use cursor effects.'}
+              </p>
+
+              <label className="settings__toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.clickHighlight}
+                  disabled={!state.videoFromStart}
+                  onChange={(e) => patchSettings({ clickHighlight: e.target.checked })}
+                />
+                <span>Highlight clicks</span>
+              </label>
+              <p className="settings__hint">
+                Shows an expanding ripple animation at each click on the recorded
+                page. Embedded permanently into captured video and screenshots.
+              </p>
+
               <div className="settings__row">
                 <ByteInput
                   label="Inline body cap"
