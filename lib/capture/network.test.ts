@@ -680,3 +680,34 @@ describe('NetworkCapturer header redaction (end to end through emitRequest)', ()
     expect(json).toContain('req-123');
   });
 });
+
+describe('NetworkCapturer URL-bearing headers (end to end through emitRequest)', () => {
+  it('masks secret query values in Referer and Location but keeps the other params', () => {
+    const { cap, emitted } = makeCapturer();
+    const rid = 'u-1';
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: rid,
+      request: {
+        url: 'https://app.example.com/start',
+        method: 'GET',
+        headers: { Referer: 'https://app.example.com/page?session_id=FAKE-ref-8a1&tab=2' },
+      },
+      type: 'Fetch',
+    });
+    cap.handle(1, 'Network.responseReceived', {
+      requestId: rid,
+      response: {
+        status: 302,
+        headers: { Location: '/landing?access_token=FAKE-loc-4c9&page=2' },
+        mimeType: 'text/plain',
+      },
+    });
+    cap.handle(1, 'Network.loadingFailed', { requestId: rid, errorText: 'net::ERR_ABORTED' });
+    const json = JSON.stringify(emitted);
+    expect(json).not.toContain('FAKE-ref-8a1');
+    expect(json).not.toContain('FAKE-loc-4c9');
+    expect(json).toContain('tab=2');
+    expect(json).toContain('/landing?access_token=');
+    expect(json).toContain('page=2');
+  });
+});

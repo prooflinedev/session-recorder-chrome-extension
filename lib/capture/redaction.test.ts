@@ -415,3 +415,146 @@ describe('redactHeaders — secret-bearing header names', () => {
     expect(out.map((h) => h.value)).toEqual([REDACTED, REDACTED]);
   });
 });
+
+describe('redactHeaders — URL-bearing headers', () => {
+  const M = REDACTED;
+  const REDACT = [
+    {
+      label: 'Referer (absolute)',
+      name: 'Referer',
+      value: 'https://app.example.com/page?session_id=FAKE-ref&tab=2',
+      expected: `https://app.example.com/page?session_id=${M}&tab=2`,
+    },
+    {
+      label: 'Location (relative)',
+      name: 'Location',
+      value: '/landing?access_token=FAKE-loc&page=2',
+      expected: `/landing?access_token=${M}&page=2`,
+    },
+    {
+      label: 'Location (absolute)',
+      name: 'Location',
+      value: 'https://auth.example.com/cb?id_token=FAKE-idt&state=ok',
+      expected: `https://auth.example.com/cb?id_token=${M}&state=ok`,
+    },
+    {
+      label: 'Content-Location',
+      name: 'Content-Location',
+      value: '/doc?api_key=FAKE-cl&v=2',
+      expected: `/doc?api_key=${M}&v=2`,
+    },
+    {
+      label: 'Link (relative and absolute entries)',
+      name: 'Link',
+      value:
+        '</next?page=3&api_key=FAKE-l1>; rel="next", <https://cdn.example.com/a.js?token=FAKE-l2>; rel=preload',
+      expected: `</next?page=3&api_key=${M}>; rel="next", <https://cdn.example.com/a.js?token=${M}>; rel=preload`,
+    },
+    {
+      label: 'Link (only the secret entry changes)',
+      name: 'Link',
+      value: '</a?page=1>; rel=prev, </b?api_key=FAKE-l3>; rel=next',
+      expected: `</a?page=1>; rel=prev, </b?api_key=${M}>; rel=next`,
+    },
+    {
+      label: 'Refresh (unquoted)',
+      name: 'Refresh',
+      value: '60; url=/poll?token=FAKE-r1&x=1',
+      expected: `60; url=/poll?token=${M}&x=1`,
+    },
+    {
+      label: 'Refresh (quoted, upper case)',
+      name: 'Refresh',
+      value: "0; URL='https://x.example.com/?auth_token=FAKE-r2'",
+      expected: `0; URL='https://x.example.com/?auth_token=${M}'`,
+    },
+    {
+      label: ':path (HTTP/2)',
+      name: ':path',
+      value: '/api?access_token=FAKE-p&page=2',
+      expected: `/api?access_token=${M}&page=2`,
+    },
+    {
+      label: 'X-Original-URL',
+      name: 'X-Original-URL',
+      value: '/orig?auth_token=FAKE-xo',
+      expected: `/orig?auth_token=${M}`,
+    },
+    {
+      label: 'X-Forwarded-Uri',
+      name: 'X-Forwarded-Uri',
+      value: '/fwd?api_key=FAKE-xf',
+      expected: `/fwd?api_key=${M}`,
+    },
+    {
+      label: 'xOriginalUrl (camelCase)',
+      name: 'xOriginalUrl',
+      value: '/orig?auth_token=FAKE-cc',
+      expected: `/orig?auth_token=${M}`,
+    },
+    {
+      label: 'location (lower case)',
+      name: 'location',
+      value: '/landing?access_token=FAKE-lc',
+      expected: `/landing?access_token=${M}`,
+    },
+    {
+      label: 'REFERER (upper case)',
+      name: 'REFERER',
+      value: 'https://app.example.com/p?session_id=FAKE-uc',
+      expected: `https://app.example.com/p?session_id=${M}`,
+    },
+  ];
+
+  const KEEP = [
+    { name: 'Location', value: '/home' },
+    { name: 'Referer', value: 'https://app.example.com/' },
+    { name: 'Location', value: '/search?page=2&sort=desc' },
+    { name: 'Link', value: '</next?page=3&sort=asc>; rel="next"' },
+    { name: 'Refresh', value: '5' },
+    { name: 'Refresh', value: '5; url=/next?page=2' },
+    { name: 'Content-Location', value: '/doc?v=2' },
+    { name: ':path', value: '/api?page=2&sort=desc' },
+    { name: 'Origin', value: 'https://app.example.com' },
+    { name: 'Host', value: 'localhost:5319' },
+    { name: ':authority', value: 'localhost:5319' },
+    { name: 'Referrer-Policy', value: 'no-referrer' },
+    // fragments are left as they are today (a separate gap, covered by #37)
+    { name: 'Location', value: '/cb?page=1#section' },
+    // not a URL header, so its value is never rewritten
+    { name: 'X-Free-Text', value: 'see ?token=abc for details' },
+  ];
+
+  it.each(REDACT)('masks the secret query value in $label', ({ name, value, expected }) => {
+    const [out] = redactHeaders([{ name, value }], EMPTY_RULES);
+    expect(out).toEqual({ name, value: expected });
+  });
+
+  it.each(KEEP)('keeps $name: $value', ({ name, value }) => {
+    const [out] = redactHeaders([{ name, value }], EMPTY_RULES);
+    expect(out).toEqual({ name, value });
+  });
+
+  it('honours custom urlParamPatterns', () => {
+    const [out] = redactHeaders(
+      [{ name: 'Location', value: '/cb?ticket=FAKE-t&page=1' }],
+      rules({ urlParamPatterns: ['ticket'] }),
+    );
+    expect(out?.value).toBe(`/cb?ticket=${M}&page=1`);
+  });
+
+  it('masks a URL header whose name is itself secret-bearing, whole', () => {
+    const [out] = redactHeaders(
+      [{ name: 'X-Auth-Url', value: '/cb?page=1' }],
+      EMPTY_RULES,
+    );
+    expect(out?.value).toBe(M);
+  });
+
+  it('does not mutate the input', () => {
+    const input = [{ name: 'Location', value: '/landing?access_token=FAKE-m' }];
+    const snapshot = structuredClone(input);
+    redactHeaders(input, EMPTY_RULES);
+    expect(input).toEqual(snapshot);
+  });
+});

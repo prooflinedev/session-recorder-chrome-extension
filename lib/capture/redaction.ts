@@ -132,11 +132,49 @@ export function isSecretHeaderName(name: string): boolean {
   );
 }
 
+/** Headers whose value is a URL, or a list of URLs, that can carry a query string. */
+const URL_HEADER_NAMES: ReadonlySet<string> = new Set([
+  'referer', 'location', 'content-location', 'link', 'refresh', ':path',
+]);
+
+/** Those headers, plus any name with a whole `url` or `uri` segment (`x-original-url`). */
+function isUrlHeaderName(name: string): boolean {
+  if (URL_HEADER_NAMES.has(name.toLowerCase())) return true;
+  return headerSegments(name).some((seg) => seg === 'url' || seg === 'uri');
+}
+
+/**
+ * Mask secret query values inside a URL-bearing header's value with the same
+ * rules as the request URL (`redactUrl`). `Link` holds `<url>; rel=...` entries
+ * and `Refresh` holds `seconds; url=...`, so those two are parsed first.
+ */
+function redactUrlHeaderValue(
+  name: string,
+  value: string,
+  rules: RedactionRules,
+): string {
+  const lower = name.toLowerCase();
+  if (lower === 'link') {
+    return value.replace(
+      /<([^>]*)>/g,
+      (_m, url: string) => `<${redactUrl(url, rules)}>`,
+    );
+  }
+  if (lower === 'refresh') {
+    return value.replace(
+      /(url\s*=\s*['"]?)([^'"]*)/i,
+      (_m, lead: string, url: string) => `${lead}${redactUrl(url, rules)}`,
+    );
+  }
+  return redactUrl(value, rules);
+}
+
 /**
  * Return a new header array with secret-bearing header values masked: the
  * default blocklist, custom names from the rules, and any name that
- * `isSecretHeaderName` recognises. Comparison is case-insensitive on the header
- * name. Input is never mutated.
+ * `isSecretHeaderName` recognises. Values of URL-bearing headers (`Referer`,
+ * `Location`, `:path`, ...) keep their shape but have secret query values masked.
+ * Comparison is case-insensitive on the header name. Input is never mutated.
  */
 export function redactHeaders(
   headers: NetHeader[],
@@ -146,11 +184,15 @@ export function redactHeaders(
     ...DEFAULT_HEADER_BLOCKLIST,
     ...rules.headerNames.map((n) => n.toLowerCase()),
   ]);
-  return headers.map((h) =>
-    blocked.has(h.name.toLowerCase()) || isSecretHeaderName(h.name)
-      ? { name: h.name, value: REDACTED }
-      : { name: h.name, value: h.value },
-  );
+  return headers.map((h) => {
+    if (blocked.has(h.name.toLowerCase()) || isSecretHeaderName(h.name)) {
+      return { name: h.name, value: REDACTED };
+    }
+    const value = isUrlHeaderName(h.name)
+      ? redactUrlHeaderValue(h.name, h.value, rules)
+      : h.value;
+    return { name: h.name, value };
+  });
 }
 
 /** Recursively clone a parsed JSON value, masking values under matching keys. */
