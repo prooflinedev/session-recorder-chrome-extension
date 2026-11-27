@@ -77,9 +77,10 @@ function buildUrlMatcher(rules: RedactionRules): (name: string) => boolean {
 
 /**
  * Header-name segments that mark a credential. Matched against whole segments
- * (the name split on `-` and `_`), never substrings, so `:authority`, `author`
- * and `x-idempotency-key` are left alone. This is deliberately separate from
- * DEFAULT_KEY_PATTERN, which is a substring regex tuned for JSON/form keys.
+ * (the name split on `-`, `_` and camelCase boundaries), never substrings, so
+ * `:authority`, `author`, `monkey` and `x-idempotency-key` are left alone. This
+ * is deliberately separate from DEFAULT_KEY_PATTERN, which is a substring regex
+ * tuned for JSON/form keys.
  */
 const SECRET_HEADER_SEGMENTS: ReadonlySet<string> = new Set([
   'token', 'tokens', 'secret', 'secrets', 'password', 'passwd',
@@ -92,20 +93,42 @@ const KEY_QUALIFIERS: ReadonlySet<string> = new Set([
   'api', 'secret', 'private', 'access', 'subscription', 'app',
 ]);
 
+/** A segment made only of digits, as in `x-hub-signature-256`. */
+const NUMBER = /^\d+$/;
+
+/**
+ * Split a header name into lowercase segments on `-`, `_` and camelCase
+ * boundaries. The camelCase split must run BEFORE lowercasing, which would
+ * erase the boundaries: `xApiKey` -> x, api, key; `APIKey` -> api, key.
+ */
+function headerSegments(name: string): string[] {
+  return name
+    .replace(/([a-z\d])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[-_\s]+/)
+    .filter(Boolean);
+}
+
 /**
  * True when a header NAME looks like it carries a credential
- * (`X-CSRF-Token`, `X-Amz-Security-Token`, `X-Goog-Api-Key`, ...).
+ * (`X-CSRF-Token`, `X-Amz-Security-Token`, `X-Goog-Api-Key`, `authToken`, ...).
  * Case-insensitive. Pseudo-headers (`:authority`) and `access-control-*` CORS
  * headers are never secret-bearing.
+ *
+ * `signature` counts only as the last segment of the name, optionally followed
+ * by a number (`x-amz-signature`, `x-hub-signature-256`). Names that merely
+ * describe a signature (`signature-input`, `signature-version-info`) stay readable.
  */
 export function isSecretHeaderName(name: string): boolean {
   const lower = name.toLowerCase();
   if (lower.startsWith(':') || lower.startsWith('access-control-')) return false;
-  const segments = lower.split(/[-_]+/).filter(Boolean);
+  const segments = headerSegments(name);
   return segments.some(
     (seg, i) =>
       SECRET_HEADER_SEGMENTS.has(seg) ||
-      (seg === 'key' && i > 0 && KEY_QUALIFIERS.has(segments[i - 1]!)),
+      (seg === 'key' && i > 0 && KEY_QUALIFIERS.has(segments[i - 1]!)) ||
+      (seg === 'signature' && segments.slice(i + 1).every((x) => NUMBER.test(x))),
   );
 }
 

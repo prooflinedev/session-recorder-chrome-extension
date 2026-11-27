@@ -664,6 +664,8 @@ describe('NetworkCapturer header redaction (end to end through emitRequest)', ()
         headers: {
           'X-CSRF-Token': 'FAKE-csrf-7f3a91',
           'X-Amz-Security-Token': 'FAKE-amz-91d0e5',
+          'X-Goog-Signature': 'FAKE-sig-3c6e2b',
+          authToken: 'FAKE-authtoken-5d17f0',
           'X-Request-Id': 'req-123',
         },
       },
@@ -673,6 +675,8 @@ describe('NetworkCapturer header redaction (end to end through emitRequest)', ()
     const json = JSON.stringify(emitted);
     expect(json).not.toContain('FAKE-csrf-7f3a91');
     expect(json).not.toContain('FAKE-amz-91d0e5');
+    expect(json).not.toContain('FAKE-sig-3c6e2b');
+    expect(json).not.toContain('FAKE-authtoken-5d17f0');
     expect(json).toContain('req-123');
   });
 });

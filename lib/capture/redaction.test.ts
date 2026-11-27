@@ -363,6 +363,10 @@ describe('redactHeaders — secret-bearing header names', () => {
     'X-Access-Token', 'x-amz-security-token', 'Ocp-Apim-Subscription-Key',
     'X_Api_Key', 'ApiKey', 'X-Session-Id', 'X-Auth-Foo', 'Authorization',
     'X-App-Secret', 'X-Private-Key', 'X-Id-Jwt',
+    // signatures (a trailing numeric segment, as in X-Hub-Signature-256, still counts)
+    'X-Amz-Signature', 'X-Goog-Signature', 'X-Hub-Signature-256',
+    // camelCase credential names
+    'apiKey', 'authToken', 'accessToken', 'xApiKey', 'clientSecret',
   ];
   const KEEP = [
     ':authority', ':method', ':path', ':scheme', ':status',
@@ -372,6 +376,12 @@ describe('redactHeaders — secret-bearing header names', () => {
     'Sec-Fetch-Mode', 'sec-ch-ua', 'Sec-WebSocket-Key', 'Sec-WebSocket-Accept',
     'X-Idempotency-Key', 'X-Cache-Key', 'X-RateLimit-Remaining', 'Retry-After',
     'X-Author', 'Authority',
+    // look similar to a secret word but are not whole segments
+    'Monkey-Type', 'Keyboard-Layout', 'monkeyKey', 'X-Tokenizer-Version',
+    // signature metadata, not a signature value
+    'Signature-Version-Info', 'Signature-Input',
+    // harmless camelCase names
+    'userAgent', 'contentType', 'authorId',
   ];
 
   it.each(MASK)('masks %s', (name) => {
