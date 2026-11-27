@@ -603,40 +603,55 @@ export function redactUrlsInText(text: string, rules: RedactionRules): string {
   }).join('\n');
 }
 
-/** Collect string values that the key-based walk changed, without touching other tokens. */
-function collectStringChanges(
-  before: unknown,
-  after: unknown,
-  changes: Map<string, string>,
-): void {
-  if (typeof before === 'string' && typeof after === 'string') {
-    if (before !== after) changes.set(before, after);
-    return;
-  }
-  if (Array.isArray(before) && Array.isArray(after)) {
-    for (let i = 0; i < Math.min(before.length, after.length); i++) {
-      collectStringChanges(before[i], after[i], changes);
+/** Find the end of a JSON value starting at `start`, preserving nested strings. */
+function jsonValueEnd(text: string, start: number): number {
+  let i = start;
+  while (i < text.length && /\s/.test(text[i]!)) i++;
+  if (text[i] === '"') {
+    i++;
+    let escaped = false;
+    while (i < text.length) {
+      const c = text[i++]!;
+      if (escaped) escaped = false;
+      else if (c === '\\') escaped = true;
+      else if (c === '"') break;
     }
-    return;
+    return i;
   }
-  if (before !== null && after !== null &&
-      typeof before === 'object' && typeof after === 'object') {
-    for (const key of Object.keys(before as Record<string, unknown>)) {
-      collectStringChanges(
-        (before as Record<string, unknown>)[key],
-        (after as Record<string, unknown>)[key],
-        changes,
-      );
+  if (text[i] === '{' || text[i] === '[') {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (; i < text.length; i++) {
+      const c = text[i]!;
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (c === '\\') escaped = true;
+        else if (c === '"') inString = false;
+        continue;
+      }
+      if (c === '"') inString = true;
+      else if (c === '{' || c === '[') depth++;
+      else if (c === '}' || c === ']') {
+        depth--;
+        if (depth === 0) return i + 1;
+      }
     }
+    return i;
   }
+  while (i < text.length && text[i] !== ',' && text[i] !== '}' && text[i] !== ']') i++;
+  return i;
 }
 
-/** Rewrite only changed JSON string tokens; numbers and escapes stay byte-identical. */
-function rewriteChangedJsonStrings(
-  text: string,
-  changes: Map<string, string>,
-  rules: RedactionRules,
-): string {
+/**
+ * Rewrite raw JSON text in place: mask every sensitive or URL-carrier property
+ * value (including duplicate keys) and scrub absolute URLs in other strings.
+ * Untouched tokens, numbers and escapes stay byte-identical.
+ */
+function redactRawJson(text: string, rules: RedactionRules): string {
+  const keyMatcher = buildKeyMatcher(rules);
+  const budget = freshBudget();
+  const urlMatcher = buildUrlMatcher(rules);
   let out = '';
   let i = 0;
   while (i < text.length) {
@@ -662,11 +677,32 @@ function rewriteChangedJsonStrings(
     const isPropertyKey = text[lookahead] === ':';
     try {
       const value = JSON.parse(token);
-      if (isPropertyKey || typeof value !== 'string') {
-        out += token;
+      if (isPropertyKey && typeof value === 'string' &&
+          (keyMatcher(value) || URL_CARRIER_KEYS.has(value))) {
+        const valueStart = lookahead + 1;
+        const valueEnd = jsonValueEnd(text, valueStart);
+        const rawValueToken = text.slice(valueStart, valueEnd);
+        let replacement: string | undefined;
+        if (URL_CARRIER_KEYS.has(value) && !keyMatcher(value)) {
+          try {
+            const parsedValue = JSON.parse(rawValueToken);
+            if (typeof parsedValue === 'string') {
+              replacement = JSON.stringify(redactUrlWithBudget(parsedValue, urlMatcher, budget));
+            }
+          } catch { /* fall through to whole-value masking */ }
+        }
+        out += token + text.slice(j, valueStart) +
+          (replacement ?? JSON.stringify(REDACTED));
+        i = valueEnd;
+        continue;
+      }
+      if (!isPropertyKey && typeof value === 'string') {
+        const replaced = redactUrlWithBudget(value, urlMatcher, budget);
+        // Absolute URLs in free text still need the regex scan.
+        const scanned = redactUrlsInText(replaced, rules);
+        out += scanned === value ? token : JSON.stringify(scanned);
       } else {
-        const replaced = changes.get(value) ?? redactUrlsInText(value, rules);
-        out += replaced === value ? token : JSON.stringify(replaced);
+        out += token;
       }
     } catch {
       out += token;
@@ -694,16 +730,12 @@ export function redactWsText(text: string, rules: RedactionRules): string {
   try {
     const parsed: unknown = JSON.parse(text);
     if (parsed !== null && typeof parsed === 'object') {
-      const keyed = redactJsonValue(parsed, buildKeyMatcher(rules)).value;
-      const after = redactValue(keyed, rules, 0, true);
-      const changes = new Map<string, string>();
-      collectStringChanges(parsed, after, changes);
-      return rewriteChangedJsonStrings(text, changes, rules);
+      return redactRawJson(text, rules);
     }
   } catch {
     /* not JSON — fall through to text URL scanning */
   }
-  return redactUrlsInText(text, rules);
+  return redactUrlsInText(redactBody(text, undefined, rules).text, rules);
 }
 
 /**

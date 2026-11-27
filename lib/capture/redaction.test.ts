@@ -944,6 +944,18 @@ describe('Proofline review regressions', () => {
     expect(parsed.url).toBe('/cb?code=«redacted»');
   });
 
+  it('PL: masks every duplicate JSON key occurrence', () => {
+    const input = '{"token":"FIRST","token":"SECOND","url":"/cb?code=S"}';
+    const out = redactWsText(input, EMPTY_RULES);
+    expect(out).not.toContain('FIRST');
+    expect(out).not.toContain('SECOND');
+    expect(JSON.parse(out).token).toBe(REDACTED);
+  });
+
+  it('PL: masks form fields in non-JSON WebSocket frames', () => {
+    expect(redactWsText('token=SECRET&page=1', EMPTY_RULES)).toBe(`token=${REDACTED}&page=1`);
+  });
+
   it('PL: does not treat :// inside a relative URL as an authority', () => {
     const value = '/next?x=see://host&y=a@b';
     expect(redactHeaders([{ name: 'Location', value }], EMPTY_RULES)[0]!.value).toBe(value);
