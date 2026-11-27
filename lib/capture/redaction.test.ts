@@ -422,3 +422,80 @@ describe('value-based redaction', () => {
     );
   });
 });
+
+describe('isSecretValue JWT edge cases', () => {
+  const seg = (s: string) => Buffer.from(s, 'utf8').toString('base64url');
+  const json = (o: unknown) => seg(JSON.stringify(o));
+  const HS256 = { alg: 'HS256', typ: 'JWT' };
+
+  it('detects a valid JWT with an empty JSON payload (`e30`)', () => {
+    const token = `${json(HS256)}.${json({})}.c2lnbmF0dXJl`;
+    expect(token.split('.')[1]).toBe('e30');
+    expect(isSecretValue(token)).toBe(true);
+    expect(isSecretValue(`Bearer ${token}`)).toBe(true);
+  });
+
+  it('detects an unsigned (`alg: none`) JWT with an empty signature', () => {
+    expect(isSecretValue(`${json({ alg: 'none' })}.${json({ sub: '1' })}.`)).toBe(true);
+  });
+
+  it('detects JWTs whose header or payload JSON contains whitespace', () => {
+    const header = seg('{ "alg": "RS256" }'); // starts with `eyA`, not `eyJ`
+    const payload = seg('{\n  "sub": "1"\n}'); // starts with `ewo`
+    expect(header.startsWith('eyJ')).toBe(false);
+    expect(isSecretValue(`${header}.${payload}.c2ln`)).toBe(true);
+  });
+
+  it('detects a JWT with non-ASCII claims and with base64 `=` padding', () => {
+    expect(
+      isSecretValue(`${json(HS256)}.${json({ name: 'Sarvar Шарипов' })}.c2ln`),
+    ).toBe(true);
+    const padded = Buffer.from(JSON.stringify({ a: 1 }))
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_');
+    expect(padded.endsWith('=')).toBe(true);
+    expect(isSecretValue(`${json(HS256)}.${padded}.c2ln`)).toBe(true);
+  });
+
+  it('detects an encrypted JWE (five segments, header has `enc`)', () => {
+    const header = json({ alg: 'RSA-OAEP', enc: 'A256GCM' });
+    expect(isSecretValue(`${header}.a2V5.aXY.Y2lwaGVy.dGFn`)).toBe(true);
+  });
+
+  it('detects a JWT at the end of a sentence', () => {
+    const token = `${json(HS256)}.${json({})}.c2ln`;
+    expect(isSecretValue(`your token is ${token}.`)).toBe(true);
+  });
+
+  it('does not flag dotted values that are not JWTs', () => {
+    expect(isSecretValue(`${json({})}.${json({})}.c2ln`)).toBe(false); // header has no alg
+    expect(isSecretValue(`${json(HS256)}.${seg('[]')}.c2ln`)).toBe(false); // payload not an object
+    expect(isSecretValue(`${json({ alg: 'RSA-OAEP', enc: 'A256GCM' })}.a2V5.aXY`)).toBe(
+      false,
+    ); // JWE too short
+    expect(isSecretValue('example.co.uk')).toBe(false);
+    expect(isSecretValue('e1.2.3')).toBe(false);
+    expect(isSecretValue('eyJ-not-a-token')).toBe(false);
+  });
+});
+
+describe('isSecretValue card edge cases', () => {
+  it('accepts the 13–19 digit range only', () => {
+    expect(isSecretValue('4222222222222')).toBe(true); // 13-digit Visa test number
+    expect(isSecretValue('6011000990139424')).toBe(true); // 16-digit Discover
+    expect(isSecretValue('4111111111111111110')).toBe(true); // 19 digits, Luhn-valid
+    expect(isSecretValue('424242424242')).toBe(false); // 12 digits
+    expect(isSecretValue('42424242424242424242')).toBe(false); // 20 digits
+  });
+
+  it('tolerates surrounding whitespace and mixed separators', () => {
+    expect(isSecretValue('  4111 1111-1111 1111  ')).toBe(true);
+  });
+
+  it('rejects doubled separators, letters and other punctuation', () => {
+    expect(isSecretValue('4111  1111 1111 1111')).toBe(false);
+    expect(isSecretValue('4111.1111.1111.1111')).toBe(false);
+    expect(isSecretValue('4111 1111 1111 111a')).toBe(false);
+  });
+});

@@ -42,7 +42,7 @@ Redaction is on by default. For supported structured capture fields, the extensi
 masks authorization headers, token-like JSON/form fields, sensitive URL
 parameters, and password inputs. It also masks JSON, form and URL parameter
 values that are themselves secrets, whatever their key is called: values that
-contain a JSON Web Token, and values that are a payment card number (13–19
+contain a JSON Web Token (signed or encrypted), and values that are a payment card number (13–19
 digits that pass the Luhn check). You can add rules or disable redaction per
 session on the options page. The same URL parameter rules apply to web and
 WebSocket URLs in console messages, browser logs, arguments, sources and exception
