@@ -345,6 +345,21 @@ describe('capture funnel wiring', () => {
         | undefined;
       expect(switched?.payload.toTitle).toContain('code=«redacted»');
       expect(switched?.payload.toTitle).not.toContain('TITLE_SECRET');
+
+      const ticks = broadcastMessages
+        .filter((m) => (m as { kind?: string }).kind === 'event/tick')
+        .map((m) => (m as { event?: SessionEvent }).event)
+        .filter((e): e is SessionEvent => !!e);
+      const openedTick = ticks.find((e) => e.type === 'tab-opened') as
+        | { payload: { title: string } }
+        | undefined;
+      const switchedTick = ticks.find((e) => e.type === 'tab-switch') as
+        | { payload: { toTitle: string } }
+        | undefined;
+      expect(openedTick?.payload.title).toContain('code=«redacted»');
+      expect(openedTick?.payload.title).not.toContain('TITLE_SECRET');
+      expect(switchedTick?.payload.toTitle).toContain('code=«redacted»');
+      expect(switchedTick?.payload.toTitle).not.toContain('TITLE_SECRET');
     } finally {
       tabsGet.mockImplementation(originalGet);
       await testHook({ kind: 'session/stop' }, 1);

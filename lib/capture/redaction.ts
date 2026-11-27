@@ -117,6 +117,16 @@ function utf8Bytes(value: string): number {
   return new TextEncoder().encode(value).length;
 }
 
+/** Assign an own property explicitly so `__proto__` from parsed JSON survives. */
+function setOwn(target: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+}
+
 /** Mask only the value of a `k=v` part, preserving its key and structure. */
 function maskValue(part: string): string {
   const eq = part.indexOf('=');
@@ -190,12 +200,12 @@ function redactJsonValue(
     const obj: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
       if (matcher(key)) {
-        obj[key] = REDACTED;
+        setOwn(obj, key, REDACTED);
         redacted = true;
       } else {
         const r = redactJsonValue(val, matcher);
         if (r.redacted) redacted = true;
-        obj[key] = r.value;
+        setOwn(obj, key, r.value);
       }
     }
     return { value: obj, redacted };
@@ -316,9 +326,8 @@ export function redactBody(
 function redactAuthority(url: string): string {
   let start = -1;
   if (url.startsWith('//')) start = 2;
-  else {
-    const scheme = url.indexOf('://');
-    if (scheme !== -1) start = scheme + 3;
+  else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) {
+    start = url.indexOf('://') + 3;
   }
   if (start === -1) return url;
 
@@ -387,7 +396,9 @@ function redactNestedCarrier(
       // both query and fragment with the same budget.
       redacted = redactUrlWithBudget(decoded, matcher, budget);
     } else {
-      let newHead = head;
+      // Recognized nested URLs get authority/userinfo masking even without a
+      // query — the outer URL scrubber only sees the encoded form otherwise.
+      let newHead = isUrl ? redactAuthority(head) : head;
       if (isUrl && headIsForm) {
         // Path-form carrier such as `/cb&token=S#frag`.
         newHead = redactForm(head, matcher).text;
@@ -412,7 +423,12 @@ function redactNestedCarrier(
   }
 
   if (redacted === undefined || redacted === decoded) return raw;
-  return encodeURIComponent(redacted);
+  try {
+    return encodeURIComponent(redacted);
+  } catch {
+    // Lone UTF-16 surrogates cannot be encoded; fail closed on this value.
+    return ENCODED_REDACTED;
+  }
 }
 
 function redactParamPart(part: string, matcher: NameMatcher, budget: RedactionBudget): string {
@@ -448,22 +464,26 @@ function redactPrefix(prefix: string, matcher: NameMatcher, budget: RedactionBud
  * shared budget. Values past the budget are masked, never returned raw.
  */
 function redactFragment(frag: string, matcher: NameMatcher, budget: RedactionBudget): string {
-  const qIdx = frag.indexOf('?');
-  const prefix =
-    qIdx === -1 ? '' : redactPrefix(frag.slice(0, qIdx), matcher, budget) + '?';
-  const params = qIdx === -1 ? frag : frag.slice(qIdx + 1);
-
-  // Capturing split keeps the `&` / `#` separators, so structure is preserved.
-  const parts = params.split(/([&#])/).map((part) => {
+  // Split on fragment separators FIRST so a genuine scroll-to-text directive
+  // is exempted before any `?` query parsing can rewrite its text value.
+  const parts = frag.split(/([&#])/).map((part) => {
     if (part === '&' || part === '#') return part;
     const eq = part.indexOf('=');
     const key = eq === -1 ? part : part.slice(0, eq);
     // Only genuine scroll-to-text directives are exempt, not a bare `text` key.
     if (key === ':~:text') return part;
     if (!spend(budget, 1)) return maskValue(part);
-    return redactParamPart(part, matcher, budget);
+    const qIdx = part.indexOf('?');
+    if (qIdx === -1) return redactParamPart(part, matcher, budget);
+    const prefix = redactPrefix(part.slice(0, qIdx), matcher, budget) + '?';
+    const query = part.slice(qIdx + 1);
+    const params = query.split('&').map((p) => {
+      if (!spend(budget, 1)) return maskValue(p);
+      return redactParamPart(p, matcher, budget);
+    });
+    return prefix + params.join('&');
   });
-  return `${prefix}${parts.join('')}`;
+  return parts.join('');
 }
 
 /**
@@ -581,14 +601,92 @@ export function redactUrlsInText(text: string, rules: RedactionRules): string {
   }).join('\n');
 }
 
-/** Redact a WebSocket text frame: JSON carrier keys first, absolute URLs in free text. */
+/** Collect string values that the key-based walk changed, without touching other tokens. */
+function collectStringChanges(
+  before: unknown,
+  after: unknown,
+  changes: Map<string, string>,
+): void {
+  if (typeof before === 'string' && typeof after === 'string') {
+    if (before !== after) changes.set(before, after);
+    return;
+  }
+  if (Array.isArray(before) && Array.isArray(after)) {
+    for (let i = 0; i < Math.min(before.length, after.length); i++) {
+      collectStringChanges(before[i], after[i], changes);
+    }
+    return;
+  }
+  if (before !== null && after !== null &&
+      typeof before === 'object' && typeof after === 'object') {
+    for (const key of Object.keys(before as Record<string, unknown>)) {
+      collectStringChanges(
+        (before as Record<string, unknown>)[key],
+        (after as Record<string, unknown>)[key],
+        changes,
+      );
+    }
+  }
+}
+
+/** Rewrite only changed JSON string tokens; numbers and escapes stay byte-identical. */
+function rewriteChangedJsonStrings(text: string, changes: Map<string, string>): string {
+  if (changes.size === 0) return text;
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] !== '"') {
+      out += text[i++];
+      continue;
+    }
+    let j = i + 1;
+    let escaped = false;
+    while (j < text.length) {
+      const c = text[j]!;
+      if (escaped) escaped = false;
+      else if (c === '\\') escaped = true;
+      else if (c === '"') {
+        j++;
+        break;
+      }
+      j++;
+    }
+    const token = text.slice(i, j);
+    try {
+      const value = JSON.parse(token);
+      out += typeof value === 'string' && changes.has(value)
+        ? JSON.stringify(changes.get(value)!)
+        : token;
+    } catch {
+      out += token;
+    }
+    i = j;
+  }
+  return out;
+}
+
+/** Scan free text for absolute URLs without V8 stack-frame coordinate handling. */
+export function redactUrlsInTitle(text: string, rules: RedactionRules): string {
+  const matcher = buildUrlMatcher(rules);
+  const budget = freshBudget();
+  return text.replace(/\b(?:https?|wss?):\/\/[^\s"'<>`]+/gi, (url) =>
+    redactUrlWithBudget(url, matcher, budget),
+  );
+}
+
+/**
+ * Redact a WebSocket text frame. Valid JSON is rewritten at the string-token
+ * level so unrelated numbers and escapes survive exactly; only text that is
+ * not JSON gets the free-text absolute-URL scan.
+ */
 export function redactWsText(text: string, rules: RedactionRules): string {
   try {
     const parsed: unknown = JSON.parse(text);
     if (parsed !== null && typeof parsed === 'object') {
-      const before = JSON.stringify(parsed);
-      const after = JSON.stringify(redactValue(parsed, rules, 0));
-      return redactUrlsInText(after === before ? text : after, rules);
+      const after = redactValue(parsed, rules, 0, true);
+      const changes = new Map<string, string>();
+      collectStringChanges(parsed, after, changes);
+      return rewriteChangedJsonStrings(text, changes);
     }
   } catch {
     /* not JSON — fall through to text URL scanning */
@@ -600,34 +698,42 @@ export function redactWsText(text: string, rules: RedactionRules): string {
  * Pure recursive walk over an event payload; carrier keys are masked down to
  * MAX_NESTING levels (deeper objects are returned unchanged).
  */
-function redactValue(value: unknown, rules: RedactionRules, depth: number): unknown {
+function redactValue(
+  value: unknown,
+  rules: RedactionRules,
+  depth: number,
+  scanAllStrings = false,
+): unknown {
   if (value === null || typeof value !== 'object' || depth > MAX_NESTING) return value;
   // Strings get a flat URL scrub (no recursion, so no extra depth); everything
   // else recurses under the same MAX_NESTING guard at the top of this function.
   if (Array.isArray(value)) {
     return value.map((v) =>
-      typeof v === 'string' ? redactUrlsInText(v, rules) : redactValue(v, rules, depth + 1),
+      typeof v === 'string'
+        ? redactUrlsInText(v, rules)
+        : redactValue(v, rules, depth + 1, scanAllStrings),
     );
   }
 
   const out: Record<string, unknown> = {};
   for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
     if (typeof val === 'string') {
-      if (URL_CARRIER_KEYS.has(key)) out[key] = redactUrl(val, rules);
-      else if (TEXT_URL_KEYS.has(key)) out[key] = redactUrlsInText(val, rules);
-      else out[key] = val;
+      if (URL_CARRIER_KEYS.has(key)) setOwn(out, key, redactUrl(val, rules));
+      else if (TEXT_URL_KEYS.has(key) || scanAllStrings) {
+        setOwn(out, key, redactUrlsInText(val, rules));
+      } else setOwn(out, key, val);
     } else if (key === 'wsFrames' && Array.isArray(val)) {
-      out[key] = val.map((f) => {
+      setOwn(out, key, val.map((f) => {
         if (f !== null && typeof f === 'object' && typeof (f as { text?: unknown }).text === 'string') {
           const frame = f as { text: string };
           return { ...frame, text: redactWsText(frame.text, rules) };
         }
-        return redactValue(f, rules, depth + 1);
-      });
+        return redactValue(f, rules, depth + 1, scanAllStrings);
+      }));
     } else if ((key === 'requestHeaders' || key === 'responseHeaders') && Array.isArray(val)) {
-      out[key] = redactHeaders(val as NetHeader[], rules);
+      setOwn(out, key, redactHeaders(val as NetHeader[], rules));
     } else {
-      out[key] = redactValue(val, rules, depth + 1);
+      setOwn(out, key, redactValue(val, rules, depth + 1, scanAllStrings));
     }
   }
   return out;

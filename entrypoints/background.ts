@@ -69,7 +69,7 @@ import { ConsoleCapturer } from '@/lib/capture/console';
 import {
   redactEventPayload,
   redactSessionUrls,
-  redactUrlsInText,
+  redactUrlsInTitle,
 } from '@/lib/capture/redaction';
 import { ScreenshotScheduler } from '@/lib/capture/screenshots';
 import { MultiTabTracker } from '@/lib/capture/multitab';
@@ -310,9 +310,10 @@ class Orchestrator {
     // While paused, drop capture events but keep the user's explicit signals.
     if (this.paused && !ALLOWED_WHILE_PAUSED.has(type)) return undefined;
 
-    // The single funnel is the earliest reliable shared boundary: redact before
-    // scoring, persistence and broadcast so every downstream view sees the same
-    // payload. The pure helper returns a new object and never mutates `raw`.
+    // Initial capture events are redacted here before scoring, persistence and
+    // broadcast so every downstream view sees the same payload. Later transcript
+    // replacements use a separate path. The pure helper returns a new object and
+    // never mutates `raw`.
     const payload = session.settings.redactionEnabled
       ? redactEventPayload(type, raw.payload, session.settings.customRedaction)
       : raw.payload;
@@ -404,11 +405,11 @@ class Orchestrator {
     // name is written outside recordEvent — scrub it at this write site too.
     const rawName = sessionNameFor(tab, now);
     const sessionName = settings.redactionEnabled
-      ? redactUrlsInText(rawName, settings.customRedaction)
+      ? redactUrlsInTitle(rawName, settings.customRedaction)
       : rawName;
     const rawTitle = tab.title ?? '';
     const primaryTitle = settings.redactionEnabled
-      ? redactUrlsInText(rawTitle, settings.customRedaction)
+      ? redactUrlsInTitle(rawTitle, settings.customRedaction)
       : rawTitle;
     const primary: TabInfo = {
       tabId,
@@ -573,7 +574,7 @@ class Orchestrator {
       : url;
     const rawTitle = tab?.title ?? '';
     const infoTitle = session.settings.redactionEnabled
-      ? redactUrlsInText(rawTitle, session.settings.customRedaction)
+      ? redactUrlsInTitle(rawTitle, session.settings.customRedaction)
       : rawTitle;
 
     try {

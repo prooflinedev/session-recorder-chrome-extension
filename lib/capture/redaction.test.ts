@@ -449,8 +449,9 @@ describe('structural redaction matrix', () => {
   it('18: preserves escaping byte-for-byte on a second pass', () => {
     const input = 'https://x/?next=a%2Bb%26code%3DS';
     const once = redactUrl(input, EMPTY_RULES);
+    expect(once).not.toBe(input);
+    expect(once).toBe(`https://x/?next=a%2Bb%26code%3D${encodeURIComponent(REDACTED)}`);
     expect(redactUrl(once, EMPTY_RULES)).toBe(once);
-    expect(once).toContain('%2B');
   });
 
   it('22: tolerates malformed percent-encoding and non-string carries', () => {
@@ -887,5 +888,74 @@ describe('N2: shared resource budget', () => {
       EMPTY_RULES,
     );
     expect(redactUrl(once, EMPTY_RULES)).toBe(once);
+  });
+});
+
+// Regressions for findings recorded by Proofline on review 01a21eb7.
+describe('Proofline review regressions', () => {
+  it('PL: masks userinfo in a nested URL even without a query', () => {
+    const raw = 'https://x/?q=' + encodeURIComponent('https://alice:hunter2@host/cb');
+    const out = redactUrl(raw, EMPTY_RULES);
+    expect(
+      decodeURIComponent(new URL(out).searchParams.get('q')!),
+    ).toBe(`https://${REDACTED}@host/cb`);
+  });
+
+  it('PL: does not throw on a lone UTF-16 surrogate in a URL value', () => {
+    const raw = 'https://x/?q=/cb\uD800&token=S';
+    expect(() => redactUrl(raw, EMPTY_RULES)).not.toThrow();
+    expect(redactUrl(raw, EMPTY_RULES)).toContain(REDACTED);
+  });
+
+  it('PL: preserves an own __proto__ property in redacted JSON', () => {
+    const input = '{"__proto__":{"hidden":"keep"},"code":"SECRET"}';
+    const { text } = redactBody(input, 'application/json', EMPTY_RULES);
+    const parsed = JSON.parse(text);
+    expect(Object.hasOwn(parsed, '__proto__')).toBe(true);
+    expect(parsed.__proto__).toEqual({ hidden: 'keep' });
+    expect(parsed.code).toBe(REDACTED);
+  });
+
+  it('PL: keeps WebSocket JSON valid and numeric tokens byte-identical', () => {
+    const input =
+      '{"url":"/cb?code=S","id":9007199254740993,"note":"a \\" quoted https://x/?code=S"}';
+    const out = redactWsText(input, EMPTY_RULES);
+    expect(() => JSON.parse(out)).not.toThrow();
+    expect(out).toContain('"id":9007199254740993');
+    expect(out).toContain('a \\" quoted');
+    expect(out).not.toContain('code=S');
+  });
+
+  it('PL: does not treat :// inside a relative URL as an authority', () => {
+    const value = '/next?x=see://host&y=a@b';
+    expect(redactHeaders([{ name: 'Location', value }], EMPTY_RULES)[0]!.value).toBe(value);
+  });
+
+  it('PL: distinguishes the encoded-size guard from the decoded-size guard', () => {
+    const raw = '%20'.repeat(2500) + '&token=SECRET';
+    expect(raw.length).toBeGreaterThan(4096);
+    expect(decodeURIComponent(raw).length).toBeLessThan(4096);
+    const out = redactUrl('https://x/?q=' + raw, EMPTY_RULES);
+    expect(new URL(out).searchParams.get('q')).toBe(REDACTED);
+    expect(out).not.toContain('SECRET');
+  });
+
+  it('PL: preserves a scroll-to-text directive containing ? verbatim', () => {
+    const url = 'https://x/#:~:text=token%3Dexample?';
+    expect(redactUrl(url, EMPTY_RULES)).toBe(url);
+  });
+
+  it('PL: shares one operation budget across all URL-valued headers in a list', () => {
+    const filler =
+      'https://x/?' +
+      Array.from({ length: 700 }, (_, i) => `p${i}=${i}`).join('&');
+    const headers = [
+      { name: 'Location', value: 'https://x/?a=keep-me' },
+      ...Array.from({ length: 100 }, () => ({ name: 'Content-Location', value: filler })),
+      { name: 'Referer', value: 'https://x/?b=later-value' },
+    ];
+    const out = redactHeaders(headers, EMPTY_RULES);
+    expect(out[0]!.value).toBe('https://x/?a=keep-me');
+    expect(out[out.length - 1]!.value).toBe(`https://x/?b=${REDACTED}`);
   });
 });
