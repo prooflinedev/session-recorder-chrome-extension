@@ -651,3 +651,85 @@ describe('NetworkCapturer redirects', () => {
     expect(emitted).toHaveLength(0);
   });
 });
+
+describe('structural WS text redaction', () => {
+  it('redacts a scheme-less URL carrier in an opcode-1 JSON frame', () => {
+    const { cap, emitted } = makeCapturer();
+    cap.handle(4, 'Network.webSocketCreated', { requestId: 'ws-url', url: 'wss://x/y' });
+    cap.handle(4, 'Network.webSocketFrameSent', {
+      requestId: 'ws-url',
+      response: { opcode: 1, payloadData: '{"url":"/cb?code=S"}' },
+    });
+    cap.flushOpen();
+
+    const text = payloadOf(emitted[0]!).wsFrames![0]!.text!;
+    expect(text).toContain('«redacted»');
+    expect(text).not.toContain('code=S');
+  });
+});
+
+describe('F5: NetworkCapturer header redaction at capture', () => {
+  function header(
+    headers: { name: string; value: string }[] | undefined,
+    name: string,
+  ): string | undefined {
+    return headers?.find((h) => h.name.toLowerCase() === name)?.value;
+  }
+
+  it('F5: masks Authorization and Cookie request headers at capture', () => {
+    const { cap, emitted } = makeCapturer();
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: 'f5-req',
+      request: {
+        method: 'GET',
+        url: 'https://app.example.com/data',
+        headers: {
+          Authorization: 'Bearer S3CR3T',
+          Cookie: 'session=SECRET',
+          'X-Trace': 'keep-me',
+        },
+      },
+      type: 'XHR',
+    });
+    cap.handle(1, 'Network.loadingFailed', {
+      requestId: 'f5-req',
+      errorText: 'net::ERR_ABORTED',
+    });
+
+    expect(emitted).toHaveLength(1);
+    const headers = payloadOf(emitted[0]!).requestHeaders;
+    expect(header(headers, 'authorization')).toBe('«redacted»');
+    expect(header(headers, 'cookie')).toBe('«redacted»');
+    // A non-sensitive header passes through untouched, so the masking is specific.
+    expect(header(headers, 'x-trace')).toBe('keep-me');
+  });
+
+  it('F5: scrubs URL-valued Location response header at capture', () => {
+    const { cap, emitted } = makeCapturer();
+    const rid = 'f5-redirect';
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: rid,
+      request: { method: 'GET', url: 'https://app.example.com/login', headers: {} },
+      type: 'Document',
+    });
+    cap.handle(1, 'Network.responseReceived', {
+      requestId: rid,
+      response: {
+        status: 302,
+        headers: { Location: 'https://idp/cb?foo=bar&code=SECRET' },
+        mimeType: 'text/html',
+      },
+      type: 'Document',
+    });
+    cap.handle(1, 'Network.loadingFailed', {
+      requestId: rid,
+      errorText: 'net::ERR_ABORTED',
+    });
+
+    expect(emitted).toHaveLength(1);
+    const location = header(payloadOf(emitted[0]!).responseHeaders, 'location');
+    expect(location).toBe('https://idp/cb?foo=bar&code=«redacted»');
+    expect(location).toContain('https://idp/cb');
+    expect(location).not.toContain('SECRET');
+  });
+});

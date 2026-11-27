@@ -20,7 +20,7 @@ import type {
 } from '@/lib/session/types';
 import { API_SPEC_BODY_CAP_BYTES } from '@/lib/session/settings';
 import { isApiIsh } from '@/lib/export/openapi';
-import { redactBody, redactHeaders, redactUrl } from './redaction';
+import { redactBody, redactHeaders, redactUrl, redactWsText } from './redaction';
 
 /** Injected collaborators; see docs/internal-api.md §lib/capture/network.ts. */
 export interface NetworkDeps {
@@ -437,9 +437,14 @@ export class NetworkCapturer {
     const payload = (response && asString(response.payloadData)) ?? '';
     const settings = this.deps.getSettings();
     // Text frames only (opcode 1); binary frames are base64 and have no keys.
+    // redactBody handles JSON/form keys; redactWsText additionally closes
+    // scheme-less URL carriers (e.g. {"url":"/cb?code=S"}) in frame text.
     let text =
       settings.redactionEnabled && opcode === 1
-        ? redactBody(payload, undefined, settings.customRedaction).text
+        ? redactWsText(
+            redactBody(payload, undefined, settings.customRedaction).text,
+            settings.customRedaction,
+          )
         : payload;
     let truncated = false;
     if (text.length > WS_FRAME_TEXT_CAP) {

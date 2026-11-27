@@ -34,6 +34,96 @@ export const DEFAULT_KEY_PATTERN: RegExp =
   /token|secret|password|passwd|api[-_]?key|session|auth|credential|bearer/i;
 
 /**
+ * ONE shared definition of sensitive names, used for URL params, form-body keys
+ * and JSON keys. Anchoring matters: adding `code`, `sig` or `state` to the
+ * unanchored DEFAULT_KEY_PATTERN would match benign names such as `postalCode`,
+ * `design` and `statement`. DEFAULT_KEY_PATTERN itself is deliberately left
+ * unchanged (including its accepted `token_type` false positive).
+ */
+const SENSITIVE_EXACT_NAMES: RegExp =
+  /^(?:code|state|nonce|assertion|ticket|sig|code_verifier|code_challenge|client_assertion|samlresponse|saml_response)$/i;
+const SENSITIVE_COMPOUND_NAMES: RegExp =
+  /^(?:[a-z0-9]+[._])?(?:access[._]?code|openid[._]?nonce|saml[._]?assertion|client[._]?assertion|saml[._]?response)$/i;
+
+/** Non-blocklisted headers whose values are URLs or contain URLs. */
+const URL_VALUED_HEADERS = new Set(['location', 'referer', 'content-location']);
+
+/** Payload keys whose string values are URLs — scanned on every event type. */
+const URL_CARRIER_KEYS = new Set([
+  'url',
+  'toUrl',
+  'urlHint',
+  'next',
+  'redirect',
+  'href',
+  'location',
+]);
+
+/**
+ * Free-text keys whose values may embed URLs. `value`/`note`/`contextText` are
+ * page- or user-controlled fields on input, file, screenshot and video payloads;
+ * `title`/`toTitle` come from document.title on tab events; `args` is an array
+ * of strings handled by the array branch of `redactValue`.
+ */
+const TEXT_URL_KEYS = new Set([
+  'text',
+  'args',
+  'source',
+  'stack',
+  'message',
+  'value',
+  'note',
+  'contextText',
+  'title',
+  'toTitle',
+]);
+
+/** Maximum depth for nested encoded URL/form values and payload objects. */
+const MAX_NESTING = 3;
+
+/** Bounded work allowance for one top-level URL/header/text transform. */
+const CARRIER_DEPTH_CAP = MAX_NESTING;
+const CARRIER_ENCODED_BYTE_CAP = 4096;
+const CARRIER_DECODED_BYTE_CAP = 4096;
+const CARRIER_OP_CAP = 65536;
+
+/** Encoded form of the marker, used when a nested value cannot be inspected. */
+const ENCODED_REDACTED = encodeURIComponent(REDACTED);
+
+type NameMatcher = (name: string) => boolean;
+
+/**
+ * Internal scratch budget for one transform. Created fresh at public entry
+ * points and threaded by reference through every recursive URL operation, so
+ * nested carriers and fragments share the same limits. It is never exposed to
+ * callers and never stored in caller-owned objects (the module stays pure).
+ */
+interface RedactionBudget {
+  carrierDepth: number;
+  ops: number;
+}
+
+function freshBudget(): RedactionBudget {
+  return { carrierDepth: 0, ops: CARRIER_OP_CAP };
+}
+
+function spend(budget: RedactionBudget, units: number): boolean {
+  if (budget.ops < units) return false;
+  budget.ops -= units;
+  return true;
+}
+
+function utf8Bytes(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+/** Mask only the value of a `k=v` part, preserving its key and structure. */
+function maskValue(part: string): string {
+  const eq = part.indexOf('=');
+  return eq === -1 ? part : `${part.slice(0, eq)}=${REDACTED}`;
+}
+
+/**
  * Compile a set of extra regex source strings into predicates. Invalid patterns
  * are skipped rather than throwing, keeping the module robust to bad user input.
  */
@@ -59,39 +149,26 @@ function safeDecode(s: string): string {
 }
 
 /**
- * Build a predicate that matches a body key against the default key pattern plus
- * any custom `bodyKeyPatterns` from the rules.
+ * Build a predicate that matches a body key (form or JSON) against the shared
+ * sensitive-name sets, the default key pattern and custom `bodyKeyPatterns`.
  */
 export function buildKeyMatcher(rules: RedactionRules): (key: string) => boolean {
   const extra = compilePatterns(rules.bodyKeyPatterns);
   return (key: string): boolean =>
-    DEFAULT_KEY_PATTERN.test(key) || extra.some((re) => re.test(key));
+    SENSITIVE_EXACT_NAMES.test(key) ||
+    SENSITIVE_COMPOUND_NAMES.test(key) ||
+    DEFAULT_KEY_PATTERN.test(key) ||
+    extra.some((re) => re.test(key));
 }
 
-/** Build a predicate for URL query-param names (default pattern + urlParamPatterns). */
+/** Build a predicate for URL param names using the same sensitive-name sets. */
 function buildUrlMatcher(rules: RedactionRules): (name: string) => boolean {
   const extra = compilePatterns(rules.urlParamPatterns);
   return (name: string): boolean =>
-    DEFAULT_KEY_PATTERN.test(name) || extra.some((re) => re.test(name));
-}
-
-/**
- * Return a new header array with blocklisted (and custom) header values masked.
- * Comparison is case-insensitive on the header name. Input is never mutated.
- */
-export function redactHeaders(
-  headers: NetHeader[],
-  rules: RedactionRules,
-): NetHeader[] {
-  const blocked = new Set<string>([
-    ...DEFAULT_HEADER_BLOCKLIST,
-    ...rules.headerNames.map((n) => n.toLowerCase()),
-  ]);
-  return headers.map((h) =>
-    blocked.has(h.name.toLowerCase())
-      ? { name: h.name, value: REDACTED }
-      : { name: h.name, value: h.value },
-  );
+    SENSITIVE_EXACT_NAMES.test(name) ||
+    SENSITIVE_COMPOUND_NAMES.test(name) ||
+    DEFAULT_KEY_PATTERN.test(name) ||
+    extra.some((re) => re.test(name));
 }
 
 /** Recursively clone a parsed JSON value, masking values under matching keys. */
@@ -233,43 +310,266 @@ export function redactBody(
 }
 
 /**
- * Redact matching query-param VALUES in a URL while preserving the rest of its
- * structure (scheme/host/path/hash/param order/encoding). Works on absolute and
- * relative URLs; a URL without a query string is returned unchanged.
+ * Mask `user:password@` (and credential-only `token@`) inside the authority
+ * segment only. Never uses `new URL()`: relative URLs and escaping stay intact.
  */
-export function redactUrl(url: string, rules: RedactionRules): string {
-  const matcher = buildUrlMatcher(rules);
+function redactAuthority(url: string): string {
+  let start = -1;
+  if (url.startsWith('//')) start = 2;
+  else {
+    const scheme = url.indexOf('://');
+    if (scheme !== -1) start = scheme + 3;
+  }
+  if (start === -1) return url;
 
-  const hashIdx = url.indexOf('#');
-  const hash = hashIdx === -1 ? '' : url.slice(hashIdx);
-  const base = hashIdx === -1 ? url : url.slice(0, hashIdx);
-
-  const qIdx = base.indexOf('?');
-  if (qIdx === -1) return url;
-
-  const head = base.slice(0, qIdx);
-  const query = base.slice(qIdx + 1);
-  if (query.length === 0) return url;
-
-  let changed = false;
-  const parts = query.split('&').map((part) => {
-    const eq = part.indexOf('=');
-    if (eq === -1) return part; // flag param, no value to redact
-    const rawKey = part.slice(0, eq);
-    if (matcher(safeDecode(rawKey))) {
-      changed = true;
-      return `${rawKey}=${REDACTED}`;
+  let end = url.length;
+  for (let i = start; i < url.length; i++) {
+    const c = url[i];
+    if (c === '/' || c === '?' || c === '#') {
+      end = i;
+      break;
     }
-    return part;
-  });
+  }
+  const authority = url.slice(start, end);
+  const at = authority.lastIndexOf('@');
+  if (at === -1) return url;
+  return url.slice(0, start) + `${REDACTED}@` + url.slice(start + at + 1);
+}
 
-  return changed ? `${head}?${parts.join('&')}${hash}` : url;
+/**
+ * If a param value decodes to a URL or a form body, redact its sensitive parts
+ * and re-encode. Re-encoding keeps the carrier inside its original param, so
+ * HAR's `searchParams` decode cannot expose a new top-level secret.
+ */
+/**
+ * Inspect one encoded nested carrier with the SHARED budget. Size limits are
+ * checked before decoding and again after decoding; any value that cannot be
+ * inspected is masked (fail closed) rather than returned as apparently clean.
+ * Structure is split by string slicing only — no `new URL()`.
+ */
+function redactNestedCarrier(
+  raw: string,
+  matcher: NameMatcher,
+  budget: RedactionBudget,
+): string {
+  if (raw === REDACTED || raw === ENCODED_REDACTED) return raw;
+  if (budget.carrierDepth >= CARRIER_DEPTH_CAP || budget.ops <= 0) return ENCODED_REDACTED;
+  if (utf8Bytes(raw) > CARRIER_ENCODED_BYTE_CAP) return ENCODED_REDACTED;
+  if (!spend(budget, 2)) return ENCODED_REDACTED;
+
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    return ENCODED_REDACTED; // malformed encoding cannot be inspected safely
+  }
+  if (decoded === REDACTED) return raw; // already redacted — keep fixed point
+  if (utf8Bytes(decoded) > CARRIER_DECODED_BYTE_CAP) return ENCODED_REDACTED;
+  if (!spend(budget, Math.max(1, Math.ceil(utf8Bytes(decoded) / 128)))) {
+    return ENCODED_REDACTED;
+  }
+
+  // Split the literal fragment, then classify the head ONCE. A scheme-less
+  // `path?query` carrier is handled even when no `#` was split off.
+  const hashIdx = decoded.indexOf('#');
+  const head = hashIdx === -1 ? decoded : decoded.slice(0, hashIdx);
+  const tail = hashIdx === -1 ? '' : decoded.slice(hashIdx + 1);
+  const isUrl =
+    /^(?:https?|wss?):\/\//i.test(head) || head.startsWith('//') || head.startsWith('/');
+  const hasQuery = head.includes('?');
+  const headIsForm = looksLikeForm(head) || (head.includes('&') && head.includes('='));
+
+  let redacted: string | undefined;
+  budget.carrierDepth += 1;
+  try {
+    if (isUrl && hasQuery) {
+      // Absolute/relative URL with a real query — the URL scrubber handles
+      // both query and fragment with the same budget.
+      redacted = redactUrlWithBudget(decoded, matcher, budget);
+    } else {
+      let newHead = head;
+      if (isUrl && headIsForm) {
+        // Path-form carrier such as `/cb&token=S#frag`.
+        newHead = redactForm(head, matcher).text;
+      } else if (hasQuery) {
+        // Scheme-less relative carrier: `foo=bar?x=1#token=S`.
+        const qIdx = head.indexOf('?');
+        const prefix = redactPrefix(head.slice(0, qIdx), matcher, budget) + '?';
+        const query = head.slice(qIdx + 1);
+        const parts = query.split('&').map((p) => {
+          if (!spend(budget, 1)) return maskValue(p);
+          return redactParamPart(p, matcher, budget);
+        });
+        newHead = prefix + parts.join('&');
+      } else if (headIsForm) {
+        newHead = redactForm(head, matcher).text;
+      }
+      const newTail = tail ? `#${redactFragment(tail, matcher, budget)}` : '';
+      redacted = newHead + newTail;
+    }
+  } finally {
+    budget.carrierDepth -= 1;
+  }
+
+  if (redacted === undefined || redacted === decoded) return raw;
+  return encodeURIComponent(redacted);
+}
+
+function redactParamPart(part: string, matcher: NameMatcher, budget: RedactionBudget): string {
+  const eq = part.indexOf('=');
+  if (eq === -1) return part; // flag param, no value to redact
+  const rawKey = part.slice(0, eq);
+  const rawVal = part.slice(eq + 1);
+  // Sensitive names are always masked, even when the budget is exhausted.
+  if (matcher(safeDecode(rawKey))) return `${rawKey}=${REDACTED}`;
+  if (rawKey.length > CARRIER_ENCODED_BYTE_CAP || !spend(budget, 2)) {
+    return `${rawKey}=${REDACTED}`; // smallest uninspectable value
+  }
+  const nested = redactNestedCarrier(rawVal, matcher, budget);
+  return nested === rawVal ? part : `${rawKey}=${nested}`;
+}
+
+/** Scrub `k=v` pairs before the first `?`; plain router paths are untouched. */
+function redactPrefix(prefix: string, matcher: NameMatcher, budget: RedactionBudget): string {
+  if (!prefix) return prefix;
+  return prefix
+    .split('&')
+    .map((part) => {
+      if (!part.includes('=')) return part;
+      if (!spend(budget, 1)) return maskValue(part);
+      return redactParamPart(part, matcher, budget);
+    })
+    .join('&');
+}
+
+/**
+ * Redact a fragment body without `new URL()`: directive keys are preserved,
+ * every other `&`/`#`-separated value goes through `redactParamPart` with the
+ * shared budget. Values past the budget are masked, never returned raw.
+ */
+function redactFragment(frag: string, matcher: NameMatcher, budget: RedactionBudget): string {
+  const qIdx = frag.indexOf('?');
+  const prefix =
+    qIdx === -1 ? '' : redactPrefix(frag.slice(0, qIdx), matcher, budget) + '?';
+  const params = qIdx === -1 ? frag : frag.slice(qIdx + 1);
+
+  // Capturing split keeps the `&` / `#` separators, so structure is preserved.
+  const parts = params.split(/([&#])/).map((part) => {
+    if (part === '&' || part === '#') return part;
+    const eq = part.indexOf('=');
+    const key = eq === -1 ? part : part.slice(0, eq);
+    // Only genuine scroll-to-text directives are exempt, not a bare `text` key.
+    if (key === ':~:text') return part;
+    if (!spend(budget, 1)) return maskValue(part);
+    return redactParamPart(part, matcher, budget);
+  });
+  return `${prefix}${parts.join('')}`;
+}
+
+/**
+ * Internal URL scrub. `matcher` and `budget` are created once by the public
+ * wrapper or a fan-out helper and threaded through EVERY recursive call, so
+ * nested carriers/fragments cannot reset depth or operation limits.
+ */
+function redactUrlWithBudget(url: string, matcher: NameMatcher, budget: RedactionBudget): string {
+  const withAuthority = redactAuthority(url);
+
+  const hashIdx = withAuthority.indexOf('#');
+  const base = hashIdx === -1 ? withAuthority : withAuthority.slice(0, hashIdx);
+  const hash = hashIdx === -1 ? '' : withAuthority.slice(hashIdx);
+
+  let newBase = base;
+  const qIdx = base.indexOf('?');
+  if (qIdx !== -1) {
+    const head = base.slice(0, qIdx);
+    const query = base.slice(qIdx + 1);
+    const parts = query.split('&').map((p) => {
+      if (!spend(budget, 1)) return maskValue(p);
+      return redactParamPart(p, matcher, budget);
+    });
+    newBase = `${head}?${parts.join('&')}`;
+  }
+
+  const newHash = hash.length > 1 ? `#${redactFragment(hash.slice(1), matcher, budget)}` : hash;
+
+  const out = newBase + newHash;
+  return out === url ? url : out;
+}
+
+/** Public API unchanged: one fresh budget per top-level URL value. */
+export function redactUrl(url: string, rules: RedactionRules): string {
+  return redactUrlWithBudget(url, buildUrlMatcher(rules), freshBudget());
+}
+
+/** URL-valued headers: scrub every `<url>` in a Link header with a shared budget. */
+function redactLinkHeader(value: string, matcher: NameMatcher, budget: RedactionBudget): string {
+  return value.replace(
+    /<([^>]*)>/g,
+    (_m, u: string) => `<${redactUrlWithBudget(u, matcher, budget)}>`,
+  );
+}
+
+/** URL-valued headers: scrub the `url=` value in a Refresh header with a shared budget. */
+function redactRefreshHeader(value: string, matcher: NameMatcher, budget: RedactionBudget): string {
+  return value.replace(
+    /(url\s*=\s*)("([^"]*)"|[^;\s]+)/i,
+    (_m, prefix: string, raw: string) => {
+      const quoted = raw.startsWith('"') && raw.endsWith('"');
+      const inner = quoted ? raw.slice(1, -1) : raw;
+      const scrubbed = redactUrlWithBudget(inner, matcher, budget);
+      return `${prefix}${quoted ? `"${scrubbed}"` : scrubbed}`;
+    },
+  );
+}
+
+/**
+ * Return a new header array with blocklisted (and custom) header values masked
+ * in full. Non-blocklisted URL-valued headers additionally have their URL
+ * structure scrubbed; a blocklisted name always wins with full-value masking.
+ * All URL-valued headers in one call share a single matcher and budget.
+ */
+export function redactHeaders(
+  headers: NetHeader[],
+  rules: RedactionRules,
+): NetHeader[] {
+  const blocked = new Set<string>([
+    ...DEFAULT_HEADER_BLOCKLIST,
+    ...rules.headerNames.map((n) => n.toLowerCase()),
+  ]);
+  const hasUrlValues = headers.some(
+    (h) => !blocked.has(h.name.toLowerCase()) &&
+      (URL_VALUED_HEADERS.has(h.name.toLowerCase()) ||
+        h.name.toLowerCase() === 'link' ||
+        h.name.toLowerCase() === 'refresh'),
+  );
+  const matcher = hasUrlValues ? buildUrlMatcher(rules) : null;
+  const budget = hasUrlValues ? freshBudget() : null;
+  return headers.map((h) => {
+    const name = h.name.toLowerCase();
+    if (blocked.has(name)) return { name: h.name, value: REDACTED };
+    if (matcher && budget && URL_VALUED_HEADERS.has(name)) {
+      return { name: h.name, value: redactUrlWithBudget(h.value, matcher, budget) };
+    }
+    if (matcher && budget && name === 'link') {
+      return { name: h.name, value: redactLinkHeader(h.value, matcher, budget) };
+    }
+    if (matcher && budget && name === 'refresh') {
+      return { name: h.name, value: redactRefreshHeader(h.value, matcher, budget) };
+    }
+    return { name: h.name, value: h.value };
+  });
 }
 
 /** Apply the same URL rules to web/socket URLs embedded in browser diagnostics. */
 export function redactUrlsInText(text: string, rules: RedactionRules): string {
+  // One matcher/budget for every URL found in this text, so many URLs cannot
+  // each get a fresh operation allowance.
+  const matcher = buildUrlMatcher(rules);
+  const budget = freshBudget();
   const redactText = (value: string) =>
-    value.replace(/\b(?:https?|wss?):\/\/[^\s"'<>`]+/gi, (url) => redactUrl(url, rules));
+    value.replace(/\b(?:https?|wss?):\/\/[^\s"'<>`]+/gi, (url) =>
+      redactUrlWithBudget(url, matcher, budget),
+    );
 
   return text.split('\n').map((line) => {
     // V8's text stack frames append coordinates outside the URL. Only split
@@ -277,6 +577,111 @@ export function redactUrlsInText(text: string, rules: RedactionRules): string {
     // part of a sensitive query value and must be redacted with that value.
     const frame = /^([ \t]*at (?:[^\r\n]* \()?)(https?:\/\/[^\r\n]+)(:\d+:\d+\)?)(\r?)$/.exec(line);
     if (!frame) return redactText(line);
-    return `${redactText(frame[1]!)}${redactUrl(frame[2]!, rules)}${frame[3]}${frame[4]}`;
+    return `${redactText(frame[1]!)}${redactUrlWithBudget(frame[2]!, matcher, budget)}${frame[3]}${frame[4]}`;
   }).join('\n');
+}
+
+/** Redact a WebSocket text frame: JSON carrier keys first, absolute URLs in free text. */
+export function redactWsText(text: string, rules: RedactionRules): string {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (parsed !== null && typeof parsed === 'object') {
+      const before = JSON.stringify(parsed);
+      const after = JSON.stringify(redactValue(parsed, rules, 0));
+      return redactUrlsInText(after === before ? text : after, rules);
+    }
+  } catch {
+    /* not JSON — fall through to text URL scanning */
+  }
+  return redactUrlsInText(text, rules);
+}
+
+/**
+ * Pure recursive walk over an event payload; carrier keys are masked down to
+ * MAX_NESTING levels (deeper objects are returned unchanged).
+ */
+function redactValue(value: unknown, rules: RedactionRules, depth: number): unknown {
+  if (value === null || typeof value !== 'object' || depth > MAX_NESTING) return value;
+  // Strings get a flat URL scrub (no recursion, so no extra depth); everything
+  // else recurses under the same MAX_NESTING guard at the top of this function.
+  if (Array.isArray(value)) {
+    return value.map((v) =>
+      typeof v === 'string' ? redactUrlsInText(v, rules) : redactValue(v, rules, depth + 1),
+    );
+  }
+
+  const out: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof val === 'string') {
+      if (URL_CARRIER_KEYS.has(key)) out[key] = redactUrl(val, rules);
+      else if (TEXT_URL_KEYS.has(key)) out[key] = redactUrlsInText(val, rules);
+      else out[key] = val;
+    } else if (key === 'wsFrames' && Array.isArray(val)) {
+      out[key] = val.map((f) => {
+        if (f !== null && typeof f === 'object' && typeof (f as { text?: unknown }).text === 'string') {
+          const frame = f as { text: string };
+          return { ...frame, text: redactWsText(frame.text, rules) };
+        }
+        return redactValue(f, rules, depth + 1);
+      });
+    } else if ((key === 'requestHeaders' || key === 'responseHeaders') && Array.isArray(val)) {
+      out[key] = redactHeaders(val as NetHeader[], rules);
+    } else {
+      out[key] = redactValue(val, rules, depth + 1);
+    }
+  }
+  return out;
+}
+
+/**
+ * Pure funnel transform. The caller must assign the result to `raw.payload`
+ * before scoring, persistence and broadcast; otherwise this is a no-op.
+ */
+export function redactEventPayload(
+  _type: string,
+  payload: unknown,
+  rules: RedactionRules,
+): unknown {
+  return redactValue(payload, rules, 0);
+}
+
+type SessionLike = {
+  initialUrl?: string;
+  name?: string;
+  tabs?: { url?: string; title?: string }[];
+};
+
+/**
+ * Apply URL redaction to session metadata at its write sites. Accepts either a
+ * Session-like object (returns a new object) or a single URL string. Titles are
+ * free text, so they go through `redactUrlsInText` rather than `redactUrl`.
+ */
+export function redactSessionUrls(url: string, rules: RedactionRules): string;
+export function redactSessionUrls<T extends SessionLike>(session: T, rules: RedactionRules): T;
+export function redactSessionUrls(input: unknown, rules: RedactionRules): unknown {
+  if (typeof input === 'string') return redactUrl(input, rules);
+  if (input === null || typeof input !== 'object') return input;
+
+  const source = input as { initialUrl?: unknown; name?: unknown; tabs?: unknown };
+  const out: Record<string, unknown> = { ...(input as Record<string, unknown>) };
+  if (typeof source.initialUrl === 'string') {
+    out.initialUrl = redactUrl(source.initialUrl, rules);
+  }
+  // Defence in depth: callers scrub the name already, but any other writer of
+  // session metadata gets the same protection from this helper.
+  if (typeof source.name === 'string') {
+    out.name = redactUrlsInText(source.name, rules);
+  }
+  if (Array.isArray(source.tabs)) {
+    out.tabs = source.tabs.map((tab) => {
+      if (tab === null || typeof tab !== 'object') return tab;
+      const t = tab as { url?: unknown; title?: unknown };
+      if (typeof t.url !== 'string' && typeof t.title !== 'string') return tab;
+      const next: Record<string, unknown> = { ...t };
+      if (typeof t.url === 'string') next.url = redactUrl(t.url, rules);
+      if (typeof t.title === 'string') next.title = redactUrlsInText(t.title, rules);
+      return next;
+    });
+  }
+  return out;
 }

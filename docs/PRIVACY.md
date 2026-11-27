@@ -40,12 +40,30 @@ explicitly publish the selected report to Proofline or your Cloudflare Pages pro
 
 Redaction is on by default. For supported structured capture fields, the extension
 masks authorization headers, token-like JSON/form fields, sensitive URL
-parameters, and password inputs. You can add rules or disable redaction per
-session on the options page. The same URL parameter rules apply to web and
-WebSocket URLs in console messages, browser logs, arguments, sources and exception
-stacks before they are stored. Screenshots, audio, attached files and other
-arbitrary text may still contain sensitive information. This does not scrub
-recordings or reports saved before the fix.
+parameters, and password inputs. URL structure is also inspected before storage:
+for captured URLs and URL-valued headers, redaction checks userinfo, fragments
+and nested URL or form carriers — including an encoded carrier that decodes to a
+form plus a fragment — not just top-level query parameters. You can add rules or
+disable redaction per session on the options page. The same URL parameter rules
+apply to web and WebSocket URLs in console messages, browser logs, arguments,
+sources and exception stacks before they are stored. Screenshots, audio, attached
+files and other arbitrary text may still contain sensitive information.
+
+Nested URL processing is bounded: it inspects at most three levels of encoded
+carriers, at most 4,096 bytes per encoded or decoded carrier, and a shared budget
+of 65,536 work units per URL, header or text transform (structured event payload
+objects are likewise walked at most three levels deep). A value that cannot be inspected within those
+limits — including malformed percent-encoding — is masked rather than returned
+as clean; the surrounding path, keys and sibling parameters are kept. Scroll-to-text
+directives (`#:~:text=...`) are preserved verbatim and are not scrubbed.
+
+Not covered: secrets inside base64-encoded bodies or binary WebSocket frames; URL
+path segments (for example a `Location` of `/cb/code/S` with no query);
+semicolon-separated query parameters; non-standard authorization header names such
+as `X-Authorization`; carriers hidden behind any repeated percent-encoding;
+JSON or `data:` carriers inside a parameter; and URL-bearing text
+under unrecognised payload keys. This does not scrub recordings or reports saved
+before the fix.
 
 ## Third-party transcription (optional, off by default)
 

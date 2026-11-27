@@ -66,6 +66,11 @@ import {
 import { DebuggerManager } from '@/lib/capture/debugger';
 import { NetworkCapturer } from '@/lib/capture/network';
 import { ConsoleCapturer } from '@/lib/capture/console';
+import {
+  redactEventPayload,
+  redactSessionUrls,
+  redactUrlsInText,
+} from '@/lib/capture/redaction';
 import { ScreenshotScheduler } from '@/lib/capture/screenshots';
 import { MultiTabTracker } from '@/lib/capture/multitab';
 import { newId } from '@/lib/util/ids';
@@ -305,6 +310,13 @@ class Orchestrator {
     // While paused, drop capture events but keep the user's explicit signals.
     if (this.paused && !ALLOWED_WHILE_PAUSED.has(type)) return undefined;
 
+    // The single funnel is the earliest reliable shared boundary: redact before
+    // scoring, persistence and broadcast so every downstream view sees the same
+    // payload. The pure helper returns a new object and never mutates `raw`.
+    const payload = session.settings.redactionEnabled
+      ? redactEventPayload(type, raw.payload, session.settings.customRedaction)
+      : raw.payload;
+
     const at = raw.at ?? Date.now();
     const event = {
       id: newId('evt'),
@@ -312,8 +324,8 @@ class Orchestrator {
       t: at - this.sessionStartEpoch,
       tabId: raw.tabId,
       type,
-      payload: raw.payload,
-      importance: scoreEvent(raw),
+      payload,
+      importance: scoreEvent({ ...raw, payload } as RawEvent),
       protected: PROTECTED_TYPES.has(type),
     } as SessionEvent;
 
@@ -383,19 +395,34 @@ class Orchestrator {
     }
 
     const now = Date.now();
+    const rawUrl = tab.url ?? '';
+    // Session metadata is written outside recordEvent, so redact it here too.
+    const primaryUrl = settings.redactionEnabled
+      ? redactSessionUrls(rawUrl, settings.customRedaction)
+      : rawUrl;
+    // A page-controlled document.title can itself carry a callback URL, and the
+    // name is written outside recordEvent — scrub it at this write site too.
+    const rawName = sessionNameFor(tab, now);
+    const sessionName = settings.redactionEnabled
+      ? redactUrlsInText(rawName, settings.customRedaction)
+      : rawName;
+    const rawTitle = tab.title ?? '';
+    const primaryTitle = settings.redactionEnabled
+      ? redactUrlsInText(rawTitle, settings.customRedaction)
+      : rawTitle;
     const primary: TabInfo = {
       tabId,
-      url: tab.url ?? '',
-      title: tab.title ?? '',
+      url: primaryUrl,
+      title: primaryTitle,
       role: 'primary',
       attached: false,
       attachedAt: now,
     };
     const session: Session = {
       id: newId('ses'),
-      name: sessionNameFor(tab, now),
+      name: sessionName,
       startedAt: now,
-      initialUrl: tab.url ?? '',
+      initialUrl: primaryUrl,
       tabs: [primary],
       settings,
       status: 'recording',
@@ -540,13 +567,21 @@ class Orchestrator {
     }
     const url = tab?.url || tab?.pendingUrl || urlHint || '';
     if (!/^https?:\/\//i.test(url)) return;
+    // Noopener OAuth popups are adopted from a URL hint before nav commits.
+    const redactedUrl = session.settings.redactionEnabled
+      ? redactSessionUrls(url, session.settings.customRedaction)
+      : url;
+    const rawTitle = tab?.title ?? '';
+    const infoTitle = session.settings.redactionEnabled
+      ? redactUrlsInText(rawTitle, session.settings.customRedaction)
+      : rawTitle;
 
     try {
       const now = Date.now();
       const info: TabInfo = {
         tabId,
-        url,
-        title: tab?.title ?? '',
+        url: redactedUrl,
+        title: infoTitle,
         openerTabId,
         role: 'adopted',
         attached: false,
@@ -902,7 +937,14 @@ class Orchestrator {
     // tab actually is, not where it was at adopt time (noopener tabs adopt with
     // only a hint URL, before the navigation commits).
     const info = this.current?.tabs.find((t) => t.tabId === details.tabId);
-    if (info) info.url = details.url;
+    // The registry feeds tab-switch/tab-closed later, so scrub it here as well
+    // as in the nav event emitted below.
+    if (info) {
+      const settings = this.current!.settings;
+      info.url = settings.redactionEnabled
+        ? redactSessionUrls(details.url, settings.customRedaction)
+        : details.url;
+    }
     this.recordEvent({
       type: 'nav',
       tabId: details.tabId,
