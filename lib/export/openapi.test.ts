@@ -362,6 +362,37 @@ describe('buildOpenApiSpec', () => {
       schema: { type: 'string' },
     });
   });
+
+  it('preserves repeated and URL-encoded query parameters for relative URLs', () => {
+    const events = netEvents((b) =>
+      b.net('GET', '/api/search?tag=dev&tag=qa&filter%20name=alpha&user%5Bid%5D=42', {
+        status: 200,
+        resBody: '{"count":1}',
+      }),
+    );
+    const { spec } = buildOpenApiSpec(events, noAssets)!;
+    const op = opAt(spec, '/api/search', 'get');
+    expect(op.parameters).toEqual([
+      {
+        name: 'filter name',
+        in: 'query',
+        required: false,
+        schema: { type: 'string' },
+      },
+      {
+        name: 'tag',
+        in: 'query',
+        required: false,
+        schema: { type: 'string' },
+      },
+      {
+        name: 'user[id]',
+        in: 'query',
+        required: false,
+        schema: { type: 'string' },
+      },
+    ]);
+  });
 });
 
 describe('apiBodyAssetIds', () => {
