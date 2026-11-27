@@ -583,11 +583,14 @@ export function redactHeaders(
 }
 
 /** Apply the same URL rules to web/socket URLs embedded in browser diagnostics. */
-export function redactUrlsInText(text: string, rules: RedactionRules): string {
+export function redactUrlsInText(
+  text: string,
+  rules: RedactionRules,
+  matcher: NameMatcher = buildUrlMatcher(rules),
+  budget: RedactionBudget = freshBudget(),
+): string {
   // One matcher/budget for every URL found in this text, so many URLs cannot
   // each get a fresh operation allowance.
-  const matcher = buildUrlMatcher(rules);
-  const budget = freshBudget();
   const redactText = (value: string) =>
     value.replace(/\b(?:https?|wss?):\/\/[^\s"'<>`]+/gi, (url) =>
       redactUrlWithBudget(url, matcher, budget),
@@ -708,9 +711,9 @@ function redactRawJson(text: string, rules: RedactionRules): string {
         continue;
       }
       if (!isPropertyKey && typeof value === 'string') {
-        const replaced = redactUrlWithBudget(value, urlMatcher, budget);
-        // Absolute URLs in free text still need the regex scan.
-        const scanned = redactUrlsInText(replaced, rules);
+        // Free text can contain prose around a URL: scan URL spans only so the
+        // surrounding words survive. The frame matcher/budget are shared.
+        const scanned = redactUrlsInText(value, rules, urlMatcher, budget);
         out += scanned === value ? token : JSON.stringify(scanned);
       } else {
         out += token;

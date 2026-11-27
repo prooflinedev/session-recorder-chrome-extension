@@ -944,6 +944,12 @@ describe('Proofline review regressions', () => {
     expect(parsed.url).toBe('/cb?code=«redacted»');
   });
 
+  it('PL: keeps prose after an embedded URL in a WebSocket string', () => {
+    const input = '{"note":"see https://x/?code=S and closed the dialog"}';
+    const out = redactWsText(input, EMPTY_RULES);
+    expect(JSON.parse(out).note).toBe('see https://x/?code=«redacted» and closed the dialog');
+  });
+
   it('PL: leaves non-text WebSocket frames untouched', () => {
     const out = redactEventPayload(
       'net-request',
