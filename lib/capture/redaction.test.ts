@@ -901,10 +901,19 @@ describe('Proofline review regressions', () => {
     ).toBe(`https://${REDACTED}@host/cb`);
   });
 
+  it('PL: keeps userinfo masked when a nested URL has path-form pairs', () => {
+    const raw =
+      'https://x/?q=' + encodeURIComponent('https://alice:hunter2@host/cb&token=SECRET');
+    const out = redactUrl(raw, EMPTY_RULES);
+    expect(decodeURIComponent(new URL(out).searchParams.get('q')!)).toBe(
+      `https://${REDACTED}@host/cb&token=${REDACTED}`,
+    );
+  });
+
   it('PL: does not throw on a lone UTF-16 surrogate in a URL value', () => {
-    const raw = 'https://x/?q=/cb\uD800&token=S';
+    const raw = 'https://x/?q=/cb\uD800%26token%3DS';
     expect(() => redactUrl(raw, EMPTY_RULES)).not.toThrow();
-    expect(redactUrl(raw, EMPTY_RULES)).toContain(REDACTED);
+    expect(new URL(redactUrl(raw, EMPTY_RULES)).searchParams.get('q')).toBe(REDACTED);
   });
 
   it('PL: preserves an own __proto__ property in redacted JSON', () => {
@@ -918,12 +927,21 @@ describe('Proofline review regressions', () => {
 
   it('PL: keeps WebSocket JSON valid and numeric tokens byte-identical', () => {
     const input =
-      '{"url":"/cb?code=S","id":9007199254740993,"note":"a \\" quoted https://x/?code=S"}';
+      '{"url":"/cb?code=S\\"tail","id":9007199254740993,"note":"a \\" quoted https://x/?code=S"}';
     const out = redactWsText(input, EMPTY_RULES);
     expect(() => JSON.parse(out)).not.toThrow();
     expect(out).toContain('"id":9007199254740993');
     expect(out).toContain('a \\" quoted');
     expect(out).not.toContain('code=S');
+  });
+
+  it('PL: never rewrites JSON property names while masking values', () => {
+    const input = '{"https://x/?code=S":"keep-key","url":"/cb?code=S"}';
+    const out = redactWsText(input, EMPTY_RULES);
+    const parsed = JSON.parse(out);
+    expect(Object.hasOwn(parsed, 'https://x/?code=S')).toBe(true);
+    expect(parsed['https://x/?code=S']).toBe('keep-key');
+    expect(parsed.url).toBe('/cb?code=«redacted»');
   });
 
   it('PL: does not treat :// inside a relative URL as an authority', () => {

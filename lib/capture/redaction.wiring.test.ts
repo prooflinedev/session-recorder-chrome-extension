@@ -263,6 +263,10 @@ describe('capture funnel wiring', () => {
 
     const nav = stored.find((e) => e.type === 'nav')!;
     expect(nav.payload).toEqual({ url: 'https://idp/cb?code=SECRET' });
+    const tick = broadcastMessages.find(
+      (m) => (m as { kind?: string }).kind === 'event/tick',
+    ) as { event?: SessionEvent } | undefined;
+    expect(tick?.event?.payload).toEqual({ url: 'https://idp/cb?code=SECRET' });
   });
 
   it('F6: redacts URLs in a page-controlled session title before persistence and broadcast', async () => {

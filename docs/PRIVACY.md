@@ -70,9 +70,10 @@ Not covered: secrets inside base64-encoded bodies or binary WebSocket frames; UR
 path segments (for example a `Location` of `/cb/code/S` with no query);
 semicolon-separated query parameters; non-standard authorization header names such
 as `X-Authorization`; carriers hidden behind repeated percent-encoding; JSON or
-`data:` carriers inside a parameter; and URL-bearing text under unrecognised keys
-outside WebSocket frames. This does not scrub recordings or reports saved before
-the fix.
+`data:` carriers inside a parameter; and URL-bearing text in a direct string
+property with an unrecognised key outside WebSocket frames (string elements inside
+array fields are still scanned). This does not scrub recordings or reports saved
+before the fix.
 
 ## Third-party transcription (optional, off by default)
 

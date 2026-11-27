@@ -441,10 +441,7 @@ export class NetworkCapturer {
     // scheme-less URL carriers (e.g. {"url":"/cb?code=S"}) in frame text.
     let text =
       settings.redactionEnabled && opcode === 1
-        ? redactWsText(
-            redactBody(payload, undefined, settings.customRedaction).text,
-            settings.customRedaction,
-          )
+        ? redactWsText(payload, settings.customRedaction)
         : payload;
     let truncated = false;
     if (text.length > WS_FRAME_TEXT_CAP) {

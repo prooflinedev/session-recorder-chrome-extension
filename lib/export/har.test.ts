@@ -191,4 +191,17 @@ describe('HAR inherits capture-time redaction', () => {
     );
     expect(q.value).toBe('foo=bar?x=1#token=«redacted»');
   });
+
+  it('does not rewrite raw values captured with redaction disabled', () => {
+    const { session, events } = new SessionBuilder()
+      .net('GET', 'https://x/?q=raw-value')
+      .build();
+    firstRequest(events).responseHeaders = [
+      { name: 'Location', value: 'https://idp/cb?code=RAW_SECRET' },
+    ];
+    const har = buildHar(session, events) as any;
+    expect(har.log.entries[0].request.queryString.find((h: any) => h.name === 'q').value)
+      .toBe('raw-value');
+    expect(har.log.entries[0].response.redirectURL).toBe('https://idp/cb?code=RAW_SECRET');
+  });
 });

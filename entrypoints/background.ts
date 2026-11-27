@@ -145,8 +145,13 @@ async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
 }
 
 /** Name a session after the page it started on: the tab title, else its host. */
-function sessionNameFor(tab: chrome.tabs.Tab, now: number): string {
-  const title = (tab.title ?? '').replace(/\s+/g, ' ').trim();
+function sessionNameFor(
+  tab: chrome.tabs.Tab,
+  now: number,
+  scrubTitle?: (title: string) => string,
+): string {
+  const rawTitle = tab.title ?? '';
+  const title = (scrubTitle ? scrubTitle(rawTitle) : rawTitle).replace(/\s+/g, ' ').trim();
   if (title) return title.length > 70 ? `${title.slice(0, 69)}…` : title;
   try {
     const host = new URL(tab.url ?? '').hostname.replace(/^www\./, '');
@@ -403,10 +408,14 @@ class Orchestrator {
       : rawUrl;
     // A page-controlled document.title can itself carry a callback URL, and the
     // name is written outside recordEvent — scrub it at this write site too.
-    const rawName = sessionNameFor(tab, now);
-    const sessionName = settings.redactionEnabled
-      ? redactUrlsInTitle(rawName, settings.customRedaction)
-      : rawName;
+    const rawName = sessionNameFor(
+      tab,
+      now,
+      settings.redactionEnabled
+        ? (title) => redactUrlsInTitle(title, settings.customRedaction)
+        : undefined,
+    );
+    const sessionName = rawName;
     const rawTitle = tab.title ?? '';
     const primaryTitle = settings.redactionEnabled
       ? redactUrlsInTitle(rawTitle, settings.customRedaction)

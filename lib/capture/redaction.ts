@@ -363,6 +363,7 @@ function redactNestedCarrier(
 ): string {
   if (raw === REDACTED || raw === ENCODED_REDACTED) return raw;
   if (budget.carrierDepth >= CARRIER_DEPTH_CAP || budget.ops <= 0) return ENCODED_REDACTED;
+  if (raw.length > CARRIER_ENCODED_BYTE_CAP) return ENCODED_REDACTED;
   if (utf8Bytes(raw) > CARRIER_ENCODED_BYTE_CAP) return ENCODED_REDACTED;
   if (!spend(budget, 2)) return ENCODED_REDACTED;
 
@@ -401,7 +402,7 @@ function redactNestedCarrier(
       let newHead = isUrl ? redactAuthority(head) : head;
       if (isUrl && headIsForm) {
         // Path-form carrier such as `/cb&token=S#frag`.
-        newHead = redactForm(head, matcher).text;
+        newHead = redactForm(newHead, matcher).text;
       } else if (hasQuery) {
         // Scheme-less relative carrier: `foo=bar?x=1#token=S`.
         const qIdx = head.indexOf('?');
@@ -413,7 +414,7 @@ function redactNestedCarrier(
         });
         newHead = prefix + parts.join('&');
       } else if (headIsForm) {
-        newHead = redactForm(head, matcher).text;
+        newHead = redactForm(newHead, matcher).text;
       }
       const newTail = tail ? `#${redactFragment(tail, matcher, budget)}` : '';
       redacted = newHead + newTail;
@@ -532,12 +533,13 @@ function redactLinkHeader(value: string, matcher: NameMatcher, budget: Redaction
 /** URL-valued headers: scrub the `url=` value in a Refresh header with a shared budget. */
 function redactRefreshHeader(value: string, matcher: NameMatcher, budget: RedactionBudget): string {
   return value.replace(
-    /(url\s*=\s*)("([^"]*)"|[^;\s]+)/i,
+    /(url\s*=\s*)("([^"]*)"|'([^']*)'|[^;\s]+)/i,
     (_m, prefix: string, raw: string) => {
-      const quoted = raw.startsWith('"') && raw.endsWith('"');
+      const quote = raw[0] === '"' || raw[0] === "'" ? raw[0] : '';
+      const quoted = quote !== '' && raw.endsWith(quote) && raw.length >= 2;
       const inner = quoted ? raw.slice(1, -1) : raw;
       const scrubbed = redactUrlWithBudget(inner, matcher, budget);
-      return `${prefix}${quoted ? `"${scrubbed}"` : scrubbed}`;
+      return `${prefix}${quoted ? `${quote}${scrubbed}${quote}` : scrubbed}`;
     },
   );
 }
@@ -630,8 +632,11 @@ function collectStringChanges(
 }
 
 /** Rewrite only changed JSON string tokens; numbers and escapes stay byte-identical. */
-function rewriteChangedJsonStrings(text: string, changes: Map<string, string>): string {
-  if (changes.size === 0) return text;
+function rewriteChangedJsonStrings(
+  text: string,
+  changes: Map<string, string>,
+  rules: RedactionRules,
+): string {
   let out = '';
   let i = 0;
   while (i < text.length) {
@@ -652,11 +657,17 @@ function rewriteChangedJsonStrings(text: string, changes: Map<string, string>): 
       j++;
     }
     const token = text.slice(i, j);
+    let lookahead = j;
+    while (lookahead < text.length && /\s/.test(text[lookahead]!)) lookahead++;
+    const isPropertyKey = text[lookahead] === ':';
     try {
       const value = JSON.parse(token);
-      out += typeof value === 'string' && changes.has(value)
-        ? JSON.stringify(changes.get(value)!)
-        : token;
+      if (isPropertyKey || typeof value !== 'string') {
+        out += token;
+      } else {
+        const replaced = changes.get(value) ?? redactUrlsInText(value, rules);
+        out += replaced === value ? token : JSON.stringify(replaced);
+      }
     } catch {
       out += token;
     }
@@ -683,10 +694,11 @@ export function redactWsText(text: string, rules: RedactionRules): string {
   try {
     const parsed: unknown = JSON.parse(text);
     if (parsed !== null && typeof parsed === 'object') {
-      const after = redactValue(parsed, rules, 0, true);
+      const keyed = redactJsonValue(parsed, buildKeyMatcher(rules)).value;
+      const after = redactValue(keyed, rules, 0, true);
       const changes = new Map<string, string>();
       collectStringChanges(parsed, after, changes);
-      return rewriteChangedJsonStrings(text, changes);
+      return rewriteChangedJsonStrings(text, changes, rules);
     }
   } catch {
     /* not JSON — fall through to text URL scanning */
@@ -776,7 +788,7 @@ export function redactSessionUrls(input: unknown, rules: RedactionRules): unknow
   // Defence in depth: callers scrub the name already, but any other writer of
   // session metadata gets the same protection from this helper.
   if (typeof source.name === 'string') {
-    out.name = redactUrlsInText(source.name, rules);
+    out.name = redactUrlsInTitle(source.name, rules);
   }
   if (Array.isArray(source.tabs)) {
     out.tabs = source.tabs.map((tab) => {
@@ -785,7 +797,7 @@ export function redactSessionUrls(input: unknown, rules: RedactionRules): unknow
       if (typeof t.url !== 'string' && typeof t.title !== 'string') return tab;
       const next: Record<string, unknown> = { ...t };
       if (typeof t.url === 'string') next.url = redactUrl(t.url, rules);
-      if (typeof t.title === 'string') next.title = redactUrlsInText(t.title, rules);
+      if (typeof t.title === 'string') next.title = redactUrlsInTitle(t.title, rules);
       return next;
     });
   }
