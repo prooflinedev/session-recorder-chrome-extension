@@ -312,6 +312,87 @@ describe('buildOpenApiSpec', () => {
     const op = opAt(spec, '/api/flaky', 'get');
     expect(op.responses.default.description).toContain('No response');
   });
+
+  it('preserves query parameters and templates paths for relative URLs', () => {
+    const events = netEvents((b) =>
+      b.net('GET', '/api/users/42?status=active&sort=desc', {
+        status: 200,
+        resBody: '{"id":42,"status":"active"}',
+      }),
+    );
+    const { spec, endpointCount } = buildOpenApiSpec(events, noAssets)!;
+    expect(endpointCount).toBe(1);
+    expect(spec.servers).toEqual([]);
+
+    const op = opAt(spec, '/api/users/{userId}', 'get');
+    expect(op.parameters).toContainEqual({
+      name: 'userId',
+      in: 'path',
+      required: true,
+      schema: { type: 'string' },
+    });
+    expect(op.parameters).toContainEqual({
+      name: 'status',
+      in: 'query',
+      required: false,
+      schema: { type: 'string' },
+    });
+    expect(op.parameters).toContainEqual({
+      name: 'sort',
+      in: 'query',
+      required: false,
+      schema: { type: 'string' },
+    });
+  });
+
+  it('templates paths and strips fragments for relative URLs', () => {
+    const events = netEvents((b) =>
+      b.net('GET', '/api/users/99#section', {
+        status: 200,
+        resBody: '{"id":99}',
+      }),
+    );
+    const { spec } = buildOpenApiSpec(events, noAssets)!;
+    const op = opAt(spec, '/api/users/{userId}', 'get');
+    expect(op).toBeDefined();
+    expect(op.parameters).toContainEqual({
+      name: 'userId',
+      in: 'path',
+      required: true,
+      schema: { type: 'string' },
+    });
+  });
+
+  it('preserves repeated and URL-encoded query parameters for relative URLs', () => {
+    const events = netEvents((b) =>
+      b.net('GET', '/api/search?tag=dev&tag=qa&filter%20name=alpha&user%5Bid%5D=42', {
+        status: 200,
+        resBody: '{"count":1}',
+      }),
+    );
+    const { spec } = buildOpenApiSpec(events, noAssets)!;
+    const op = opAt(spec, '/api/search', 'get');
+    expect(op.parameters).toEqual([
+      {
+        name: 'filter name',
+        in: 'query',
+        required: false,
+        schema: { type: 'string' },
+      },
+      {
+        name: 'tag',
+        in: 'query',
+        required: false,
+        schema: { type: 'string' },
+      },
+      {
+        name: 'user[id]',
+        in: 'query',
+        required: false,
+        schema: { type: 'string' },
+      },
+    ]);
+  });
 });
 
 describe('apiBodyAssetIds', () => {
