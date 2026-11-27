@@ -944,6 +944,23 @@ describe('Proofline review regressions', () => {
     expect(parsed.url).toBe('/cb?code=«redacted»');
   });
 
+  it('PL: leaves non-text WebSocket frames untouched', () => {
+    const out = redactEventPayload(
+      'net-request',
+      { wsFrames: [{ opcode: 2, text: 'c2lnPQ==' }] },
+      EMPTY_RULES,
+    ) as { wsFrames: { text: string }[] };
+    expect(out.wsFrames[0]!.text).toBe('c2lnPQ==');
+  });
+
+  it('PL: preserves structured values under a URL key and masks nested secrets', () => {
+    const input = '{"url":{"label":"keep","token":"SECRET"}}';
+    const out = redactWsText(input, EMPTY_RULES);
+    const parsed = JSON.parse(out);
+    expect(parsed.url.label).toBe('keep');
+    expect(parsed.url.token).toBe(REDACTED);
+  });
+
   it('PL: masks every duplicate JSON key occurrence', () => {
     const input = '{"token":"FIRST","token":"SECOND","url":"/cb?code=S"}';
     const out = redactWsText(input, EMPTY_RULES);

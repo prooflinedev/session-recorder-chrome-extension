@@ -677,22 +677,33 @@ function redactRawJson(text: string, rules: RedactionRules): string {
     const isPropertyKey = text[lookahead] === ':';
     try {
       const value = JSON.parse(token);
-      if (isPropertyKey && typeof value === 'string' &&
-          (keyMatcher(value) || URL_CARRIER_KEYS.has(value))) {
+      if (isPropertyKey && typeof value === 'string' && URL_CARRIER_KEYS.has(value) &&
+          !keyMatcher(value)) {
         const valueStart = lookahead + 1;
         const valueEnd = jsonValueEnd(text, valueStart);
         const rawValueToken = text.slice(valueStart, valueEnd);
-        let replacement: string | undefined;
-        if (URL_CARRIER_KEYS.has(value) && !keyMatcher(value)) {
-          try {
-            const parsedValue = JSON.parse(rawValueToken);
-            if (typeof parsedValue === 'string') {
-              replacement = JSON.stringify(redactUrlWithBudget(parsedValue, urlMatcher, budget));
-            }
-          } catch { /* fall through to whole-value masking */ }
+        if (rawValueToken.trimStart()[0] !== '"') {
+          // Structured carrier value: keep it and let the scanner inspect its
+          // children for their own sensitive keys.
+          out += token + text.slice(j, valueStart);
+          i = valueStart;
+          continue;
         }
-        out += token + text.slice(j, valueStart) +
-          (replacement ?? JSON.stringify(REDACTED));
+        let replacement: string | undefined;
+        try {
+          const parsedValue = JSON.parse(rawValueToken);
+          if (typeof parsedValue === 'string') {
+            replacement = JSON.stringify(redactUrlWithBudget(parsedValue, urlMatcher, budget));
+          }
+        } catch { /* fall through to whole-value masking */ }
+        out += token + text.slice(j, valueStart) + (replacement ?? JSON.stringify(REDACTED));
+        i = valueEnd;
+        continue;
+      }
+      if (isPropertyKey && typeof value === 'string' && keyMatcher(value)) {
+        const valueStart = lookahead + 1;
+        const valueEnd = jsonValueEnd(text, valueStart);
+        out += token + text.slice(j, valueStart) + JSON.stringify(REDACTED);
         i = valueEnd;
         continue;
       }
@@ -768,7 +779,9 @@ function redactValue(
       } else setOwn(out, key, val);
     } else if (key === 'wsFrames' && Array.isArray(val)) {
       setOwn(out, key, val.map((f) => {
-        if (f !== null && typeof f === 'object' && typeof (f as { text?: unknown }).text === 'string') {
+        if (f !== null && typeof f === 'object' &&
+            (f as { opcode?: unknown }).opcode === 1 &&
+            typeof (f as { text?: unknown }).text === 'string') {
           const frame = f as { text: string };
           return { ...frame, text: redactWsText(frame.text, rules) };
         }
