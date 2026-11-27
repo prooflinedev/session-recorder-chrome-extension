@@ -18,6 +18,8 @@ export const DEFAULT_SETTINGS: CaptureSettings = {
   screenshotDedupThreshold: 5,
   hoverDwellMs: 700,
   captureApiSpec: false,
+  cursorSpotlight: false,
+  clickHighlight: false,
 };
 
 /**
@@ -85,6 +87,22 @@ export function detailIndexFromSettings(s: CaptureSettings): number {
 /** Deep-clone the defaults so a session gets its own settings snapshot. */
 export function makeDefaultSettings(): CaptureSettings {
   return structuredClone(DEFAULT_SETTINGS);
+}
+
+/**
+ * Merge persisted or partial settings over defaults so older stored profiles
+ * missing newer fields (such as cursor effects) remain backward compatible.
+ */
+export function normalizeCaptureSettings(
+  raw?: Partial<CaptureSettings> | null,
+): CaptureSettings {
+  const input = raw && typeof raw === 'object' ? raw : {};
+  return {
+    ...makeDefaultSettings(),
+    ...input,
+    cursorSpotlight: input.cursorSpotlight === true,
+    clickHighlight: input.clickHighlight === true,
+  };
 }
 
 // chrome.storage.local keys

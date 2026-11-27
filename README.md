@@ -8,7 +8,7 @@ Session Recorder is a **free, open-source Chrome extension** for QA and product 
 
 ## Record → annotate → file
 
-1. Open the extension beside the app you want to test and select **Record**. The arrow next to it contains capture options, including microphone and video.
+1. On the app's tab, click the Session Recorder icon in Chrome's toolbar, then select **Record** in the side panel. The arrow next to Record contains capture options, including microphone and video.
 2. Reproduce the problem. Toggle **Annotate** to select a page element or drag a rectangle and add a comment. You can also mark up a screenshot, dictate into a comment, attach a file, or add a note.
 3. Stop recording. A full-page report opens with the issue draft and evidence. Select **File issue** to generate a summary, publish the report, and create the GitHub issue using your configured services.
 
@@ -30,7 +30,15 @@ Recording, annotation and ZIP export work without an account or API key. Configu
 - Uploaded or attached files, markers and notes.
 - An optional OpenAPI description inferred from captured requests.
 
-Capture settings control screenshot frequency, body-size limits and redaction. Chrome displays a debugger banner while deep capture is active. If it cannot attach, the report records that gap rather than claiming to have captured the missing network or console evidence.
+Capture settings control screenshot frequency, body-size limits, redaction, and optional cursor spotlight or click highlight overlays (disabled by default; when enabled, rendered onto the page so they are embedded in captured screenshots and video). Chrome displays a debugger banner while deep capture is active. If it cannot attach, the report records that gap rather than claiming to have captured the missing network or console evidence.
+
+Enable **Cursor spotlight** and **Highlight clicks** independently in Record → Capture options or Settings → Capture. These visual aids alter the captured evidence and cannot be removed from saved screenshots or video. Leave them off when you need an unmodified view. Pointer positions stay in the page; the effects add no stored pointer history or network requests. Reduced motion uses a brief, non-expanding click indicator.
+
+Cursor controls require Video to be enabled. Effects run only while tab video is recording and are suspended during pause and annotation editing. Turning video off removes the effects without clearing your saved preferences. They run only where Chrome permits content scripts: browser pages, the Chrome Web Store and other restricted contexts are unsupported. Each permitted iframe draws within its own bounds, so halos and ripples can be clipped at frame edges; inaccessible frames have no effects. HTML fullscreen is supported, but browser-owned controls, native menus and picture-in-picture windows are outside the page overlay. During native drag-and-drop, the halo hides until pointer movement resumes. Page scripts can observe or remove injected DOM; these effects are presentation aids, not authenticated proof of user input.
+
+Chrome authorizes tab video when you click the extension's toolbar icon on that tab. An already-open side panel does not grant access to another tab or site. If video cannot start, click the toolbar icon on the website tab, then click **Video** in the current recording; the earlier portion of that session has no video. To capture from the beginning, stop and start a new recording after the toolbar click.
+
+Click highlights represent primary pointer clicks, excluding keyboard activation and page-generated synthetic events. A fast navigation can remove a ripple before the next video frame captures it. Concurrent ripples are capped at eight; older ones are replaced during bursts.
 
 ## Choose your services
 

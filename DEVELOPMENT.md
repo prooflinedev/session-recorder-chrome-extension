@@ -38,13 +38,23 @@ pnpm test:e2e:headed
 
 The required CI check runs `pnpm test`, which runs Vitest, browser-test TypeScript, the extension build and the full Playwright suite. On Linux it installs Playwright Chromium and its system dependencies, then runs headed Chromium under Xvfb. Browser failures fail the same required check. No live provider credentials are used.
 
-Run focused suites while editing, then the checks affected by the change. Playwright loads the built extension into an isolated Chromium profile and serves `demo/` on port 5319. It uses synthetic audio/video devices. Tests cover capture and export, redaction, annotation, publishing, managed connection, permissions and failure recovery; network fixtures keep automated sharing tests from creating real issues or reports.
+Run focused suites while editing, then the checks affected by the change. Playwright loads the built extension into an isolated Chromium profile and serves `demo/` on port 5319. Most tests use synthetic media devices; real tab-video tests omit those flags. Tests cover capture and export, redaction, annotation, publishing, managed connection, permissions and failure recovery; network fixtures keep automated sharing tests from creating real issues or reports.
 
 To run a focused browser test after building:
 
 ```sh
 pnpm exec playwright test e2e/proofline.spec.ts
 ```
+
+Cursor-effect verification runs against the demo with the built extension:
+
+```sh
+pnpm exec playwright test e2e/capture-authorization.spec.ts e2e/cursor-effects.spec.ts e2e/cursor-effects-performance.spec.ts
+```
+
+The video test decodes real `tabCapture` WebM pixels at 2× device scale, comparing disabled, spotlight-only and click-only takes against a clear control region. It retains the WebM files in Playwright's `test-results/` for a reproducible before/after demonstration. The performance test alternates three runs per mode with 240 trusted pointer moves and 60 clicks, writes `cursor-performance.json`, and reports renderer task/script time, style recalculations, layouts and peak ripple count. Both modes record real tab video. This is an intentionally rapid click workload; the measured renderer task/script counters do not include the offscreen encoder's CPU time. Timings depend on the machine and are not a recording-frame-rate guarantee. Browser coalescing and high-frequency rendering are also checked separately. Use the raw results, not a claim of zero overhead.
+
+Rendering/video fixtures allowlist the test extension for tab capture. The separate capture-authorization regression uses no capture allowlist: CDP invokes the real toolbar action with `Extensions.triggerAction`, enabled by the test-only `--enable-unsafe-extension-debugging` flag. It checks denial from an uninvoked side panel, recovery in the current recording, video from Record after authorization, revocation on a change of origin, and the restricted-browser-page error. A synthetic microphone test also checks that mic startup cannot hide a video failure. Clicking inside a side panel alone does not grant Chrome's per-tab capture permission.
 
 Personal credentials belong in the extension settings. Local `.env*` and `local.env` files are ignored; do not commit keys or embed them in the browser bundle. Managed credentials belong on the Proofline server. The extension stores only its expiring, workspace-scoped connection token.
 

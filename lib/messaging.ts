@@ -25,13 +25,18 @@ import type { TranscriptionConfig } from './transcription/provider';
 /** Transcription config handed to the offscreen doc for live streaming. */
 export type StreamTranscriptionConfig = TranscriptionConfig;
 
+export interface RecordingMediaOptions {
+  video: boolean;
+  mic: boolean;
+}
+
 // ----------------------------------------------------------------------------
 // Request messages (X -> background)
 // ----------------------------------------------------------------------------
 
 export type RequestMessage =
   // --- session lifecycle (sidepanel -> bg) ---
-  | { kind: 'session/start'; tabId: number; settings?: Partial<CaptureSettings> }
+  | { kind: 'session/start'; tabId: number; settings?: Partial<CaptureSettings>; media?: RecordingMediaOptions }
   | { kind: 'session/stop' }
   | { kind: 'session/pause' }
   | { kind: 'session/resume' }
@@ -140,7 +145,14 @@ export type ResponseFor = {
   'session/rename': { ok: boolean };
   'capture/event': { ok: boolean };
   'capture/fileBlob': { ok: boolean };
-  'content/hello': { active: boolean; annotating: boolean; pointing: boolean; micOn: boolean };
+  'content/hello': {
+    active: boolean;
+    annotating: boolean;
+    pointing: boolean;
+    micOn: boolean;
+    cursorSpotlight: boolean;
+    clickHighlight: boolean;
+  };
   'dictation/focus': { ok: boolean; micOn: boolean };
   'dictation/blur': { ok: boolean };
   'dictation/mic': { ok: boolean; micOn: boolean; error?: string };
@@ -208,7 +220,13 @@ export type ContentMessage =
   /** Speech for this composer is awaiting transcription, or transcription failed. */
   | { kind: 'content/dictation-status'; id: string; pending: boolean; error?: string }
   | {kind: 'content/point-annotate'; on: boolean}
-  | { kind: 'content/setActive'; active: boolean; hoverDwellMs?: number }
+  | {
+      kind: 'content/setActive';
+      active: boolean;
+      hoverDwellMs?: number;
+      cursorSpotlight?: boolean;
+      clickHighlight?: boolean;
+    }
   | {
       kind: 'content/annotate';
       on: boolean;

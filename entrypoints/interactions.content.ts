@@ -11,7 +11,8 @@
 import { defineContentScript } from 'wxt/utils/define-content-script';
 
 import { buildDescriptor, bestSelector, isSensitiveInput } from '@/lib/dom/descriptor';
-import { isAnnotationOverlay } from '@/lib/dom/overlay';
+import { CursorEffectsOverlay } from '@/lib/dom/cursor-effects';
+import { isRecorderOverlay } from '@/lib/dom/overlay';
 import { onContentMessage, sendMessage } from '@/lib/messaging';
 import type {
   EventPayloadMap,
@@ -49,12 +50,8 @@ export default defineContentScript({
   allFrames: true,
   runAt: 'document_start',
   matchAboutBlank: true,
-  main() {
-    // Guard against double-injection (manifest load + record-start injection).
-    const w = window as unknown as { __srInteractions?: boolean };
-    if (w.__srInteractions) return;
-    w.__srInteractions = true;
-
+  main(ctx) {
+    const scope = window as Window & { __srFlushedInputs?: WeakSet<Element> };
     let active = false;
     // Annotation owns input while the markup editor (`annotating`) or the
     // comment overlay (`pointing`) is open: no page event is captured and no
@@ -63,10 +60,37 @@ export default defineContentScript({
     let pointing = false;
     const suspended = (): boolean => annotating || pointing;
 
+    let cursorSpotlight = false;
+    let clickHighlight = false;
+    let cursorOverlay: CursorEffectsOverlay | null = null;
+    let contextCheck: number | undefined;
+    let stateRevision = 0;
+    let suspensionRevision = 0;
+
+    function syncCursorOverlay(): void {
+      const show = active && !suspended();
+      const spotlight = show && cursorSpotlight;
+      const click = show && clickHighlight;
+      if (!spotlight && !click) {
+        cursorOverlay?.dispose();
+        cursorOverlay = null;
+        clearInterval(contextCheck);
+        contextCheck = undefined;
+        return;
+      }
+      if (!cursorOverlay) {
+        cursorOverlay = new CursorEffectsOverlay();
+        // An extension reload can invalidate an idle overlay without another capture message.
+        contextCheck = window.setInterval(() => { void ctx.isInvalid; }, 1000);
+      }
+      cursorOverlay.configure({ spotlight, clickHighlight: click });
+    }
+
     // Pending per-element input debounce timers.
     const inputTimers = new Map<Element, ReturnType<typeof setTimeout>>();
     // Fields whose value a flush already posted, with no input event since.
-    let flushedInputs = new WeakSet<Element>();
+    let flushedInputs = scope.__srFlushedInputs ?? new WeakSet<Element>();
+    delete scope.__srFlushedInputs;
     // Active scroll runs keyed by their scroll target (document or element).
     const scrollRuns = new Map<EventTarget, ScrollRun>();
 
@@ -76,7 +100,10 @@ export default defineContentScript({
       try {
         await sendMessage({ kind: 'capture/event', event });
       } catch {
-        /* background asleep / context gone — drop it */
+        /* background asleep / context gone — tear down if extension invalidated */
+        if (typeof chrome !== 'undefined' && !chrome.runtime?.id) {
+          setActive(false);
+        }
       }
     }
 
@@ -170,9 +197,9 @@ export default defineContentScript({
       if (suspended()) return;
       const target = e.target;
       if (!(target instanceof Element)) return;
-      // Clicks land on the annotation overlay (retargeted to its host) while the
+      // Clicks land on a recorder overlay (retargeted to its host) while the
       // user is drawing — those are recorder chrome, not page interactions.
-      if (isAnnotationOverlay(target)) return;
+      if (isRecorderOverlay(target)) return;
       flushPendingInputs();
       post('click', {
         descriptor: buildDescriptor(target),
@@ -185,7 +212,7 @@ export default defineContentScript({
       if (suspended()) return;
       const target = e.target;
       if (!(target instanceof Element)) return;
-      if (isAnnotationOverlay(target)) return;
+      if (isRecorderOverlay(target)) return;
       const el = target;
       // Leaving a field (Tab, click elsewhere) flushes it and then fires
       // `change` with the same value; that value is already recorded.
@@ -225,7 +252,7 @@ export default defineContentScript({
 
     const onKeyDown = (e: KeyboardEvent): void => {
       if (suspended() || MODIFIER_KEYS.has(e.key)) return;
-      if (isAnnotationOverlay(e.target)) return; // typing an annotation label
+      if (isRecorderOverlay(e.target)) return; // typing an annotation label
       const chord = e.ctrlKey || e.metaKey || e.altKey;
       if (!chord && !NAMED_KEYS.has(e.key)) return;
       flushPendingInputs();
@@ -250,7 +277,7 @@ export default defineContentScript({
 
     /** The closest interactive element under the pointer, or null (skip). */
     function meaningfulTarget(t: EventTarget | null): Element | null {
-      if (!(t instanceof Element) || isAnnotationOverlay(t)) return null;
+      if (!(t instanceof Element) || isRecorderOverlay(t)) return null;
       return t.closest(INTERACTIVE);
     }
 
@@ -318,7 +345,7 @@ export default defineContentScript({
         // Caret moves inside the same selection re-fire selectionchange.
         if (text === lastSelectionText) return;
         const el = selectionElement(sel as Selection);
-        if (!el || isAnnotationOverlay(el)) return;
+        if (!el || isRecorderOverlay(el)) return;
         // Never capture selections in sensitive fields or opted-out regions.
         const field = el.closest('input, textarea');
         if (field && isSensitiveInput(field)) return;
@@ -396,41 +423,92 @@ export default defineContentScript({
       if (was && !next) lastHoverEl = null;
       annotating = nextAnnotating;
       pointing = nextPointing;
+      syncCursorOverlay();
     }
 
-    function setActive(next: boolean, dwell?: number): void {
+    function setActive(
+      next: boolean,
+      dwell?: number,
+      spotlight?: boolean,
+      click?: boolean,
+    ): void {
       if (typeof dwell === 'number') hoverDwellMs = dwell;
+      if (typeof spotlight === 'boolean') cursorSpotlight = spotlight;
+      if (typeof click === 'boolean') clickHighlight = click;
       // Resuming active capture also lifts any annotation pause. The background
       // sends setActive(true) after an annotation exits (rather than
       // content/annotate{on:false}, which would race the next editor).
       if (next) setSuspended(false, pointing);
-      if (next === active) return;
+      if (next === active) {
+        syncCursorOverlay();
+        return;
+      }
       active = next;
       if (active) attach();
       else detach();
+      syncCursorOverlay();
     }
 
     // -- lifecycle -----------------------------------------------------------
 
-    onContentMessage((msg) => {
+    async function syncFromBackground(): Promise<void> {
+      const revision = ++stateRevision;
+      const suspension = suspensionRevision;
+      try {
+        const reply = await sendMessage({ kind: 'content/hello' });
+        if (revision !== stateRevision || ctx.isInvalid) return;
+        const nextAnnotating = suspension === suspensionRevision ? reply.annotating : annotating;
+        const nextPointing = suspension === suspensionRevision ? reply.pointing : pointing;
+        setActive(
+          reply.active,
+          undefined,
+          reply.cursorSpotlight,
+          reply.clickHighlight,
+        );
+        setSuspended(nextAnnotating, nextPointing);
+      } catch {
+        /* background not ready — stays dormant until a setActive arrives */
+      }
+    }
+
+    const unsubscribe = onContentMessage((msg) => {
+      if (msg.kind === 'content/setActive') stateRevision++;
+      if (msg.kind === 'content/point-annotate' || msg.kind === 'content/annotate') suspensionRevision++;
       if (msg.kind === 'content/point-annotate') {
         setSuspended(annotating, msg.on);
       } else if (msg.kind === 'content/setActive') {
         if (!msg.active) setSuspended(annotating, false);
-        setActive(msg.active, msg.hoverDwellMs);
+        setActive(
+          msg.active,
+          msg.hoverDwellMs,
+          msg.cursorSpotlight,
+          msg.clickHighlight,
+        );
       } else if (msg.kind === 'content/annotate') {
         setSuspended(msg.on, pointing);
       }
     });
 
-    void (async () => {
-      try {
-        const reply = await sendMessage({ kind: 'content/hello' });
-        setActive(reply.active);
-        setSuspended(reply.annotating, reply.pointing);
-      } catch {
-        /* background not ready — stays dormant until a setActive arrives */
-      }
-    })();
+    // Re-sync if a page is restored from bfcache after pause/resume/stop.
+    ctx.addEventListener(window, 'pageshow', (e) => {
+      if (e.persisted) void syncFromBackground();
+    });
+    ctx.addEventListener(window, 'pagehide', () => {
+      stateRevision++;
+      setActive(false);
+    });
+    // WXT invalidates the old instance before reinjecting this script.
+    ctx.onInvalidated(() => {
+      stateRevision++;
+      // Reinjection must preserve edits still waiting for their debounce.
+      flushPendingInputs();
+      for (const run of scrollRuns.values()) postScroll(run);
+      // The replacement must also suppress the blur/change for those same edits.
+      if (active) scope.__srFlushedInputs = flushedInputs;
+      setActive(false);
+      unsubscribe();
+    });
+
+    void syncFromBackground();
   },
 });

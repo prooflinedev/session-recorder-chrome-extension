@@ -145,6 +145,18 @@ export interface CaptureSettings {
    * raised (see `API_SPEC_BODY_CAP_BYTES`).
    */
   captureApiSpec: boolean;
+  /**
+   * Opt-in (default false): render a subtle circular spotlight around the
+   * cursor inside recorded tabs while recording. Embedded directly into
+   * captured video and screenshots.
+   */
+  cursorSpotlight: boolean;
+  /**
+   * Opt-in (default false): render an expanding ripple animation at click
+   * coordinates inside recorded tabs while recording. Embedded directly into
+   * captured video and screenshots.
+   */
+  clickHighlight: boolean;
 }
 
 export interface TabInfo {

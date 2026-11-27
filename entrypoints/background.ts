@@ -28,6 +28,7 @@ import {
   sendToTab,
   type AppState,
   type RequestMessage,
+  type RecordingMediaOptions,
 } from '@/lib/messaging';
 import type {
   AnnotationPayload,
@@ -47,6 +48,7 @@ import type {
 import { PROTECTED_TYPES, isDictatedSpeech, scoreEvent } from '@/lib/session/events';
 import {
   makeDefaultSettings,
+  normalizeCaptureSettings,
   STORAGE_KEYS,
 } from '@/lib/session/settings';
 import {
@@ -363,17 +365,17 @@ class Orchestrator {
   private async start(
     tabId: number,
     settingsOverride?: Partial<CaptureSettings>,
+    media?: RecordingMediaOptions,
   ): Promise<{ ok: boolean; session?: Session; error?: string }> {
     if (this.current) {
       return { ok: false, error: 'A session is already recording.' };
     }
 
     const defaults = await this.loadDefaultSettings();
-    const settings: CaptureSettings = {
-      ...makeDefaultSettings(),
+    const settings = normalizeCaptureSettings({
       ...defaults,
       ...(settingsOverride ?? {}),
-    };
+    });
 
     let tab: chrome.tabs.Tab;
     try {
@@ -445,8 +447,11 @@ class Orchestrator {
     this.startHeartbeat();
 
     await this.ensureContentScripts(tabId);
-    await sendToTab(tabId, { kind: 'content/setActive', active: true, hoverDwellMs: session.settings.hoverDwellMs });
+    await this.syncTabCaptureState(tabId, true);
     await this.persistSession();
+    // Finish requested media startup before acknowledging Record. The caller
+    // supplies its current choices even when their storage writes are pending.
+    await this.startOptionalCaptures(session, media);
     this.broadcastState();
 
     // Always begin with a screenshot of the starting page, regardless of the
@@ -467,40 +472,43 @@ class Orchestrator {
       });
     }
 
-    // From-start captures (Record dropdown switches). Owned here rather than by
-    // the panel: sequential (video, then mic) so the two never race offscreen
-    // setup, state broadcasts stay authoritative, and it works even if the
-    // panel goes away mid-start. Failures warn, never fail the session.
-    void this.startOptionalCaptures();
-
     return { ok: true, session };
   }
 
-  /** Turn on video and/or mic per the persisted from-start switches. */
-  private async startOptionalCaptures(): Promise<void> {
+  /** Use the current media choices, falling back to saved defaults for older callers. */
+  private async startOptionalCaptures(
+    session: Session,
+    media?: RecordingMediaOptions,
+  ): Promise<void> {
     let prefs: Record<string, unknown> = {};
     try {
-      prefs = await chrome.storage.local.get([
+      if (!media) prefs = await chrome.storage.local.get([
         STORAGE_KEYS.videoFromStart,
         STORAGE_KEYS.micFromStart,
       ]);
     } catch {
       return;
     }
-    if (prefs[STORAGE_KEYS.videoFromStart] === true && this.current) {
+    const video = media?.video ?? prefs[STORAGE_KEYS.videoFromStart] === true;
+    const mic = media?.mic ?? prefs[STORAGE_KEYS.micFromStart] === true;
+    const recording = () => this.current === session && !this.paused && session.status === 'recording';
+    let videoError: string | undefined;
+    if (video && recording()) {
       try {
         await this.setVideo(true);
       } catch (e) {
+        videoError = `Video capture could not start: ${errMessage(e)}`;
+        this.lastError = videoError;
         this.recordEvent({
           type: 'session-note',
           payload: {
             kind: 'warning',
-            text: `Video capture could not start: ${errMessage(e)}`,
+            text: this.lastError,
           },
         });
       }
     }
-    if (prefs[STORAGE_KEYS.micFromStart] === true && this.current && !this.micOn) {
+    if (mic && recording() && !this.micOn) {
       try {
         await this.setMic(true);
       } catch (e) {
@@ -513,6 +521,8 @@ class Orchestrator {
         });
       }
     }
+    // Successful mic startup must not clear a failure from the separate video capture.
+    if (videoError && this.current === session) this.lastError = videoError;
   }
 
   /** Follow the user into a tab the app opened. Errors are swallowed w/ a note. */
@@ -568,7 +578,7 @@ class Orchestrator {
       session.tabs.push(info);
 
       await this.ensureContentScripts(tabId);
-      await sendToTab(tabId, { kind: 'content/setActive', active: true, hoverDwellMs: session.settings.hoverDwellMs });
+      await this.syncTabCaptureState(tabId, !this.paused);
       if (this.pointing) await sendToTab(tabId, {kind:'content/point-annotate',on:true});
       this.recordEvent({
         type: 'tab-opened',
@@ -632,7 +642,7 @@ class Orchestrator {
     this.stopHeartbeat();
 
     for (const t of session.tabs) {
-      await sendToTab(t.tabId, { kind: 'content/setActive', active: false });
+      await this.syncTabCaptureState(t.tabId, false);
       t.attached = false;
     }
 
@@ -685,6 +695,9 @@ class Orchestrator {
     this.paused = true;
     await this.setPointing(false);
     session.status = 'paused';
+    for (const t of session.tabs) {
+      await this.syncTabCaptureState(t.tabId, false);
+    }
     // The offscreen doc may still be recording even when the flags are off
     // (rehydrate() resets them after a SW restart); pause/resume no-op when
     // the respective recorder is idle, so send unconditionally if it exists.
@@ -702,8 +715,12 @@ class Orchestrator {
     if (!session) return { ok: false };
     this.paused = false;
     session.status = 'recording';
-    if (this.micOn) void this.sendToOffscreen({ kind: 'audio/resume' });
     if (this.videoOn) await this.resumeVideo();
+    for (const t of session.tabs) {
+      await this.ensureContentScripts(t.tabId);
+      await this.syncTabCaptureState(t.tabId, true);
+    }
+    if (this.micOn) void this.sendToOffscreen({ kind: 'audio/resume' });
     await this.persistSession();
     this.broadcastState();
     return { ok: true };
@@ -982,7 +999,7 @@ class Orchestrator {
     switch (msg.kind) {
       // --- session lifecycle ---
       case 'session/start':
-        return this.start(msg.tabId, msg.settings);
+        return this.start(msg.tabId, msg.settings, msg.media);
       case 'session/stop':
         return this.stop();
       case 'session/pause':
@@ -1031,8 +1048,15 @@ class Orchestrator {
       case 'content/hello': {
         const tabId = sender.tab?.id;
         const active =
-          !!this.current && tabId !== undefined && this.isSessionTab(tabId);
-        return { active: active && !this.paused, annotating: this.annotating, pointing: this.pointing && !this.paused, micOn: this.micOn };
+          this.current?.status === 'recording' && !this.paused && tabId !== undefined && this.isSessionTab(tabId);
+        return {
+          active,
+          annotating: this.annotating,
+          pointing: this.pointing && !this.paused,
+          micOn: this.micOn,
+          cursorSpotlight: active && this.videoOn ? !!this.current?.settings.cursorSpotlight : false,
+          clickHighlight: active && this.videoOn ? !!this.current?.settings.clickHighlight : false,
+        };
       }
       case 'dictation/focus': {
         const tabId = sender.tab?.id;
@@ -1240,12 +1264,8 @@ class Orchestrator {
     // the annotation script and, arriving asynchronously, would race with and
     // close the *next* annotation's editor.
     const st = sender.tab?.id;
-    if (st !== undefined && this.isSessionTab(st)) {
-      void sendToTab(st, {
-        kind: 'content/setActive',
-        active: true,
-        hoverDwellMs: this.current?.settings.hoverDwellMs,
-      });
+    if (st !== undefined && this.isSessionTab(st) && !this.paused) {
+      void this.syncTabCaptureState(st, true);
     }
 
     const shapeList: AnnotationShape[] = Array.isArray(shapes)
@@ -1659,6 +1679,9 @@ class Orchestrator {
       this.videoOn = false;
       if (!this.micOn) await this.closeOffscreen().catch(() => {});
     }
+    for (const tab of this.current?.tabs ?? []) {
+      await this.syncTabCaptureState(tab.tabId, !this.paused);
+    }
     this.broadcastState();
   }
 
@@ -1666,8 +1689,7 @@ class Orchestrator {
    * Promise wrapper over `chrome.tabCapture.getMediaStreamId`. Stream ids are
    * single-use and expire in seconds, so callers mint one right before use.
    * Fails with a readable error when tab capture is unavailable (unsupported
-   * browser/page, or the extension was never invoked on the tab — the E2E
-   * degraded path).
+   * browser/page, or the extension was not invoked on this tab).
    */
   private getTabStreamId(tabId: number): Promise<string> {
     return new Promise<string>((resolve, reject) => {
@@ -1680,9 +1702,14 @@ class Orchestrator {
         tabCapture.getMediaStreamId({ targetTabId: tabId }, (streamId) => {
           const err = chrome.runtime.lastError;
           if (err || !streamId) {
-            reject(
-              new Error(err?.message || 'Could not get a tab capture stream.'),
-            );
+            let message = err?.message || 'Could not get a tab capture stream.';
+            if (message.includes('Extension has not been invoked')) {
+              const url = this.current?.tabs.find((tab) => tab.tabId === tabId)?.url ?? '';
+              message = /^(chrome|chrome-untrusted|chrome-extension|devtools|about):/.test(url)
+                ? 'Video recording is unavailable on this browser page. Open the website you want to record.'
+                : 'On the website tab, click the Session Recorder icon in Chrome\'s toolbar, then click Video in the recorder. Chrome requires this permission for each new tab or site.';
+            }
+            reject(new Error(message));
           } else {
             resolve(streamId);
           }
@@ -2047,10 +2074,13 @@ class Orchestrator {
       this.sessionStartEpoch = live.startedAt;
       this.paused = live.status === 'paused';
       this.micOn = false;
-      // The offscreen doc survives SW restarts and may still be recording; its
-      // next video/segment still lands correctly, but the UI shows video off
-      // (mirrors micOn — the user re-toggles to resume control).
-      this.videoOn = false;
+      // The offscreen recorder survives worker restarts. Recover the actual
+      // capture instead of showing Video off and starting a second take.
+      this.videoOn = await new Promise<boolean>((resolve) => {
+        chrome.tabCapture.getCapturedTabs((tabs) => resolve(
+          !chrome.runtime.lastError && tabs.some((tab) => tab.status === 'active' && this.isSessionTab(tab.tabId)),
+        ));
+      }).catch(() => false);
       this.annotating = false;
     this.pointing = false;
       this.recent = [];
@@ -2074,7 +2104,7 @@ class Orchestrator {
           t.attachedAt = Date.now();
           delete t.detachedAt;
           await this.ensureContentScripts(t.tabId);
-          await sendToTab(t.tabId, { kind: 'content/setActive', active: true, hoverDwellMs: live.settings.hoverDwellMs });
+          await this.syncTabCaptureState(t.tabId, !this.paused);
         } catch {
           t.attached = false;
         }
@@ -2103,6 +2133,20 @@ class Orchestrator {
   // --------------------------------------------------------------------------
   // Small utilities
   // --------------------------------------------------------------------------
+
+  private async syncTabCaptureState(tabId: number, active: boolean): Promise<void> {
+    if (active && this.current?.status === 'recording' && !this.paused && this.isSessionTab(tabId)) {
+      await sendToTab(tabId, {
+        kind: 'content/setActive',
+        active: true,
+        hoverDwellMs: this.current.settings.hoverDwellMs,
+        cursorSpotlight: this.videoOn && this.current.settings.cursorSpotlight,
+        clickHighlight: this.videoOn && this.current.settings.clickHighlight,
+      });
+      return;
+    }
+    await sendToTab(tabId, { kind: 'content/setActive', active: false });
+  }
 
   private isSessionTab(tabId: number): boolean {
     if (!this.current) return false;
