@@ -651,3 +651,63 @@ describe('NetworkCapturer redirects', () => {
     expect(emitted).toHaveLength(0);
   });
 });
+
+describe('NetworkCapturer header redaction (end to end through emitRequest)', () => {
+  it('does not emit secret-bearing headers outside the exact blocklist', () => {
+    const { cap, emitted } = makeCapturer();
+    const rid = 'h-1';
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: rid,
+      request: {
+        url: 'https://app.example.com/api/me',
+        method: 'GET',
+        headers: {
+          'X-CSRF-Token': 'FAKE-csrf-7f3a91',
+          'X-Amz-Security-Token': 'FAKE-amz-91d0e5',
+          'X-Goog-Signature': 'FAKE-sig-3c6e2b',
+          authToken: 'FAKE-authtoken-5d17f0',
+          'X-Request-Id': 'req-123',
+        },
+      },
+      type: 'Fetch',
+    });
+    cap.handle(1, 'Network.loadingFailed', { requestId: rid, errorText: 'net::ERR_FAILED' });
+    const json = JSON.stringify(emitted);
+    expect(json).not.toContain('FAKE-csrf-7f3a91');
+    expect(json).not.toContain('FAKE-amz-91d0e5');
+    expect(json).not.toContain('FAKE-sig-3c6e2b');
+    expect(json).not.toContain('FAKE-authtoken-5d17f0');
+    expect(json).toContain('req-123');
+  });
+});
+
+describe('NetworkCapturer URL-bearing headers (end to end through emitRequest)', () => {
+  it('masks secret query values in Referer and Location but keeps the other params', () => {
+    const { cap, emitted } = makeCapturer();
+    const rid = 'u-1';
+    cap.handle(1, 'Network.requestWillBeSent', {
+      requestId: rid,
+      request: {
+        url: 'https://app.example.com/start',
+        method: 'GET',
+        headers: { Referer: 'https://app.example.com/page?session_id=FAKE-ref-8a1&tab=2' },
+      },
+      type: 'Fetch',
+    });
+    cap.handle(1, 'Network.responseReceived', {
+      requestId: rid,
+      response: {
+        status: 302,
+        headers: { Location: '/landing?access_token=FAKE-loc-4c9&page=2' },
+        mimeType: 'text/plain',
+      },
+    });
+    cap.handle(1, 'Network.loadingFailed', { requestId: rid, errorText: 'net::ERR_ABORTED' });
+    const json = JSON.stringify(emitted);
+    expect(json).not.toContain('FAKE-ref-8a1');
+    expect(json).not.toContain('FAKE-loc-4c9');
+    expect(json).toContain('tab=2');
+    expect(json).toContain('/landing?access_token=');
+    expect(json).toContain('page=2');
+  });
+});
