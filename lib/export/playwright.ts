@@ -118,7 +118,7 @@ const TEST_SETTINGS_ENV = new Set(['REPRO_BASE_URL', 'REPRO_REPLAY_NETWORK']);
 /** An input event this soon after a click on the same control is the change it caused. */
 const CLICK_CHANGE_WINDOW_MS = 2000;
 
-/** Clicking a label makes the browser click its control a few milliseconds later. */
+/** Clicking a label, or text inside it, makes the browser click its control a few milliseconds later. */
 const LABEL_FORWARD_MS = 100;
 const LABELABLE_TAGS = new Set([
   'button',
@@ -501,7 +501,7 @@ class ReproWriter {
 
   private lastStepT = 0;
   private waited = 0;
-  private lastClick: { tag: string; t: number } | undefined;
+  private lastClick: { key: string; t: number } | undefined;
   private lastLinkClickT: number | undefined;
   /** The element the last recorded click landed on, replayed or not. */
   private lastActivated: { key: string; t: number } | undefined;
@@ -928,10 +928,13 @@ class ReproWriter {
   private click(e: EventOf<'click'>): void {
     const d = this.element(e) ?? e.payload.descriptor;
     this.causes += 1;
-    this.lastActivated = { key: elementKey(d), t: e.t };
-    // The browser's own click on a label's control; replaying it would undo the change.
+    const key = elementKey(d);
+    this.lastActivated = { key, t: e.t };
+    // The browser's own click on a label's control, after a click on the label or on
+    // anything inside it, such as a span; replaying it would undo the change.
     const forwarded =
-      this.lastClick?.tag === 'label' &&
+      this.lastClick !== undefined &&
+      this.lastClick.key !== key &&
       LABELABLE_TAGS.has(d.tag) &&
       e.t - this.lastClick.t <= LABEL_FORWARD_MS;
     if (forwarded) {
@@ -941,7 +944,7 @@ class ReproWriter {
     const loc = locate(d);
     const options = clickOptions(e.payload.modifiers, e.payload.button);
     this.action(`await ${loc.expr}.click(${options});`, e.t, loc.weak);
-    this.lastClick = { tag: d.tag, t: e.t };
+    this.lastClick = { key, t: e.t };
     this.lastLinkClickT = d.tag === 'a' || d.role === 'link' ? e.t : undefined;
   }
 

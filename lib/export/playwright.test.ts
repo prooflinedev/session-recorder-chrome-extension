@@ -601,6 +601,20 @@ describe('buildPlaywrightRepro', () => {
     ]);
   });
 
+  it('replays a click on text inside a label once, not twice', () => {
+    const accept = { tag: 'input', name: 'accept' };
+    const code = repro([
+      // Clicking a span inside a label: the span, then the browser's own click on the
+      // label's checkbox, followed by the change.
+      click(2000, { tag: 'span', text: 'I accept the terms' }),
+      click(2002, accept),
+      input(2800, accept, 'on', { inputType: 'checkbox' }),
+    ]);
+    expect(steps(code).slice(1)).toEqual([
+      "await page.getByText('I accept the terms', { exact: true }).click();",
+    ]);
+  });
+
   it('does not let a click on another element hide a checkbox change', () => {
     const code = repro([
       click(1000, button('Save')),
