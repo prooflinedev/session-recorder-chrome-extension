@@ -240,12 +240,17 @@ export interface NavPayload {
   url: string;
   title?: string;
   transitionType?: string;
+  /** Chrome's qualifiers, e.g. `forward_back` for Back and Forward. Absent in older recordings. */
+  transitionQualifiers?: string[];
 }
 
 export interface SpaRoutePayload {
   url: string;
   title?: string;
+  /** `popstate` is a move through history (Back or Forward); `replaceState` a fragment change. */
   method: 'pushState' | 'replaceState' | 'popstate';
+  /** Chrome's qualifiers. When present, `method` tells history moves apart. */
+  transitionQualifiers?: string[];
 }
 
 export interface TabSwitchPayload {

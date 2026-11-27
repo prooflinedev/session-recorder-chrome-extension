@@ -906,7 +906,11 @@ class Orchestrator {
     this.recordEvent({
       type: 'nav',
       tabId: details.tabId,
-      payload: { url: details.url, transitionType: details.transitionType },
+      payload: {
+        url: details.url,
+        transitionType: details.transitionType,
+        transitionQualifiers: details.transitionQualifiers,
+      },
     });
   };
 
@@ -918,7 +922,12 @@ class Orchestrator {
     this.recordEvent({
       type: 'spa-route',
       tabId: details.tabId,
-      payload: { url: details.url, method: 'pushState' },
+      payload: {
+        url: details.url,
+        // Back and Forward also fire this event; Chrome marks them with forward_back.
+        method: details.transitionQualifiers.includes('forward_back') ? 'popstate' : 'pushState',
+        transitionQualifiers: details.transitionQualifiers,
+      },
     });
   };
 
@@ -930,7 +939,11 @@ class Orchestrator {
     this.recordEvent({
       type: 'spa-route',
       tabId: details.tabId,
-      payload: { url: details.url, method: 'replaceState' },
+      payload: {
+        url: details.url,
+        method: details.transitionQualifiers.includes('forward_back') ? 'popstate' : 'replaceState',
+        transitionQualifiers: details.transitionQualifiers,
+      },
     });
   };
 

@@ -3,8 +3,9 @@
  *
  * Turns a stored session (+events+assets) into the flat list of files that make
  * up the exported zip: `report.md`, `session.json`, `MANIFEST.md`,
- * `transcript.json`, and every asset still referenced after trimming. Also
- * produces per-level token/size estimates for the export UI.
+ * `transcript.json`, `network.har` and the Playwright `repro.spec.ts` when the
+ * session has requests or steps for them, and every asset still referenced
+ * after trimming. Also produces per-level token/size estimates for the export UI.
  *
  * Trimming and rendering are delegated to the (pure) trimmer/markdown modules;
  * this module owns the asset->path mapping and the file layout.
@@ -24,6 +25,7 @@ import type { TrimContext } from './trimmer';
 import { renderManifest, renderReport } from './markdown';
 import { apiBodyAssetIds, buildOpenApiSpec } from './openapi';
 import { buildHar } from './har';
+import { buildPlaywrightRepro } from './playwright';
 import { estimateTokens } from './tokens';
 
 export interface ExportFile {
@@ -345,6 +347,16 @@ export async function buildBundle(
     }
   }
 
+  // 2d) The HAR and the Playwright repro test come from the trimmed events, so
+  // both follow the export level. The test's locators take element details from
+  // the full events, which higher levels strip only to save report tokens.
+  const har = buildHar(session, trimmed);
+  const repro = buildPlaywrightRepro(session, trimmed, {
+    level,
+    fullEvents: events,
+    ...(har ? { harPath: 'network.har' } : {}),
+  });
+
   // 3) Text artifacts.
   const report = renderReport({
     session,
@@ -353,6 +365,7 @@ export async function buildBundle(
     level,
     assetPath,
     ...(openapi ? { openapi } : {}),
+    ...(repro ? { repro: { path: 'repro.spec.ts' } } : {}),
   });
   const manifest = renderManifest({
     session,
@@ -387,8 +400,8 @@ export async function buildBundle(
     { path: 'transcript.json', text: JSON.stringify(transcript, null, 2) },
   ];
   if (openapiFile) files.push(openapiFile);
-  const har = buildHar(session, trimmed);
   if (har) files.push({ path: 'network.har', text: JSON.stringify(har, null, 2) });
+  if (repro) files.push({ path: 'repro.spec.ts', text: repro });
 
   // 4) Every surviving (deduped) asset as raw bytes, written once.
   for (const [path, bytes] of bytesByPath) {
@@ -489,12 +502,15 @@ export function estimateForLevels(
 
   return ALL_LEVELS.map((level) => {
     const trimmed = applyLevel(events, level, ctx);
+    // The report names repro.spec.ts when the bundle would include it.
+    const repro = buildPlaywrightRepro(session, trimmed, { level, fullEvents: events });
     const report = renderReport({
       session,
       events: trimmed,
       assets,
       level,
       assetPath: stubPath,
+      ...(repro ? { repro: { path: 'repro.spec.ts' } } : {}),
     });
     return {
       level,

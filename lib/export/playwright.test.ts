@@ -1,0 +1,1399 @@
+import { resolve } from 'node:path';
+import ts from 'typescript';
+import { describe, it, expect } from 'vitest';
+
+import { SessionBuilder, buildSampleSession } from '@/lib/fixtures/session-builder';
+import type {
+  ElementDescriptor,
+  EventPayloadMap,
+  EventType,
+  NetRequestPayload,
+  Session,
+  SessionEvent,
+} from '@/lib/session/types';
+import { buildBundle, estimateForLevels, type ExportFile } from './bundle';
+import { buildPlaywrightRepro, type PlaywrightReproOptions } from './playwright';
+
+let seq = 0;
+
+/** An event at `t` ms, in the fixture's primary tab unless told otherwise. */
+function ev<T extends EventType>(
+  type: T,
+  t: number,
+  payload: EventPayloadMap[T],
+  tabId = 1,
+): SessionEvent {
+  seq += 1;
+  return {
+    id: `evt_${seq}`,
+    sessionId: 'sess_fixture',
+    t,
+    tabId,
+    type,
+    importance: 1,
+    payload,
+  } as SessionEvent;
+}
+
+function fixtureSession(overrides?: Partial<Session>): Session {
+  return new SessionBuilder(overrides).build().session;
+}
+
+function repro(
+  events: SessionEvent[],
+  opts: Partial<PlaywrightReproOptions> = {},
+  session: Session = fixtureSession(),
+): string {
+  const out = buildPlaywrightRepro(session, events, { level: 'L0', ...opts });
+  if (out === null) throw new Error('expected a repro test');
+  return out;
+}
+
+const button = (
+  text: string,
+  extra: Partial<ElementDescriptor> = {},
+): ElementDescriptor => ({
+  tag: 'button',
+  text,
+  ...extra,
+});
+
+const click = (
+  t: number,
+  descriptor: ElementDescriptor,
+  extra: { modifiers?: string[]; button?: number; tabId?: number } = {},
+) =>
+  ev(
+    'click',
+    t,
+    {
+      descriptor,
+      modifiers: extra.modifiers ?? [],
+      ...(extra.button !== undefined ? { button: extra.button } : {}),
+    },
+    extra.tabId,
+  );
+
+const input = (
+  t: number,
+  descriptor: ElementDescriptor,
+  value: string,
+  extra: { redacted?: boolean; inputType?: string } = {},
+) =>
+  ev('input', t, {
+    descriptor,
+    value,
+    redacted: extra.redacted ?? false,
+    ...(extra.inputType !== undefined ? { inputType: extra.inputType } : {}),
+  });
+
+const nav = (t: number, url: string, transitionType = 'link') =>
+  ev('nav', t, { url, transitionType });
+
+const request = (
+  t: number,
+  method: string,
+  url: string,
+  extra: Partial<NetRequestPayload> = {},
+) =>
+  ev('net-request', t, {
+    requestId: `req_${t}`,
+    method,
+    url,
+    requestHeaders: [],
+    responseHeaders: [],
+    resourceType: 'Fetch',
+    ...extra,
+  });
+
+/** The header comment as one line of prose. */
+function header(code: string): string {
+  return code
+    .split('\n')
+    .filter((line) => line.startsWith('//'))
+    .map((line) => line.slice(2).trim())
+    .join(' ');
+}
+
+/** Lines of the test body that do something, without their trailing timestamp. */
+function steps(code: string): string[] {
+  return code
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('await '))
+    .map((line) => line.replace(/ \/\/ \[.*$/, ''));
+}
+
+const FINAL_CHECK_MARKER = '// Run every check again at the end';
+
+/** The test up to the end-of-test re-check, where each step's own checks live. */
+function beforeFinalCheck(code: string): string {
+  const at = code.indexOf(FINAL_CHECK_MARKER);
+  return at === -1 ? code : code.slice(0, at);
+}
+
+/** Assertions the test runs at its checkpoints. A check in any kind of comment does not count. */
+function activeChecks(code: string): string[] {
+  const end = beforeFinalCheck(code).length;
+  const source = ts.createSourceFile(
+    'repro.spec.ts',
+    code,
+    ts.ScriptTarget.ES2022,
+    true,
+  );
+  const checks: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isExpressionStatement(node) && node.getStart(source) < end) {
+      const text = node.getText(source);
+      if (text.startsWith('expect(')) checks.push(text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return checks;
+}
+
+/** Assertions left commented out for the developer to opt into. */
+function commentedChecks(code: string): string[] {
+  return code
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('// expect('))
+    .map((line) => line.slice('// '.length));
+}
+
+function syntaxErrors(code: string): string[] {
+  const { diagnostics = [] } = ts.transpileModule(code, {
+    reportDiagnostics: true,
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+  });
+  return diagnostics.map((d) => ts.flattenDiagnosticMessageText(d.messageText, '\n'));
+}
+
+/** Type errors in `code` checked as a spec file against the installed @playwright/test. */
+function typeErrors(code: string): string[] {
+  const file = resolve('lib/export/__generated__.spec.ts');
+  const options: ts.CompilerOptions = {
+    strict: true,
+    noEmit: true,
+    skipLibCheck: true,
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    types: ['node'],
+  };
+  const host = ts.createCompilerHost(options);
+  const isGenerated = (name: string) => resolve(name) === file;
+  const { getSourceFile, fileExists, readFile } = host;
+  host.getSourceFile = (name, language, ...rest) =>
+    isGenerated(name)
+      ? ts.createSourceFile(name, code, language)
+      : getSourceFile.call(host, name, language, ...rest);
+  host.fileExists = (name) => isGenerated(name) || fileExists.call(host, name);
+  host.readFile = (name) => (isGenerated(name) ? code : readFile.call(host, name));
+  const program = ts.createProgram([file], options, host);
+  return ts
+    .getPreEmitDiagnostics(program)
+    .map((d) => ts.flattenDiagnosticMessageText(d.messageText, '\n'));
+}
+
+/**
+ * Runs the spec's network replay block against `har`, with stand-ins for the file
+ * system and Playwright, and returns the HAR entries it hands to `routeFromHAR`.
+ */
+async function replayedEntries(
+  spec: string,
+  har: string,
+  appOrigin: string,
+): Promise<{ request: { url: string } }[]> {
+  const start = spec.indexOf("if (process.env.REPRO_REPLAY_NETWORK === '1') {");
+  const end = spec.indexOf('\n  }\n', start) + '\n  }'.length;
+  const js = ts.transpileModule(
+    `module.exports = async ({ process, readFileSync, writeFileSync, path, test, page, appOrigin }) => {\n${spec.slice(start, end)}\n};`,
+    {
+      compilerOptions: {
+        module: ts.ModuleKind.CommonJS,
+        target: ts.ScriptTarget.ES2022,
+      },
+    },
+  ).outputText;
+  const mod: { exports?: (deps: object) => Promise<void> } = {};
+  new Function('module', js)(mod);
+  const written = new Map<string, string>();
+  const routed: string[] = [];
+  await mod.exports?.({
+    process: { env: { REPRO_REPLAY_NETWORK: '1' } },
+    readFileSync: (file: string) => {
+      expect(file).toBe('bundle/network.har');
+      return har;
+    },
+    writeFileSync: (file: string, text: string) => written.set(file, text),
+    path: { join: (...parts: string[]) => parts.join('/'), dirname: () => 'bundle' },
+    test: {
+      info: () => ({
+        file: 'bundle/repro.spec.ts',
+        outputPath: (name: string) => `out/${name}`,
+      }),
+    },
+    page: {
+      routeFromHAR: async (file: string, options: { notFound?: string }) => {
+        expect(options.notFound).toBe('fallback');
+        routed.push(file);
+      },
+    },
+    appOrigin,
+  });
+  expect(routed).toEqual(['out/replay.har']);
+  return JSON.parse(written.get('out/replay.har') ?? '{}').log.entries;
+}
+
+/** The `whole` HAR entry filter exactly as the generated spec defines it. */
+function harFilter(code: string): (entry: unknown) => boolean {
+  const start = code.indexOf('const whole = ');
+  const end = code.indexOf('));\n', start) + '));'.length;
+  const js = ts.transpileModule(`${code.slice(start, end)}\nmodule.exports = whole;`, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS },
+  }).outputText;
+  const mod = { exports: (_: unknown) => false };
+  new Function('module', js)(mod);
+  return mod.exports;
+}
+
+describe('buildPlaywrightRepro', () => {
+  it('returns null when nothing would be replayed', () => {
+    const onlyRequests = new SessionBuilder()
+      .net('GET', 'https://api.example.com/me')
+      .build();
+    expect(
+      buildPlaywrightRepro(onlyRequests.session, onlyRequests.events, { level: 'L0' }),
+    ).toBeNull();
+
+    const noPage = fixtureSession({ initialUrl: 'chrome://newtab/' });
+    expect(
+      buildPlaywrightRepro(noPage, [click(1000, button('Save'))], { level: 'L0' }),
+    ).toBeNull();
+  });
+
+  it('opens the start page and clicks by role and accessible name', () => {
+    const code = repro([click(1000, button('Save'))]);
+    expect(code).toContain(
+      "const baseURL = process.env.REPRO_BASE_URL ?? 'https://app.example.com';",
+    );
+    expect(steps(code)).toEqual([
+      "await page.goto(appUrl('/dashboard'));",
+      "await page.getByRole('button', { name: 'Save', exact: true }).click();",
+    ]);
+    expect(code).toContain("test('repro: Fixture session', async ({ page }) => {");
+  });
+
+  it('keeps replayed paths on the base URL', () => {
+    const code = repro([
+      nav(1000, 'https://app.example.com//assets/report', 'typed'),
+      click(2000, button('Open')),
+    ]);
+    expect(steps(code)[1]).toBe("await page.goto(appUrl('//assets/report'));");
+    const helper = code.split('\n').find((line) => line.startsWith('const appUrl'));
+    const appUrl = new Function(
+      'baseURL',
+      `${helper!.replace(': string', '')} return appUrl;`,
+    )('http://localhost:3000/app/') as (route: string) => string;
+    // A path starting with // must not be read as another host.
+    expect(appUrl('//assets/report')).toBe('http://localhost:3000/app//assets/report');
+    expect(appUrl('/cart?step=2#pay')).toBe(
+      'http://localhost:3000/app/cart?step=2#pay',
+    );
+  });
+
+  it('prefers a test id, then a stable id, over role and text', () => {
+    const code = repro([
+      click(1000, button('Save', { selector: '[data-testid="save-btn"]' })),
+      click(2000, button('Pay', { id: 'checkout', selector: '#checkout' })),
+      click(3000, button('Pay', { id: ':r5:', selector: '#\\:r5\\:' })),
+      click(4000, { tag: 'div', id: 'a.b', selector: '#a\\.b' }),
+      click(5000, button('Go', { selector: '[data-testid="\\31 23"]' })),
+    ]);
+    expect(steps(code).slice(1)).toEqual([
+      "await page.getByTestId('save-btn').click();",
+      "await page.locator('#checkout').click();",
+      // React useId values change on every load, so they are not used.
+      "await page.getByRole('button', { name: 'Pay', exact: true }).click();",
+      'await page.locator(\'[id="a.b"]\').click();',
+      // CSS escapes in the recorded selector are undone.
+      "await page.getByTestId('123').click();",
+    ]);
+  });
+
+  it('takes element details the export level dropped from the full recording', () => {
+    const full = click(1000, {
+      tag: 'input',
+      name: 'q',
+      selector: 'input[name="q"]',
+      text: 'Search',
+    });
+    const trimmed = {
+      ...full,
+      payload: { modifiers: [], descriptor: { tag: 'input', text: 'Search' } },
+    } as SessionEvent;
+    const code = repro([trimmed], { level: 'L3', fullEvents: [full] });
+    expect(steps(code)[1]).toBe('await page.locator(\'input[name="q"]\').click();');
+    expect(header(code)).not.toContain('Exported at L3');
+
+    const alone = repro([trimmed], { level: 'L3' });
+    expect(steps(alone)[1]).toBe("await page.locator('input').click();");
+    expect(header(alone)).toContain('Exported at L3 (minimal)');
+  });
+
+  it('falls back to label, field name, text, the CSS path, then the tag', () => {
+    const longText = 'x'.repeat(80);
+    const code = repro([
+      input(1000, { tag: 'input', ariaLabel: 'Email' }, 'a@example.com'),
+      input(2000, { tag: 'input', name: 'q' }, 'shoes'),
+      click(3000, { tag: 'span', text: 'Delete', selector: 'span.icon' }),
+      click(4000, { tag: 'div', text: longText, selector: 'div.card:nth-of-type(2)' }),
+      click(5000, { tag: 'a', text: longText }),
+      click(6000, { tag: 'input' }),
+    ]);
+    expect(steps(code).slice(1)).toEqual([
+      "await page.getByLabel('Email', { exact: true }).fill('a@example.com');",
+      "await page.locator('input[name=\"q\"]').fill('shoes');",
+      "await page.getByText('Delete', { exact: true }).click();",
+      "await page.locator('div.card:nth-of-type(2)').click();",
+      // Text cut at the capture cap is matched as a substring.
+      `await page.getByRole('link', { name: '${longText}' }).click();`,
+      "await page.locator('input').click();",
+    ]);
+    expect(code).toContain(
+      "await page.locator('input').click(); // [00:06] weak locator, check it",
+    );
+    expect(header(code)).toContain(
+      '1 step marked "weak locator" had only the tag name to go on.',
+    );
+  });
+
+  it('keeps click modifiers and mouse buttons', () => {
+    const code = repro([
+      click(1000, button('Open'), { modifiers: ['ctrl', 'shift'] }),
+      click(2000, button('Menu'), { button: 2 }),
+      click(3000, button('Tab'), { button: 1 }),
+    ]);
+    expect(steps(code).slice(1)).toEqual([
+      "await page.getByRole('button', { name: 'Open', exact: true }).click({ modifiers: ['Control', 'Shift'] });",
+      "await page.getByRole('button', { name: 'Menu', exact: true }).click({ button: 'right' });",
+      "await page.getByRole('button', { name: 'Tab', exact: true }).click({ button: 'middle' });",
+    ]);
+  });
+
+  it('orders same-millisecond events by cause and effect', () => {
+    // Storage returns events that share a millisecond in any order.
+    const code = repro([
+      ev('key', 1000, {
+        key: 'Enter',
+        modifiers: [],
+        descriptor: { tag: 'input', id: 'new-todo' },
+      }),
+      input(1000, { tag: 'input', id: 'new-todo' }, 'buy milk'),
+      ev('error', 2000, {
+        message: 'TypeError: list is undefined',
+        origin: 'exception',
+      }),
+      click(2000, button('Clear completed')),
+    ]);
+    const body = code.split('\n').map((line) => line.replace(/ \/\/ \[.*$/, '').trim());
+    const at = (line: string) => body.indexOf(line);
+    expect(at("await page.locator('#new-todo').fill('buy milk');")).toBeLessThan(
+      at("await page.locator('#new-todo').press('Enter');"),
+    );
+    // The check must come after the click that caused the error, or it passes too early.
+    expect(
+      at(
+        "await page.getByRole('button', { name: 'Clear completed', exact: true }).click();",
+      ),
+    ).toBeLessThan(
+      at(
+        "expect(pageErrors).not.toContainEqual(expect.stringContaining('list is undefined'));",
+      ),
+    );
+  });
+
+  it('drops the repeat a field logs when it loses focus', () => {
+    const user = { tag: 'input', id: 'f-user' };
+    const todo = { tag: 'input', id: 'new-todo' };
+    const code = repro([
+      input(1000, user, 'ada'),
+      input(2000, { tag: 'input', id: 'f-email' }, 'ada@example.com'),
+      // The change event when focus left #f-user.
+      input(2000, user, 'ada'),
+      input(3000, todo, 'buy milk'),
+      ev('key', 3000, { key: 'Enter', modifiers: [], descriptor: todo }),
+      // The page cleared the field on Enter and the same text was typed again.
+      input(4000, todo, 'buy milk'),
+    ]);
+    expect(steps(code).slice(1)).toEqual([
+      "await page.locator('#f-user').fill('ada');",
+      "await page.locator('#f-email').fill('ada@example.com');",
+      "await page.locator('#new-todo').fill('buy milk');",
+      "await page.locator('#new-todo').press('Enter');",
+      "await page.locator('#new-todo').fill('buy milk');",
+    ]);
+  });
+
+  it('fills each edit once, with its final value', () => {
+    const search = { tag: 'input', name: 'q' };
+    const code = repro([
+      input(1000, search, 'he'),
+      input(2000, search, 'hello'),
+      click(3000, button('Search')),
+      input(4000, search, 'hello world'),
+    ]);
+    expect(steps(code).slice(1)).toEqual([
+      "await page.locator('input[name=\"q\"]').fill('hello');",
+      "await page.getByRole('button', { name: 'Search', exact: true }).click();",
+      "await page.locator('input[name=\"q\"]').fill('hello world');",
+    ]);
+  });
+
+  it('reads redacted values from the environment and never writes them', () => {
+    const code = repro([
+      // The recorder keeps a field's placeholder as its text.
+      input(
+        1000,
+        { tag: 'input', id: 'f-pass', name: 'password', text: '••••••••' },
+        '«redacted»',
+        {
+          redacted: true,
+          inputType: 'password',
+        },
+      ),
+      input(2000, { tag: 'input', name: 'card[number]' }, '«redacted»', {
+        redacted: true,
+      }),
+    ]);
+    expect(code).toContain('//   REPRO_PASSWORD: input #f-pass on the app');
+    expect(code).toContain(
+      '//   REPRO_CARD_NUMBER: input named "card[number]" on the app',
+    );
+    expect(code).not.toContain('«redacted»');
+    // Each secret goes into the field whose own page was just checked.
+    const body = code.split('\n').map((line) => line.replace(/ \/\/ \[.*$/, '').trim());
+    const fields: [string, string][] = [
+      ["page.locator('#f-pass')", 'REPRO_PASSWORD'],
+      ['page.locator(\'input[name="card[number]"]\')', 'REPRO_CARD_NUMBER'],
+    ];
+    for (const [locator, env] of fields) {
+      const start = body.indexOf(`const field = (await ${locator}.elementHandle())!;`);
+      expect(body.slice(start - 1, start + 4)).toEqual([
+        '{',
+        `const field = (await ${locator}.elementHandle())!;`,
+        `expect(await field.evaluate(() => location.origin), '${env} is only typed into the recorded site').toBe(appOrigin);`,
+        `await field.fill(process.env.${env} ?? '');`,
+        '}',
+      ]);
+    }
+  });
+
+  it('leaves out a secret typed before the test has a page to check', () => {
+    const session = fixtureSession({ initialUrl: 'chrome://newtab/' });
+    const code =
+      buildPlaywrightRepro(
+        session,
+        [
+          input(1000, { tag: 'input', name: 'password' }, '«redacted»', {
+            redacted: true,
+            inputType: 'password',
+          }),
+          nav(2000, 'https://app.example.com/login', 'typed'),
+          click(3000, button('Sign in')),
+        ],
+        { level: 'L0' },
+      ) ?? '';
+    expect(code).toContain(
+      'A redacted value typed here is left out: no page is open yet to check its site.',
+    );
+    expect(code).not.toContain('REPRO_PASSWORD');
+    expect(steps(code)).toEqual([
+      "await page.goto(appUrl('/login'));",
+      "await page.getByRole('button', { name: 'Sign in', exact: true }).click();",
+    ]);
+  });
+
+  it("never gives a secret field one of the test's own variables", () => {
+    const code = repro([
+      input(1000, { tag: 'input', name: 'base_url' }, '«redacted»', { redacted: true }),
+      input(2000, { tag: 'input', name: 'replay_network' }, '«redacted»', {
+        redacted: true,
+      }),
+    ]);
+    expect(code).toContain("await field.fill(process.env.REPRO_BASE_URL_2 ?? '');");
+    expect(code).toContain(
+      "await field.fill(process.env.REPRO_REPLAY_NETWORK_2 ?? '');",
+    );
+    expect(code).not.toContain("fill(process.env.REPRO_BASE_URL ?? '')");
+  });
+
+  it('gives each site its own variable for a secret field', () => {
+    const pass = { tag: 'input', id: 'password' };
+    const code = repro([
+      input(1000, pass, '«redacted»', { redacted: true, inputType: 'password' }),
+      click(2000, button('Sign in with SSO')),
+      nav(3000, 'https://auth.example.org/login'),
+      input(4000, pass, '«redacted»', { redacted: true, inputType: 'password' }),
+    ]);
+    // Same locator on two sites: the app's password must never reach the other site.
+    expect(code).toContain('//   REPRO_PASSWORD: input #password on the app');
+    expect(code).toContain(
+      '//   REPRO_PASSWORD_2: input #password on https://auth.example.org',
+    );
+    expect(steps(code).filter((line) => line.startsWith('await field.'))).toEqual([
+      "await field.fill(process.env.REPRO_PASSWORD ?? '');",
+      "await field.fill(process.env.REPRO_PASSWORD_2 ?? '');",
+    ]);
+  });
+
+  it('checks the site again before a secret typed after a reload', () => {
+    const pass = { tag: 'input', id: 'password' };
+    const code = repro([
+      input(1000, pass, '«redacted»', { redacted: true, inputType: 'password' }),
+      click(2000, button('Sign in')),
+      nav(3000, 'https://app.example.com/dashboard', 'reload'),
+      input(4000, pass, '«redacted»', { redacted: true, inputType: 'password' }),
+    ]);
+    const check =
+      "expect(await field.evaluate(() => location.origin), 'REPRO_PASSWORD is only typed into the recorded site').toBe(appOrigin);";
+    expect(activeChecks(code)).toEqual([check, check]);
+  });
+
+  it('types a secret only on the site where it was recorded', () => {
+    const code = repro([
+      click(1000, button('Sign in')),
+      nav(2000, 'https://auth.example.org/login'),
+      input(3000, { tag: 'input', id: 'password' }, '«redacted»', {
+        redacted: true,
+        inputType: 'password',
+      }),
+    ]);
+    const body = code.split('\n').map((line) => line.replace(/ \/\/ \[.*$/, '').trim());
+    const start = body.indexOf(
+      "const field = (await page.locator('#password').elementHandle())!;",
+    );
+    expect(body.slice(start + 1, start + 3)).toEqual([
+      "expect(await field.evaluate(() => location.origin), 'REPRO_PASSWORD is only typed into the recorded site').toBe('https://auth.example.org');",
+      "await field.fill(process.env.REPRO_PASSWORD ?? '');",
+    ]);
+  });
+
+  it('selects options and does not toggle a checkbox twice', () => {
+    const remember = { tag: 'input', name: 'remember' };
+    const code = repro([
+      input(1000, { tag: 'select', name: 'country' }, 'de', { inputType: 'select' }),
+      // A label click is recorded as two clicks: the label, then the browser's
+      // own click on its checkbox, followed by the change.
+      click(2000, { tag: 'label', text: 'Remember me' }),
+      click(2003, remember),
+      input(2800, remember, 'on', { inputType: 'checkbox' }),
+      input(9000, { tag: 'input', name: 'terms' }, 'on', { inputType: 'checkbox' }),
+      input(10000, { tag: 'input', name: 'plan' }, 'pro', { inputType: 'radio' }),
+    ]);
+    expect(steps(code).slice(1)).toEqual([
+      "await page.locator('select[name=\"country\"]').selectOption('de');",
+      "await page.getByText('Remember me', { exact: true }).click();",
+      'await page.locator(\'input[name="terms"]\').click();',
+      'await page.locator(\'input[name="plan"]\').check();',
+    ]);
+  });
+
+  it('replays a click on text inside a label once, not twice', () => {
+    const accept = { tag: 'input', name: 'accept' };
+    const code = repro([
+      // Clicking a span inside a label: the span, then the browser's own click on the
+      // label's checkbox, followed by the change.
+      click(2000, { tag: 'span', text: 'I accept the terms' }),
+      click(2002, accept),
+      input(2800, accept, 'on', { inputType: 'checkbox' }),
+    ]);
+    expect(steps(code).slice(1)).toEqual([
+      "await page.getByText('I accept the terms', { exact: true }).click();",
+    ]);
+  });
+
+  it('does not let a click on another element hide a checkbox change', () => {
+    const code = repro([
+      click(1000, button('Save')),
+      // Toggled by a key the recorder does not capture, such as a bare Space.
+      input(1500, { tag: 'input', name: 'newsletter' }, 'on', {
+        inputType: 'checkbox',
+      }),
+    ]);
+    expect(steps(code).slice(1)).toEqual([
+      "await page.getByRole('button', { name: 'Save', exact: true }).click();",
+      'await page.locator(\'input[name="newsletter"]\').click();',
+    ]);
+  });
+
+  it('leaves file choices to the developer', () => {
+    const code = repro([
+      click(1000, button('Upload')),
+      input(2000, { tag: 'input', id: 'f-file' }, 'C:\\fakepath\\contacts.csv', {
+        inputType: 'file',
+      }),
+    ]);
+    expect(code).toContain(
+      "// [00:02] Chose a file for page.locator('#f-file'). Not replayed: call setInputFiles on it with your own file.",
+    );
+    expect(code).not.toContain('fakepath');
+    expect(header(code)).toContain(
+      'Not replayed: 1 file upload. Comments mark where they happened.',
+    );
+  });
+
+  it('presses keys with Playwright key names', () => {
+    const code = repro([
+      ev('key', 1000, { key: 'Ctrl+S', modifiers: ['ctrl'] }),
+      ev('key', 2000, { key: 'Ctrl+Shift+K', modifiers: ['ctrl', 'shift'] }),
+      ev('key', 3000, {
+        key: 'Enter',
+        modifiers: [],
+        descriptor: { tag: 'input', name: 'q' },
+      }),
+      ev('key', 4000, { key: 'Escape', modifiers: [], descriptor: { tag: 'body' } }),
+    ]);
+    expect(steps(code).slice(1)).toEqual([
+      "await page.keyboard.press('Control+s');",
+      "await page.keyboard.press('Control+Shift+K');",
+      "await page.locator('input[name=\"q\"]').press('Enter');",
+      "await page.keyboard.press('Escape');",
+    ]);
+  });
+
+  it('follows navigations, reloads and route changes', () => {
+    const code = repro([
+      nav(500, 'https://app.example.com/dashboard', 'reload'),
+      nav(1000, 'https://app.example.com/settings', 'typed'),
+      click(2000, { tag: 'a', text: 'Contacts' }),
+      nav(3000, 'https://app.example.com/contacts?page=2'),
+      click(4000, button('Refresh')),
+      nav(5000, 'https://app.example.com/contacts?page=2', 'reload'),
+      click(6000, button('Sign in')),
+      nav(7000, 'https://auth.example.org/login'),
+      ev('spa-route', 8000, {
+        url: 'https://auth.example.org/#/mfa',
+        method: 'pushState',
+      }),
+    ]);
+    expect(steps(code)).toEqual([
+      "await page.goto(appUrl('/dashboard'));",
+      // The reload right after opening the page is skipped.
+      "await page.goto(appUrl('/settings'));",
+      "await page.getByRole('link', { name: 'Contacts', exact: true }).click();",
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/contacts');",
+      "await page.getByRole('button', { name: 'Refresh', exact: true }).click();",
+      'await page.reload();',
+      "await page.getByRole('button', { name: 'Sign in', exact: true }).click();",
+      "await page.waitForURL((url) => url.origin === 'https://auth.example.org' && url.pathname === '/login');",
+      "await page.waitForURL((url) => url.origin === 'https://auth.example.org' && url.pathname === '/' && url.hash === '#/mfa');",
+    ]);
+  });
+
+  it('presses Back after a page interaction unless the page went back itself', () => {
+    const code = repro([
+      click(1000, { tag: 'a', text: 'Orders' }),
+      nav(2000, 'https://app.example.com/orders'),
+      input(3000, { tag: 'input', name: 'q' }, 'boots'),
+      // The browser's Back button, three seconds after typing.
+      nav(6000, 'https://app.example.com/dashboard'),
+      click(7000, { tag: 'a', text: 'Orders' }),
+      nav(8000, 'https://app.example.com/orders'),
+      click(9000, button('Cancel')),
+      // The page called history.back() from the Cancel button.
+      ev('spa-route', 9050, {
+        url: 'https://app.example.com/dashboard',
+        method: 'pushState',
+      }),
+    ]);
+    expect(steps(code).slice(1)).toEqual([
+      "await page.getByRole('link', { name: 'Orders', exact: true }).click();",
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/orders');",
+      "await page.locator('input[name=\"q\"]').fill('boots');",
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/dashboard', { timeout: 3000 }).catch(() => page.goBack());",
+      "await page.getByRole('link', { name: 'Orders', exact: true }).click();",
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/orders');",
+      "await page.getByRole('button', { name: 'Cancel', exact: true }).click();",
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/dashboard', { timeout: 600 }).catch(() => page.goBack());",
+    ]);
+    expect(code).toContain(
+      '// [00:06] Back to /dashboard, by the page itself or the browser button.',
+    );
+  });
+
+  it('waits for the app itself, not an outside page with the same path', () => {
+    const code = repro([
+      click(1000, button('Sign in')),
+      nav(2000, 'https://auth.example.org/callback'),
+      click(3000, button('Continue')),
+      nav(4000, 'https://app.example.com/callback'),
+    ]);
+    expect(steps(code).slice(-3)).toEqual([
+      "await page.waitForURL((url) => url.origin === 'https://auth.example.org' && url.pathname === '/callback');",
+      "await page.getByRole('button', { name: 'Continue', exact: true }).click();",
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/callback');",
+    ]);
+  });
+
+  it("trusts Chrome's Back and Forward marks when the recording has them", () => {
+    const linkNav = (t: number, url: string, qualifiers: string[] = []) =>
+      ev('nav', t, { url, transitionType: 'link', transitionQualifiers: qualifiers });
+    const code = repro([
+      click(1000, { tag: 'a', text: 'Orders' }),
+      linkNav(2000, 'https://app.example.com/orders'),
+      click(3000, button('Back to list')),
+      // The button pushed the previous URL as a new entry; it did not go back.
+      ev('spa-route', 3050, {
+        url: 'https://app.example.com/dashboard',
+        method: 'pushState',
+        transitionQualifiers: [],
+      }),
+      // Then the browser's Back button.
+      ev('spa-route', 5000, {
+        url: 'https://app.example.com/orders',
+        method: 'popstate',
+        transitionQualifiers: ['forward_back'],
+      }),
+    ]);
+    expect(steps(code).slice(1)).toEqual([
+      "await page.getByRole('link', { name: 'Orders', exact: true }).click();",
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/orders');",
+      "await page.getByRole('button', { name: 'Back to list', exact: true }).click();",
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/dashboard');",
+      'await page.goBack();',
+    ]);
+    expect(code).not.toContain('goForward');
+
+    // A marked full-page Back after typing still lets the page go back by itself first.
+    const typed = repro([
+      click(1000, { tag: 'a', text: 'Orders' }),
+      linkNav(2000, 'https://app.example.com/orders'),
+      input(3000, { tag: 'input', name: 'q' }, 'boots'),
+      linkNav(6000, 'https://app.example.com/dashboard', ['forward_back']),
+    ]);
+    expect(steps(typed).at(-1)).toBe(
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/dashboard', { timeout: 3000 }).catch(() => page.goBack());",
+    );
+  });
+
+  it('does not mistake a hash change Chrome did not mark for Back', () => {
+    const code = repro([
+      nav(1000, 'https://app.example.com/docs#intro', 'typed'),
+      click(2000, { tag: 'a', text: 'Setup' }),
+      ev('spa-route', 2100, {
+        url: 'https://app.example.com/docs#setup',
+        method: 'replaceState',
+        transitionQualifiers: [],
+      }),
+      // The page swapped its hash back without going back in history.
+      ev('spa-route', 3000, {
+        url: 'https://app.example.com/docs#intro',
+        method: 'replaceState',
+        transitionQualifiers: [],
+      }),
+    ]);
+    expect(steps(code).slice(-1)).toEqual([
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/docs' && url.hash === '#intro');",
+    ]);
+    expect(code).not.toContain('goBack');
+  });
+
+  it('replays Back between hash entries, marked or from an older recording', () => {
+    const hashBack = (qualifiers?: { link: string[]; back: string[] }) =>
+      repro([
+        nav(1000, 'https://app.example.com/docs#intro', 'typed'),
+        click(2000, { tag: 'a', text: 'Setup' }),
+        // A fragment change from a link adds a history entry.
+        ev('spa-route', 2100, {
+          url: 'https://app.example.com/docs#setup',
+          method: 'replaceState',
+          ...(qualifiers && { transitionQualifiers: qualifiers.link }),
+        }),
+        // The browser's Back. Older recordings have no marks and call it replaceState.
+        ev('spa-route', 4000, {
+          url: 'https://app.example.com/docs#intro',
+          method: qualifiers ? 'popstate' : 'replaceState',
+          ...(qualifiers && { transitionQualifiers: qualifiers.back }),
+        }),
+      ]);
+    const expected = [
+      "await page.getByRole('link', { name: 'Setup', exact: true }).click();",
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/docs' && url.hash === '#setup');",
+      'await page.goBack();',
+    ];
+    expect(steps(hashBack({ link: [], back: ['forward_back'] })).slice(-3)).toEqual(
+      expected,
+    );
+    expect(steps(hashBack()).slice(-3)).toEqual(expected);
+  });
+
+  it('opens the page when Back or Forward lands on an entry it cannot place', () => {
+    const route = (
+      t: number,
+      url: string,
+      method: 'pushState' | 'replaceState' | 'popstate',
+      qualifiers: string[] = [],
+    ) => ev('spa-route', t, { url, method, transitionQualifiers: qualifiers });
+    // history.replaceState() reaches the recorder as pushState, so the test's history
+    // has an entry the browser's does not.
+    const replaced = repro([
+      click(1000, { tag: 'a', text: 'Orders' }),
+      route(1100, 'https://app.example.com/orders', 'pushState'),
+      route(1200, 'https://app.example.com/orders?tab=open', 'pushState'),
+      route(3000, 'https://app.example.com/dashboard', 'popstate', ['forward_back']),
+    ]);
+    expect(steps(replaced).at(-1)).toBe("await page.goto(appUrl('/dashboard'));");
+    expect(replaced).toContain('an entry the test cannot place in its history');
+
+    // Picked from the Back button's menu, two entries back.
+    const jumped = repro([
+      nav(1000, 'https://app.example.com/docs#intro', 'typed'),
+      click(2000, { tag: 'a', text: 'Setup' }),
+      route(2100, 'https://app.example.com/docs#setup', 'replaceState'),
+      click(3000, { tag: 'a', text: 'Deploy' }),
+      route(3100, 'https://app.example.com/docs#deploy', 'replaceState'),
+      route(5000, 'https://app.example.com/docs#intro', 'popstate', ['forward_back']),
+    ]);
+    expect(steps(jumped).at(-1)).toBe("await page.goto(appUrl('/docs#intro'));");
+    expect(jumped).not.toContain("url.hash === '#intro'");
+  });
+
+  it('waits for a query-only navigation to leave the old query', () => {
+    const code = repro([
+      nav(1000, 'https://app.example.com/contacts?page=1', 'typed'),
+      click(2000, button('Next')),
+      ev('spa-route', 2100, {
+        url: 'https://app.example.com/contacts?page=2&t=1764064800',
+        method: 'pushState',
+      }),
+    ]);
+    expect(steps(code).slice(2)).toEqual([
+      "await page.getByRole('button', { name: 'Next', exact: true }).click();",
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/contacts' && url.search !== '?page=1');",
+    ]);
+  });
+
+  it('replays the browser back and forward buttons', () => {
+    const code = repro([
+      click(1000, { tag: 'a', text: 'Orders' }),
+      nav(2000, 'https://app.example.com/orders'),
+      nav(3000, 'https://app.example.com/dashboard'),
+      ev('spa-route', 4000, {
+        url: 'https://app.example.com/orders',
+        method: 'popstate',
+      }),
+    ]);
+    expect(steps(code).slice(1)).toEqual([
+      "await page.getByRole('link', { name: 'Orders', exact: true }).click();",
+      "await page.waitForURL((url) => url.origin === appOrigin && url.pathname === '/orders');",
+      'await page.goBack();',
+      'await page.goForward();',
+    ]);
+  });
+
+  it('comments on steps in other tabs instead of replaying them', () => {
+    const code = repro([
+      click(1000, button('Open report')),
+      ev(
+        'tab-opened',
+        1500,
+        { url: 'https://app.example.com/report', openerTabId: 1 },
+        2,
+      ),
+      click(2000, button('Download'), { tabId: 2 }),
+      ev('tab-switch', 3000, { fromTabId: 2, toTabId: 1 }),
+      click(4000, button('Close')),
+    ]);
+    expect(steps(code).slice(1)).toEqual([
+      "await page.getByRole('button', { name: 'Open report', exact: true }).click();",
+      "await page.getByRole('button', { name: 'Close', exact: true }).click();",
+    ]);
+    expect(code).toContain(
+      '// [00:01] Opened tab 2 (https://app.example.com/report). Steps in other tabs are not replayed.',
+    );
+    expect(code).toContain(
+      '// [00:02] In tab 2: clicked button "Download". Not replayed, the test drives one tab.',
+    );
+    expect(code).toContain('// [00:03] Switched back to the recorded tab.');
+    expect(header(code)).toContain('Not replayed: 1 step in other tabs.');
+  });
+
+  it('checks a recorded exception right where it happened', () => {
+    const code = repro([
+      click(1000, button('Pay')),
+      ev('error', 1800, {
+        message:
+          "Uncaught TypeError: Cannot read properties of undefined (reading 'id')\n    at pay (app.js:1:2)",
+        origin: 'exception',
+      }),
+      click(3000, button('Retry')),
+    ]);
+    const body = code.split('\n').map((line) => line.trim());
+    const at = body.indexOf(
+      "expect(pageErrors).not.toContainEqual(expect.stringContaining('Cannot read properties of undefined (reading \\'id\\')'));",
+    );
+    expect(body.slice(at - 3, at + 2)).toEqual([
+      "await page.getByRole('button', { name: 'Pay', exact: true }).click(); // [00:01]",
+      "// [00:01] The recording hit an uncaught error here: Uncaught TypeError: Cannot read properties of undefined (reading 'id')",
+      // The error came 800 ms after the click; the check allows another 500 ms.
+      'await page.waitForTimeout(1300);',
+      body[at],
+      "await page.getByRole('button', { name: 'Retry', exact: true }).click(); // [00:03]",
+    ]);
+    expect(code).toContain(
+      "page.on('pageerror', (error) => pageErrors.push(String(error)));",
+    );
+    // The header claims only what the run can show.
+    expect(header(code)).toContain('but one after the test ends does not.');
+    expect(header(code)).toContain('not that the bug is fixed');
+    expect(header(code)).not.toContain('once it is fixed');
+  });
+
+  it('matches the part of an error message that survived redaction', () => {
+    const code = repro([
+      click(1000, button('Invite')),
+      ev('error', 1500, {
+        message: 'Error: No account for «redacted», cannot send the invite',
+        origin: 'exception',
+      }),
+    ]);
+    expect(activeChecks(code)).toEqual([
+      "expect(pageErrors).not.toContainEqual(expect.stringContaining(', cannot send the invite'));",
+    ]);
+  });
+
+  it('checks failing API calls, not missing images, aborts or expected client errors', () => {
+    const code = repro([
+      click(1000, button('Save')),
+      request(1200, 'POST', 'https://api.example.com/v1/orders?draft=1', {
+        status: 500,
+      }),
+      request(1300, 'GET', 'https://app.example.com/logo.png', {
+        status: 404,
+        resourceType: 'Image',
+      }),
+      request(1400, 'GET', 'https://api.example.com/v1/poll', {
+        failed: true,
+        failureReason: 'net::ERR_ABORTED',
+      }),
+      request(1500, 'GET', 'https://api.example.com/v1/me', { status: 401 }),
+      request(1600, 'GET', 'https://api.example.com/v1/cart', { status: 404 }),
+      ev('error', 1700, {
+        message: 'Cart not found',
+        origin: 'network',
+        linkedRequestId: 'req_1600',
+      }),
+      request(1800, 'GET', 'https://api.example.com/v1/stock', {
+        failed: true,
+        failureReason: 'net::ERR_CONNECTION_REFUSED',
+      }),
+    ]);
+    expect(activeChecks(code)).toEqual([
+      "expect(failedRequests).not.toContain('POST https://api.example.com/v1/orders 500');",
+      "expect(failedRequests).not.toContain('GET https://api.example.com/v1/cart 404');",
+      "expect(failedRequests).not.toContain('GET https://api.example.com/v1/stock failed');",
+    ]);
+    expect(commentedChecks(code)).toEqual([
+      "expect(failedRequests).not.toContain('GET https://api.example.com/v1/me 401');",
+    ]);
+    expect(code).not.toContain('logo.png');
+    expect(code).not.toContain('/v1/poll');
+    expect(code).toContain("page.on('requestfailed', (request) => {");
+    // Canceled requests are left out on replay too, as they are when generating.
+    expect(code).toContain(
+      "if (/ABORTED|cancel/i.test(request.failure()?.errorText ?? '')) return;",
+    );
+  });
+
+  it('checks an error again after each step that recorded it', () => {
+    const boom = {
+      message: 'TypeError: cart is undefined',
+      origin: 'exception' as const,
+    };
+    const cartCheck =
+      "expect(pageErrors).not.toContainEqual(expect.stringContaining('cart is undefined'));";
+    const code = repro([
+      click(1000, button('Add')),
+      ev('error', 1200, boom),
+      ev('error', 1300, boom),
+      click(3000, button('Checkout')),
+      ev('error', 3200, boom),
+    ]);
+    // One check after each step, so the Checkout one still fails if only Add gets fixed.
+    const flow = beforeFinalCheck(code)
+      .split('\n')
+      .map((line) => line.replace(/ \/\/ \[.*$/, '').trim())
+      .filter((line) => line.startsWith('await page.') || line.startsWith('expect('));
+    expect(flow.slice(1)).toEqual([
+      "await page.getByRole('button', { name: 'Add', exact: true }).click();",
+      'await page.waitForTimeout(700);',
+      cartCheck,
+      "await page.getByRole('button', { name: 'Checkout', exact: true }).click();",
+      'await page.waitForTimeout(700);',
+      cartCheck,
+    ]);
+  });
+
+  it('waits as long as a slow error took to appear, up to 30 seconds', () => {
+    const code = repro([
+      click(1000, button('Export')),
+      ev('error', 9000, {
+        message: 'TypeError: report is undefined',
+        origin: 'exception',
+      }),
+      click(10_000, button('Sync')),
+      ev('error', 50_000, { message: 'TypeError: sync failed', origin: 'exception' }),
+    ]);
+    const waits = beforeFinalCheck(code)
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('await page.waitForTimeout('));
+    expect(waits).toEqual([
+      'await page.waitForTimeout(8500);',
+      'await page.waitForTimeout(30000);',
+    ]);
+    expect(header(code)).toContain('(at most 30 seconds)');
+    // The test's own timeout leaves room for the waits.
+    expect(code).toContain('test.setTimeout(80000);');
+  });
+
+  it('runs every check again at the end, for errors that now come later', () => {
+    const code = repro([
+      click(1000, button('Pay')),
+      ev('error', 1200, {
+        message: 'TypeError: order is undefined',
+        origin: 'exception',
+      }),
+      request(1300, 'POST', 'https://app.example.com/v1/orders', { status: 500 }),
+      click(4000, button('Done')),
+    ]);
+    const tail = code
+      .slice(code.indexOf(FINAL_CHECK_MARKER))
+      .split('\n')
+      .map((l) => l.trim());
+    expect(tail.slice(1, 5)).toEqual([
+      'await page.waitForTimeout(1000);',
+      "expect(pageErrors).not.toContainEqual(expect.stringContaining('order is undefined'));",
+      "expect(failedRequests).not.toContain('POST /v1/orders 500');",
+      '});',
+    ]);
+    // No re-check block when nothing is checked.
+    expect(repro([click(1000, button('Save'))])).not.toContain(FINAL_CHECK_MARKER);
+  });
+
+  it('does not let a commented check stand in for a required one', () => {
+    const cartCheck =
+      "expect(failedRequests).not.toContain('GET https://api.example.com/v1/cart 404');";
+    const code = repro([
+      click(1000, button('Load cart')),
+      request(1500, 'GET', 'https://api.example.com/v1/cart', { status: 404 }),
+      click(2000, button('Retry')),
+      request(2500, 'GET', 'https://api.example.com/v1/cart', { status: 404 }),
+      ev('error', 2600, {
+        message: 'Cart not found',
+        origin: 'network',
+        linkedRequestId: 'req_2500',
+      }),
+    ]);
+    expect(commentedChecks(code)).toEqual([cartCheck]);
+    expect(activeChecks(code)).toEqual([cartCheck]);
+    // Nor does one inside a block comment.
+    const lines = code.split('\n');
+    const at = lines.findIndex((line) => line.trim() === cartCheck);
+    lines.splice(at, 1, '/*', lines[at] ?? '', '*/');
+    expect(activeChecks(lines.join('\n'))).toEqual([]);
+    // The required check belongs after Retry, the step that hit the linked failure.
+    const flow = beforeFinalCheck(code)
+      .split('\n')
+      .map((line) => line.replace(/ \/\/ \[.*$/, '').trim())
+      .filter((line) => /^(await page\.getByRole|\/\/ expect\(|expect\()/.test(line));
+    expect(flow).toEqual([
+      "await page.getByRole('button', { name: 'Load cart', exact: true }).click();",
+      `// ${cartCheck}`,
+      "await page.getByRole('button', { name: 'Retry', exact: true }).click();",
+      cartCheck,
+    ]);
+  });
+
+  it('keeps failures on other sites apart from the app', () => {
+    const code = repro([
+      click(1000, button('Pay')),
+      request(1200, 'POST', 'https://app.example.com/api/pay', { status: 500 }),
+      request(1300, 'POST', 'https://payments.example.net/api/pay', { status: 502 }),
+    ]);
+    expect(activeChecks(code)).toEqual([
+      "expect(failedRequests).not.toContain('POST /api/pay 500');",
+      "expect(failedRequests).not.toContain('POST https://payments.example.net/api/pay 502');",
+    ]);
+    // The collector maps the app to REPRO_BASE_URL the same way.
+    expect(code).toContain('const appOrigin = new URL(baseURL).origin;');
+    expect(code).toContain(
+      'return origin === appOrigin ? pathname : origin + pathname;',
+    );
+  });
+
+  it('leaves console errors as checks to opt into', () => {
+    const code = repro([
+      click(1000, button('Save')),
+      ev('error', 1500, { message: 'Failed to save draft', origin: 'console' }),
+      ev('error', 1600, {
+        message:
+          'Failed to load resource: the server responded with a status of 500 ()',
+        origin: 'log',
+      }),
+    ]);
+    expect(activeChecks(code)).toEqual([]);
+    expect(commentedChecks(code)).toEqual([
+      "expect(consoleErrors).not.toContainEqual(expect.stringContaining('Failed to save draft'));",
+    ]);
+    expect(code).not.toContain('Failed to load resource');
+    expect(code).toContain(
+      "if (message.type() === 'error') consoleErrors.push(message.text());",
+    );
+    expect(code).toContain('// No uncaught error or failing API call was recorded');
+  });
+
+  it('suggests an assertion when no error was recorded', () => {
+    const code = repro([click(1000, button('Save'))]);
+    expect(code).toContain('No uncaught error or failing API call was recorded');
+    expect(code).toContain("// await expect(page.getByText('Saved')).toBeVisible();");
+    expect(code).not.toContain('pageErrors');
+    expect(code).not.toContain('waitForTimeout');
+  });
+
+  it('offers HAR replay only when the recorded bodies are complete', () => {
+    const events = [
+      click(1000, button('Load')),
+      request(1100, 'GET', 'https://api.example.com/v1/items', {
+        status: 200,
+        responseBody: { present: true, text: '[]' },
+      }),
+    ];
+    const full = repro(events, { level: 'L0', harPath: 'network.har' });
+    expect(full).toContain("import { readFileSync, writeFileSync } from 'node:fs';");
+    expect(full).toContain("import path from 'node:path';");
+    expect(full).toContain("if (process.env.REPRO_REPLAY_NETWORK === '1') {");
+    expect(full).toContain(
+      "const file = path.join(path.dirname(test.info().file), 'network.har');",
+    );
+    expect(full).toContain('(entry: HarEntry) => apiCall(entry) && whole(entry),');
+    expect(full).toContain("await page.routeFromHAR(har, { notFound: 'fallback' });");
+    expect(full).toContain('// Leave it unset when checking a backend fix');
+
+    const standard = repro(events, { level: 'L1', harPath: 'network.har' });
+    expect(standard).not.toContain('routeFromHAR');
+    expect(header(standard)).toContain('network.har is not replayed');
+
+    // One cut or missing body no longer turns replay off; that entry goes to the server.
+    const partly = repro(
+      [
+        ...events,
+        request(1200, 'GET', 'https://api.example.com/v1/big', {
+          status: 200,
+          responseBody: { present: true, text: '[', truncated: true },
+        }),
+        request(1300, 'GET', 'https://api.example.com/v1/profile', { status: 200 }),
+      ],
+      { level: 'L0', harPath: 'network.har' },
+    );
+    expect(partly).toContain('routeFromHAR');
+
+    // The generated filter keeps exactly the entries recorded whole.
+    const whole = harFilter(full);
+    const entry = (
+      status: number,
+      content: object,
+      postData?: object,
+      method = 'GET',
+      redirectURL = '',
+    ) => ({
+      request: postData ? { method, postData } : { method },
+      response: { status, redirectURL, content },
+    });
+    expect(whole(entry(200, { text: '[]' }))).toBe(true);
+    expect(whole(entry(204, {}))).toBe(true);
+    expect(
+      whole(entry(302, {}, undefined, 'GET', 'https://app.example.com/home')),
+    ).toBe(true);
+    // A redirect without a target, or a 304 for a cache the test does not have, even
+    // when the response carried a Location header.
+    expect(whole(entry(302, {}))).toBe(false);
+    expect(whole(entry(304, {}))).toBe(false);
+    expect(
+      whole(entry(304, {}, undefined, 'GET', 'https://app.example.com/home')),
+    ).toBe(false);
+    expect(whole(entry(200, { text: '[', comment: 'partial' }))).toBe(false);
+    expect(whole(entry(200, {}))).toBe(false);
+    expect(whole(entry(200, { text: '{}' }, { comment: 'partial' }))).toBe(false);
+    expect(whole(entry(200, { text: '{}' }, { text: '{"q":1}' }, 'POST'))).toBe(true);
+    expect(whole(entry(200, { text: '{}' }, undefined, 'POST'))).toBe(false);
+
+    expect(repro(events)).not.toContain('network.har');
+  });
+
+  it('escapes recorded text into valid TypeScript', () => {
+    const hostile = "it's a \\ back`slash ${x} */ line\nbreak \u2028 sep";
+    const session = fixtureSession({ name: `Bug: ${hostile}` });
+    const code = repro(
+      [
+        click(1000, button(hostile, { selector: `[data-testid="${hostile}"]` })),
+        click(2000, { tag: 'div', text: hostile }),
+        input(3000, { tag: 'input', name: hostile }, hostile),
+        ev('note', 4000, { text: hostile }),
+        ev('error', 5000, {
+          message: `Uncaught Error: ${hostile}`,
+          origin: 'exception',
+        }),
+      ],
+      {},
+      session,
+    );
+    expect(syntaxErrors(code)).toEqual([]);
+    for (const line of code.split('\n')) {
+      expect(line).not.toMatch(/[\u2028\u2029\r]/);
+    }
+    // The replay must type exactly what was recorded, not just valid code.
+    const fill = steps(code).find((line) => line.includes('.fill('))!;
+    const literal = fill.slice(
+      fill.lastIndexOf('.fill(') + '.fill('.length,
+      fill.lastIndexOf(');'),
+    );
+    expect(new Function(`return ${literal};`)()).toBe(hostile);
+  });
+
+  it('type-checks against the Playwright test API', () => {
+    const { session, events } = buildSampleSession();
+    const extra = [
+      ev('key', 20_000, {
+        key: 'Ctrl+K',
+        modifiers: ['ctrl'],
+        descriptor: { tag: 'input', name: 'q' },
+      }),
+      ev('hover', 21_000, { descriptor: button('Help'), dwellMs: 600 }),
+      ev('scroll', 22_000, {
+        from: { x: 0, y: 0 },
+        to: { x: 0, y: 300 },
+        container: 'div.list',
+      }),
+      input(23_000, { tag: 'select', name: 'country' }, 'de', { inputType: 'select' }),
+      input(24_000, { tag: 'input', name: 'password' }, '«redacted»', {
+        redacted: true,
+      }),
+      input(30_000, { tag: 'input', name: 'terms' }, 'on', { inputType: 'checkbox' }),
+      ev('error', 31_000, { message: 'Failed to save', origin: 'console' }),
+      nav(32_000, 'https://app.example.com/contacts', 'reload'),
+    ];
+    const code = repro(
+      [...events, ...extra],
+      { level: 'L0', harPath: 'network.har' },
+      session,
+    );
+    expect(code).toContain('routeFromHAR');
+    expect(typeErrors(code)).toEqual([]);
+  }, 60_000);
+});
+
+describe('repro.spec.ts in the export bundle', () => {
+  function file(files: ExportFile[], path: string): string | undefined {
+    return files.find((f) => f.path === path)?.text;
+  }
+
+  it('is added next to the HAR and named in the report', async () => {
+    const { session, events, assets } = buildSampleSession();
+    const files = await buildBundle({ session, events, assets, level: 'L0' });
+    const spec = file(files, 'repro.spec.ts') ?? '';
+    expect(spec).toContain("import { test, expect } from '@playwright/test';");
+    expect(spec).toContain('routeFromHAR');
+    expect(file(files, 'report.md')).toContain('`repro.spec.ts`');
+    // The HAR the test reads ships in the same zip.
+    const harPath =
+      /path\.join\(path\.dirname\(test\.info\(\)\.file\), '([^']+)'\)/.exec(spec)?.[1];
+    expect(harPath).toBe('network.har');
+    expect(files.map((f) => f.path)).toContain(harPath);
+  });
+
+  it('follows the export level but keeps full locators', async () => {
+    const { session, events, assets } = buildSampleSession();
+    const files = await buildBundle({ session, events, assets, level: 'L3' });
+    const spec = file(files, 'repro.spec.ts') ?? '';
+    // L3 strips element details from the report, but the test still finds the field.
+    expect(spec).toContain(
+      "page.locator('input[name=\"file-name\"]').fill('contacts.csv')",
+    );
+    expect(header(spec)).not.toContain('Exported at L3');
+    expect(spec).not.toContain('routeFromHAR');
+  });
+
+  it('is counted in the size estimate for the report at every level', async () => {
+    const { session, events, assets } = new SessionBuilder()
+      .click('Save')
+      .error('TypeError: draft is undefined')
+      .build();
+    // With no assets the estimate renders exactly the report the bundle writes.
+    const estimates = estimateForLevels(events, [], session);
+    expect(estimates.map((e) => e.level)).toEqual(['L0', 'L1', 'L2', 'L3']);
+    for (const { level, approxBytes } of estimates) {
+      const files = await buildBundle({ session, events, assets, level });
+      const report = file(files, 'report.md') ?? '';
+      expect(report).toContain('`repro.spec.ts`');
+      // The file the report names ships at that level too.
+      expect(file(files, 'repro.spec.ts'), level).toContain('@playwright/test');
+      expect(approxBytes, level).toBe(new TextEncoder().encode(report).length);
+    }
+  });
+
+  it('replays only the API calls network.har recorded whole, on the replay server', async () => {
+    const { session, events, assets } = new SessionBuilder()
+      .click('Load')
+      .net('GET', 'https://app.example.com/api/items', { resBody: '[1,2]' })
+      .net('GET', 'https://app.example.com/api/report', { resBody: '{"rows":' })
+      .net('POST', 'https://app.example.com/api/search', {
+        reqBody: '{"q":"a"}',
+        resBody: '[1]',
+      })
+      .net('POST', 'https://app.example.com/api/save', { resBody: '{"ok":true}' })
+      .net('GET', 'https://app.example.com/assets/app.js', {
+        resBody: 'render()',
+        mime: 'application/javascript',
+      })
+      .net('GET', 'https://api.partner.com/v1/rates', { resBody: '{"eur":1}' })
+      .build();
+    const cut = events.find(
+      (e) => e.type === 'net-request' && e.payload.url.endsWith('/api/report'),
+    );
+    if (cut?.type !== 'net-request' || !cut.payload.responseBody)
+      throw new Error('no body');
+    cut.payload.responseBody.truncated = true;
+
+    const files = await buildBundle({ session, events, assets, level: 'L0' });
+    const har = JSON.parse(file(files, 'network.har') ?? '') as {
+      log: { entries: { request: { url: string } }[] };
+    };
+    expect(har.log.entries).toHaveLength(6);
+    // What the spec hands to routeFromHAR with REPRO_BASE_URL on another server: the
+    // cut response, the POST whose payload was not recorded and the page's script are
+    // left to the server, and the app's calls move to the replay server.
+    const replayed = await replayedEntries(
+      file(files, 'repro.spec.ts') ?? '',
+      file(files, 'network.har') ?? '',
+      'http://localhost:3000',
+    );
+    expect(replayed.map((e) => e.request.url)).toEqual([
+      'http://localhost:3000/api/items',
+      'http://localhost:3000/api/search',
+      'https://api.partner.com/v1/rates',
+    ]);
+  });
+
+  it('is left out when the session has nothing to replay', async () => {
+    const { session, events, assets } = new SessionBuilder()
+      .net('GET', 'https://api.example.com/me')
+      .build();
+    const files = await buildBundle({ session, events, assets, level: 'L0' });
+    expect(file(files, 'repro.spec.ts')).toBeUndefined();
+    expect(file(files, 'report.md')).not.toContain('repro.spec.ts');
+  });
+});

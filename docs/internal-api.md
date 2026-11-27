@@ -40,7 +40,7 @@ While a comment composer is open, speech belongs to it rather than to narration.
 
 [`lib/export/trimmer.ts`](../lib/export/trimmer.ts) applies deterministic cumulative levels to cloned events. It uses protected signals and error-linked request IDs to preserve relevant evidence. It does not call an AI provider.
 
-[`lib/export/bundle.ts`](../lib/export/bundle.ts) selects referenced assets, deduplicates bytes, assigns relative paths and rewrites exported asset references. [`lib/export/markdown.ts`](../lib/export/markdown.ts) renders the report and manifest. [`lib/export/zip.ts`](../lib/export/zip.ts) packages the files. [`lib/export/openapi.ts`](../lib/export/openapi.ts) infers an optional API description from untrimmed network events.
+[`lib/export/bundle.ts`](../lib/export/bundle.ts) selects referenced assets, deduplicates bytes, assigns relative paths and rewrites exported asset references. [`lib/export/markdown.ts`](../lib/export/markdown.ts) renders the report and manifest. [`lib/export/zip.ts`](../lib/export/zip.ts) packages the files. [`lib/export/openapi.ts`](../lib/export/openapi.ts) infers an optional API description from untrimmed network events. [`lib/export/playwright.ts`](../lib/export/playwright.ts) turns the trimmed interactions into `repro.spec.ts`, a Playwright test that replays the session and, when the recording hit errors, checks that they do not recur. A test without checks only replays, so its passing alone does not confirm a fix.
 
 [`lib/export/report-html.ts`](../lib/export/report-html.ts) renders the shareable HTML report. Markdown and captured content are untrusted; keep sanitization and escaping at rendering boundaries. [Report format](report-format.md) describes the artifacts and trimming levels.
 
