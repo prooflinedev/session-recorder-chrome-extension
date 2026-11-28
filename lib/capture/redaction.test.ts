@@ -498,4 +498,32 @@ describe('isSecretValue card edge cases', () => {
     expect(isSecretValue('4111.1111.1111.1111')).toBe(false);
     expect(isSecretValue('4111 1111 1111 111a')).toBe(false);
   });
+
+  it('accepts card numbers from each major network', () => {
+    expect(isSecretValue('2223003122003222')).toBe(true); // Mastercard 2-series
+    expect(isSecretValue('5105105105105100')).toBe(true); // Mastercard 51–55
+    expect(isSecretValue('371449635398431')).toBe(true); // Amex
+    expect(isSecretValue('36227206271667')).toBe(true); // Diners
+    expect(isSecretValue('3530111333300000')).toBe(true); // JCB
+    expect(isSecretValue('6011 1111 1111 1117')).toBe(true); // Discover, grouped
+    expect(isSecretValue('6200000000000005')).toBe(true); // UnionPay
+  });
+
+  it('leaves Luhn-valid timestamps and IDs without a card prefix alone', () => {
+    expect(isSecretValue('1694736000000')).toBe(false); // epoch ms, passes Luhn
+    expect(isSecretValue('1597449600000000')).toBe(false); // epoch µs, passes Luhn
+    expect(isSecretValue('1234567812345670')).toBe(false); // Luhn-valid, no IIN
+    expect(isSecretValue('2720999999999996')).toBe(true); // top of Mastercard 2-series
+    expect(isSecretValue('2721000000000004')).toBe(false); // just past it
+    expect(isSecretValue('2220999999999991')).toBe(false); // just below it
+  });
+
+  it('keeps Luhn-valid timestamps in bodies, forms and URLs', () => {
+    const json = JSON.stringify({ createdAt: '1694736000000', ts: '1597449600000000' });
+    expect(redactBody(json, 'application/json', EMPTY_RULES).redacted).toBe(false);
+    const form = 'timestamp=1694736000000&name=Jane';
+    expect(redactBody(form, 'application/x-www-form-urlencoded', EMPTY_RULES).text).toBe(form);
+    const url = 'https://x.com/a?timestamp=1694736000000&page=2';
+    expect(redactUrl(url, EMPTY_RULES)).toBe(url);
+  });
 });

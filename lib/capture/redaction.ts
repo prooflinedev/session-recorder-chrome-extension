@@ -82,6 +82,16 @@ function containsJwt(value: string): boolean {
 /** A whole value that is 13–19 digits, optionally grouped by spaces or dashes. */
 const CARD_VALUE_PATTERN = /^\d(?:[ -]?\d){12,18}$/;
 
+/**
+ * Issuer prefixes (IIN) of the major card networks: Visa 4, Mastercard 51–55
+ * and 2221–2720, Amex 34/37, Diners 300–305/36/38–39, JCB 3528–3589,
+ * Discover 6011/644–649/65, UnionPay 62. Luhn alone is not specific enough:
+ * about 1 in 10 epoch-ms or epoch-µs timestamps pass it, and those start with
+ * 1 in this era, which no card network uses.
+ */
+const CARD_IIN_PATTERN =
+  /^(?:4|5[1-5]|222[1-9]|22[3-9]\d|2[3-6]\d\d|27[01]\d|2720|3[47]|30[0-5]|3[689]|352[89]|35[3-8]\d|6011|64[4-9]|65|62)/;
+
 /** Luhn checksum, the check digit every payment card number carries. */
 function passesLuhn(digits: string): boolean {
   let sum = 0;
@@ -99,14 +109,15 @@ function passesLuhn(digits: string): boolean {
 /**
  * True if a string value is itself a secret, whatever key it sits under:
  * it contains a JWT or JWE, or it is a payment card number (13–19 digits
- * that pass the Luhn check). Key-based matching misses these when the key is
- * generic, e.g. `{"data": "eyJ…"}` or `{"number": "4111 1111 1111 1111"}`.
+ * with a card-network prefix that pass the Luhn check). Key-based matching
+ * misses these when the key is generic, e.g. `{"data": "eyJ…"}` or `{"number": "4111 1111 1111 1111"}`.
  */
 export function isSecretValue(value: string): boolean {
   if (containsJwt(value)) return true;
   const trimmed = value.trim();
   if (!CARD_VALUE_PATTERN.test(trimmed)) return false;
-  return passesLuhn(trimmed.replace(/[ -]/g, ''));
+  const digits = trimmed.replace(/[ -]/g, '');
+  return CARD_IIN_PATTERN.test(digits) && passesLuhn(digits);
 }
 
 /**
