@@ -600,6 +600,32 @@ describe('structural redaction matrix', () => {
     expect(form.text).toBe(`grant_type=authorization_code&code_verifier=${REDACTED}`);
   });
 
+  it('R1: keeps application state in bodies but masks OAuth state in URLs', () => {
+    const json = redactBody(
+      JSON.stringify({ state: 'CA', address: { state: 'NY' }, code: 'S3CR3T' }),
+      'application/json',
+      EMPTY_RULES,
+    );
+    expect(json.redacted).toBe(true);
+    expect(JSON.parse(json.text)).toEqual({
+      state: 'CA',
+      address: { state: 'NY' },
+      code: REDACTED,
+    });
+
+    const form = redactBody(
+      'state=CA&address=NY&code=S3CR3T',
+      'application/x-www-form-urlencoded',
+      EMPTY_RULES,
+    );
+    expect(form.text).toBe(`state=CA&address=NY&code=${REDACTED}`);
+
+    // `state` remains a credential in OAuth URLs, where it is a protocol field.
+    expect(redactUrl('https://idp/cb?state=st&code=c', EMPTY_RULES)).toBe(
+      `https://idp/cb?state=${REDACTED}&code=${REDACTED}`,
+    );
+  });
+
   it('F4: scrubs URL carriers in input values, file notes and string arrays', () => {
     const url = 'https://idp/cb?code=SECRET';
     const masked = `https://idp/cb?code=${REDACTED}`;

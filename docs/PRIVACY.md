@@ -40,7 +40,10 @@ explicitly publish the selected report to Proofline or your Cloudflare Pages pro
 
 Redaction is on by default. For supported structured capture fields, the extension
 masks authorization headers, token-like JSON/form fields, sensitive URL
-parameters, and password inputs. URL structure is also inspected before storage:
+parameters, and password inputs. A body key named `state` is kept by default
+because it usually holds application data such as a shipping address; add a
+custom body-key rule if your app sends OAuth state in request bodies. `state`
+is still masked as a sensitive URL parameter. URL structure is also inspected before storage:
 for captured URLs, redaction checks userinfo, fragments and nested URL or form
 carriers — including an encoded carrier that decodes to a form plus a fragment,
 and userinfo in a recognized nested URL even when it has no query. You can add

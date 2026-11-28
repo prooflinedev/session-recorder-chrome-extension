@@ -34,14 +34,23 @@ export const DEFAULT_KEY_PATTERN: RegExp =
   /token|secret|password|passwd|api[-_]?key|session|auth|credential|bearer/i;
 
 /**
- * ONE shared definition of sensitive names, used for URL params, form-body keys
- * and JSON keys. Anchoring matters: adding `code`, `sig` or `state` to the
- * unanchored DEFAULT_KEY_PATTERN would match benign names such as `postalCode`,
- * `design` and `statement`. DEFAULT_KEY_PATTERN itself is deliberately left
- * unchanged (including its accepted `token_type` false positive).
+ * Anchored sensitive names for URL parameters, including OAuth `state`.
+ * Anchoring matters: adding `code`, `sig` or `state` to the unanchored
+ * DEFAULT_KEY_PATTERN would match benign names such as `postalCode`, `design`
+ * and `statement`. DEFAULT_KEY_PATTERN itself is deliberately left unchanged
+ * (including its accepted `token_type` false positive).
  */
-const SENSITIVE_EXACT_NAMES: RegExp =
+const SENSITIVE_URL_EXACT_NAMES: RegExp =
   /^(?:code|state|nonce|assertion|ticket|sig|code_verifier|code_challenge|client_assertion|samlresponse|saml_response)$/i;
+
+/**
+ * The same names for body keys, minus `state`. In JSON and form bodies `state`
+ * is usually application data (a shipping address), not an OAuth credential;
+ * masking it there destroys the evidence the recording exists to preserve.
+ * Users can still mask it explicitly via `bodyKeyPatterns`.
+ */
+const SENSITIVE_PAYLOAD_EXACT_NAMES: RegExp =
+  /^(?:code|nonce|assertion|ticket|sig|code_verifier|code_challenge|client_assertion|samlresponse|saml_response)$/i;
 const SENSITIVE_COMPOUND_NAMES: RegExp =
   /^(?:[a-z0-9]+[._])?(?:access[._]?code|openid[._]?nonce|saml[._]?assertion|client[._]?assertion|saml[._]?response)$/i;
 
@@ -165,7 +174,7 @@ function safeDecode(s: string): string {
 export function buildKeyMatcher(rules: RedactionRules): (key: string) => boolean {
   const extra = compilePatterns(rules.bodyKeyPatterns);
   return (key: string): boolean =>
-    SENSITIVE_EXACT_NAMES.test(key) ||
+    SENSITIVE_PAYLOAD_EXACT_NAMES.test(key) ||
     SENSITIVE_COMPOUND_NAMES.test(key) ||
     DEFAULT_KEY_PATTERN.test(key) ||
     extra.some((re) => re.test(key));
@@ -175,7 +184,7 @@ export function buildKeyMatcher(rules: RedactionRules): (key: string) => boolean
 function buildUrlMatcher(rules: RedactionRules): (name: string) => boolean {
   const extra = compilePatterns(rules.urlParamPatterns);
   return (name: string): boolean =>
-    SENSITIVE_EXACT_NAMES.test(name) ||
+    SENSITIVE_URL_EXACT_NAMES.test(name) ||
     SENSITIVE_COMPOUND_NAMES.test(name) ||
     DEFAULT_KEY_PATTERN.test(name) ||
     extra.some((re) => re.test(name));
