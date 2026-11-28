@@ -355,3 +355,162 @@ describe('redactUrl', () => {
     expect(out).toBe(`https://x.com/p?api%5Fkey=${REDACTED}&z=1`);
   });
 });
+
+describe('redactUrl — credential carriers (issues #61, #83)', () => {
+  it('redacts Azure SAS signature params, keeps the rest of the SAS intact', () => {
+    const out = redactUrl(
+      'https://acct.blob.core.windows.net/c/file.txt?sv=2021-06-08&ss=b&srt=sco&sp=r&se=2026-01-01T00:00:00Z&sig=abcDEF123',
+      EMPTY_RULES,
+    );
+    expect(out).toBe(
+      `https://acct.blob.core.windows.net/c/file.txt?sv=2021-06-08&ss=b&srt=sco&sp=r&se=2026-01-01T00:00:00Z&sig=${REDACTED}`,
+    );
+  });
+
+  it('redacts bare key= API keys in URLs', () => {
+    const out = redactUrl(
+      'https://maps.googleapis.com/maps/api/geocode/json?address=paris&key=AIzaSySecret',
+      EMPTY_RULES,
+    );
+    expect(out).toBe(
+      `https://maps.googleapis.com/maps/api/geocode/json?address=paris&key=${REDACTED}`,
+    );
+  });
+
+  it('masks the password in user:password@ URLs, keeping the username', () => {
+    const out = redactUrl(
+      'https://deploy:hunter2@internal.example.com/logs?page=1',
+      EMPTY_RULES,
+    );
+    expect(out).toBe(
+      `https://deploy:${REDACTED}@internal.example.com/logs?page=1`,
+    );
+  });
+
+  it('masks userinfo passwords without a query string, and in scheme-less URLs', () => {
+    expect(redactUrl('https://u:p@example.com/a', EMPTY_RULES)).toBe(
+      `https://u:${REDACTED}@example.com/a`,
+    );
+    expect(redactUrl('//u:p@example.com/a?x=1', EMPTY_RULES)).toBe(
+      `//u:${REDACTED}@example.com/a?x=1`,
+    );
+  });
+
+  it('follows absolute nested URL carriers and redacts their secrets', () => {
+    const out = redactUrl(
+      'https://app.example.com/callback?redirect=https://inner.example.com/auth?token=sekret&next=/home',
+      EMPTY_RULES,
+    );
+    expect(out).toBe(
+      `https://app.example.com/callback?redirect=https://inner.example.com/auth?token=${REDACTED}&next=/home`,
+    );
+  });
+
+  it('follows scheme-less nested URL carriers', () => {
+    const out = redactUrl(
+      'https://app.example.com/go?next=//inner.example.com/a?session=abc&q=1',
+      EMPTY_RULES,
+    );
+    expect(out).toBe(
+      `https://app.example.com/go?next=//inner.example.com/a?session=${REDACTED}&q=1`,
+    );
+  });
+
+  it('follows percent-encoded nested carriers', () => {
+    const inner = 'https://inner.example.com/a?api_key=topsecret';
+    const out = redactUrl(
+      `https://app.example.com/go?return=${encodeURIComponent(inner)}`,
+      EMPTY_RULES,
+    );
+    expect(out).toBe(
+      `https://app.example.com/go?return=https://inner.example.com/a?api_key=${REDACTED}`,
+    );
+  });
+
+  it('redacts through carrier chains up to the depth cap', () => {
+    const l2 = 'https://l2.example.com/deep?token=found';
+    const l1 = 'https://l1.example.com/mid?next=' + encodeURIComponent(l2);
+    const l0 = 'https://l0.example.com/start?go=' + encodeURIComponent(l1);
+    const out = redactUrl(l0, EMPTY_RULES);
+    expect(out).toBe(
+      `https://l0.example.com/start?go=https://l1.example.com/mid?next=https://l2.example.com/deep?token=${REDACTED}`,
+    );
+  });
+
+  it('bounds recursion on pathologically nested carriers and fails closed', () => {
+    let u = 'https://deep.example.com/end?token=toodeep';
+    for (let i = 0; i < 10; i += 1) {
+      u = 'https://app.example.com/go?next=' + encodeURIComponent(u);
+    }
+    const started = Date.now();
+    const out = redactUrl(u, EMPTY_RULES);
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(typeof out).toBe('string');
+    // Past the depth cap the carrier is masked whole: the deep secret must not
+    // survive, and the chain must not recurse forever.
+    expect(out).toContain(REDACTED);
+    expect(out).not.toContain('toodeep');
+  });
+
+  it('masks deep carriers in raw (unencoded) nesting past the depth cap', () => {
+    const u =
+      'https://a.example.com/0?go=https://b.example.com/1?go=https://c.example.com/2?go=https://d.example.com/3?go=https://e.example.com/4?token=buried';
+    const out = redactUrl(u, EMPTY_RULES);
+    expect(out).not.toContain('buried');
+    expect(out).toContain(REDACTED);
+  });
+
+  it('redacts secrets at every level within the depth cap', () => {
+    const l3 = 'https://l3.example.com/deep?session=within';
+    const l2 = 'https://l2.example.com/mid?next=' + encodeURIComponent(l3);
+    const l1 = 'https://l1.example.com/start?go=' + encodeURIComponent(l2) + '&token=top';
+    const out = redactUrl(l1, EMPTY_RULES);
+    expect(out).toBe(
+      `https://l1.example.com/start?go=https://l2.example.com/mid?next=https://l3.example.com/deep?session=${REDACTED}&token=${REDACTED}`,
+    );
+    expect(out).not.toContain('within');
+  });
+
+  it('leaves ordinary non-URL param values alone', () => {
+    const url = 'https://x.com/p?next=home&return=/dashboard';
+    expect(redactUrl(url, EMPTY_RULES)).toBe(url);
+  });
+});
+
+describe('redactHeaders — URL-valued headers (issue #63)', () => {
+  it('masks secret query params inside Location, preserving the URL', () => {
+    const out = redactHeaders(
+      [
+        {
+          name: 'Location',
+          value: 'https://app.example.com/oauth/callback?code=abc&token=xyz&state=ok',
+        },
+      ],
+      EMPTY_RULES,
+    );
+    expect(out).toEqual([
+      {
+        name: 'Location',
+        value: `https://app.example.com/oauth/callback?code=abc&token=${REDACTED}&state=ok`,
+      },
+    ]);
+  });
+
+  it('masks secret query params inside Referer', () => {
+    const out = redactHeaders(
+      [{ name: 'referer', value: 'https://docs.example.com/p?api_key=k1&page=2' }],
+      EMPTY_RULES,
+    );
+    expect(out).toEqual([
+      { name: 'referer', value: `https://docs.example.com/p?api_key=${REDACTED}&page=2` },
+    ]);
+  });
+
+  it('leaves non-sensitive Location and Referer values unchanged', () => {
+    const headers = [
+      { name: 'Location', value: 'https://app.example.com/welcome?page=1' },
+      { name: 'Referer', value: 'https://app.example.com/start' },
+    ];
+    expect(redactHeaders(headers, EMPTY_RULES)).toEqual(headers);
+  });
+});

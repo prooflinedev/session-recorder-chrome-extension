@@ -34,6 +34,29 @@ export const DEFAULT_KEY_PATTERN: RegExp =
   /token|secret|password|passwd|api[-_]?key|session|auth|credential|bearer/i;
 
 /**
+ * Credential carriers that are common as URL query params but too generic to
+ * redact in request/response bodies: Azure SAS `sig`, `signature`, and bare
+ * `key=` API keys (e.g. Google Cloud). Applied to URL params only.
+ */
+export const DEFAULT_URL_KEY_PATTERN: RegExp = /^(?:sig|signature|key)$/i;
+
+/**
+ * Headers whose value is a URL. These are not blocklisted - the URL itself is
+ * useful evidence - but secret-looking query params inside them get the same
+ * masking as the request line (redirect `Location` and `Referer` headers used
+ * to keep URL secrets that redaction masked everywhere else).
+ */
+export const URL_VALUE_HEADERS: string[] = ['location', 'referer'];
+
+/**
+ * How many levels of URL-valued query params (redirect/carrier chains, e.g.
+ * `?next=https://inner/?token=...`) redactUrl follows. Bounded so deeply or
+ * cyclically encoded carriers cannot recurse without limit; a carrier found
+ * past this depth is masked whole instead of being left uninspected.
+ */
+export const MAX_CARRIER_DEPTH = 3;
+
+/**
  * Compile a set of extra regex source strings into predicates. Invalid patterns
  * are skipped rather than throwing, keeping the module robust to bad user input.
  */
@@ -68,11 +91,13 @@ export function buildKeyMatcher(rules: RedactionRules): (key: string) => boolean
     DEFAULT_KEY_PATTERN.test(key) || extra.some((re) => re.test(key));
 }
 
-/** Build a predicate for URL query-param names (default pattern + urlParamPatterns). */
+/** Build a predicate for URL query-param names (default patterns + urlParamPatterns). */
 function buildUrlMatcher(rules: RedactionRules): (name: string) => boolean {
   const extra = compilePatterns(rules.urlParamPatterns);
   return (name: string): boolean =>
-    DEFAULT_KEY_PATTERN.test(name) || extra.some((re) => re.test(name));
+    DEFAULT_KEY_PATTERN.test(name) ||
+    DEFAULT_URL_KEY_PATTERN.test(name) ||
+    extra.some((re) => re.test(name));
 }
 
 /**
@@ -87,11 +112,13 @@ export function redactHeaders(
     ...DEFAULT_HEADER_BLOCKLIST,
     ...rules.headerNames.map((n) => n.toLowerCase()),
   ]);
-  return headers.map((h) =>
-    blocked.has(h.name.toLowerCase())
-      ? { name: h.name, value: REDACTED }
-      : { name: h.name, value: h.value },
-  );
+  const urlValued = new Set<string>(URL_VALUE_HEADERS);
+  return headers.map((h) => {
+    const name = h.name.toLowerCase();
+    if (blocked.has(name)) return { name: h.name, value: REDACTED };
+    if (urlValued.has(name)) return { name: h.name, value: redactUrl(h.value, rules) };
+    return { name: h.name, value: h.value };
+  });
 }
 
 /** Recursively clone a parsed JSON value, masking values under matching keys. */
@@ -238,6 +265,23 @@ export function redactBody(
  * relative URLs; a URL without a query string is returned unchanged.
  */
 export function redactUrl(url: string, rules: RedactionRules): string {
+  return redactUrlAtDepth(url, rules, 0);
+}
+
+/** True for absolute (`https://...`) and scheme-less (`//host/...`) URLs. */
+function looksLikeUrl(value: string): boolean {
+  return /^(?:[a-z][a-z0-9+.-]*:)?\/\//i.test(value);
+}
+
+/**
+ * Mask the password in a `scheme://user:password@host` (or scheme-less
+ * `//user:password@host`) URL head. The username is kept as evidence.
+ */
+function maskUserinfoPassword(head: string): string {
+  return head.replace(/^((?:[a-z][a-z0-9+.-]*:)?\/\/[^/?#@]*):[^/@]*@/i, `$1:${REDACTED}@`);
+}
+
+function redactUrlAtDepth(url: string, rules: RedactionRules, depth: number): string {
   const matcher = buildUrlMatcher(rules);
 
   const hashIdx = url.indexOf('#');
@@ -245,13 +289,16 @@ export function redactUrl(url: string, rules: RedactionRules): string {
   const base = hashIdx === -1 ? url : url.slice(0, hashIdx);
 
   const qIdx = base.indexOf('?');
-  if (qIdx === -1) return url;
+  if (qIdx === -1) {
+    // No query string: still mask any userinfo password in the authority.
+    return maskUserinfoPassword(base) + hash;
+  }
 
-  const head = base.slice(0, qIdx);
+  const head = maskUserinfoPassword(base.slice(0, qIdx));
   const query = base.slice(qIdx + 1);
-  if (query.length === 0) return url;
+  if (query.length === 0) return head + '?' + hash;
 
-  let changed = false;
+  let changed = head !== base.slice(0, qIdx);
   const parts = query.split('&').map((part) => {
     const eq = part.indexOf('=');
     if (eq === -1) return part; // flag param, no value to redact
@@ -259,6 +306,22 @@ export function redactUrl(url: string, rules: RedactionRules): string {
     if (matcher(safeDecode(rawKey))) {
       changed = true;
       return `${rawKey}=${REDACTED}`;
+    }
+    // Carrier params (redirect/url/next/...) can hold a whole URL whose own
+    // query keeps secrets. Follow them - absolute and scheme-less - up to a
+    // bounded depth. Past the cap the carrier is opaque to us, so mask it
+    // whole: fail closed rather than leak a deeper URL we did not inspect.
+    const decoded = safeDecode(part.slice(eq + 1));
+    if (looksLikeUrl(decoded)) {
+      if (depth >= MAX_CARRIER_DEPTH) {
+        changed = true;
+        return `${rawKey}=${REDACTED}`;
+      }
+      const inner = redactUrlAtDepth(decoded, rules, depth + 1);
+      if (inner !== decoded) {
+        changed = true;
+        return `${rawKey}=${inner}`;
+      }
     }
     return part;
   });
