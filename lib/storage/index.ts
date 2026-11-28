@@ -3,7 +3,8 @@
  *
  * Owns the `session-recorder` database (via the `idb` wrapper) and exposes typed
  * CRUD for sessions, events, and assets plus the batched `EventWriter` used by
- * the background capture funnel. The DB handle is opened lazily and memoized.
+ * the background capture funnel. The DB handle is opened lazily and memoized,
+ * and reopened if opening fails or the browser closes it.
  */
 
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
@@ -40,10 +41,14 @@ interface RecorderDB extends DBSchema {
 
 let dbPromise: Promise<IDBPDatabase<RecorderDB>> | undefined;
 
-/** Open (and memoize) the database, creating the object stores on first use. */
+/**
+ * Open (and memoize) the database, creating the object stores on first use.
+ * A failed open, or a connection the browser closes, is forgotten so the next
+ * call opens the database again instead of failing forever.
+ */
 function db(): Promise<IDBPDatabase<RecorderDB>> {
   if (!dbPromise) {
-    dbPromise = openDB<RecorderDB>(DB_NAME, DB_VERSION, {
+    const opening = openDB<RecorderDB>(DB_NAME, DB_VERSION, {
       upgrade(database) {
         database.createObjectStore('sessions', { keyPath: 'id' });
 
@@ -53,6 +58,13 @@ function db(): Promise<IDBPDatabase<RecorderDB>> {
         const assets = database.createObjectStore('assets', { keyPath: 'id' });
         assets.createIndex('by-session', 'sessionId');
       },
+      terminated() {
+        if (dbPromise === opening) dbPromise = undefined;
+      },
+    });
+    dbPromise = opening;
+    opening.catch(() => {
+      if (dbPromise === opening) dbPromise = undefined;
     });
   }
   return dbPromise;
