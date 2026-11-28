@@ -58,11 +58,13 @@ test('keeps events recorded while saving failed and reports the failure', async 
     await expect(alert).toContainText('Retrying');
     await dispatch(background, { kind: 'marker/add', name: 'still failing' });
 
+    // Storage recovers and nothing new is recorded: the writer must retry on
+    // its own, well before the 24 s heartbeat would.
     await failWrites(false);
-    await dispatch(background, { kind: 'marker/add', name: 'after recovery' });
-    await expect(alert).toHaveCount(0);
+    await expect(alert).toHaveCount(0, { timeout: 15_000 });
     const state = await dispatch<StateRes>(background, { kind: 'session/getState' });
     expect(state.error).toBeUndefined();
+    await dispatch(background, { kind: 'marker/add', name: 'after recovery' });
 
     await dispatch(background, { kind: 'session/stop' });
 
