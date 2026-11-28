@@ -1859,11 +1859,18 @@ class Orchestrator {
     event: SessionEvent,
   ): Promise<void> {
     let payload = event.payload as VoiceSegmentPayload;
-    // Make sure the base event is durable before we overwrite it (put by id).
-    await this.writer?.flush().catch(() => {});
     let failure: string | undefined;
 
     try {
+      // Make sure the base event is durable before we overwrite it (put by id).
+      // If it isn't, the writer still holds the original and would write it
+      // over the transcript later; leave it for transcribePending() after Stop.
+      try {
+        await this.writer?.flush();
+      } catch {
+        failure = 'The recording could not be saved yet; transcription will run after Stop.';
+        return;
+      }
       const config = await this.loadTranscriptionConfig();
       if (!config) return; // no provider configured — leave transcript null
 
