@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
+import { redactHeaders, redactUrl } from '@/lib/capture/redaction';
 import { SessionBuilder } from '@/lib/fixtures/session-builder';
 import type { NetRequestPayload, SessionEvent } from '@/lib/session/types';
 import { buildBundle, type ExportFile } from './bundle';
@@ -152,5 +153,55 @@ describe('network.har in the export bundle', () => {
     const quiet = new SessionBuilder().click('Save').build();
     const files = await buildBundle({ ...quiet, level: 'L0' });
     expect(harFile(files)).toBeUndefined();
+  });
+});
+
+describe('HAR inherits capture-time redaction', () => {
+  it('exports a redacted redirectURL from a scrubbed Location header', () => {
+    const { session, events } = new SessionBuilder().net('GET', 'https://app/cb').build();
+    firstRequest(events).responseHeaders = redactHeaders(
+      [{ name: 'Location', value: 'https://idp/cb?code=S' }],
+      { headerNames: [], bodyKeyPatterns: [], urlParamPatterns: [] },
+    );
+    const har = buildHar(session, events) as any;
+    expect(har.log.entries[0].response.redirectURL).toBe('https://idp/cb?code=«redacted»');
+  });
+
+  it('exports a redacted decoded queryString for an encoded N1 carrier', () => {
+    const rules = { headerNames: [], bodyKeyPatterns: [], urlParamPatterns: [] };
+    const scrubbed = redactUrl('https://x/?q=%2Fcb%26token%3DS%23frag', rules);
+    const { session, events } = new SessionBuilder().net('GET', scrubbed).build();
+    const har = buildHar(session, events) as any;
+    const q = har.log.entries[0].request.queryString.find(
+      (h: { name: string }) => h.name === 'q',
+    );
+    expect(q.value).toBe('/cb&token=«redacted»#frag');
+  });
+
+  it('exports a redacted decoded queryString for an N1b scheme-less carrier', () => {
+    const rules = { headerNames: [], bodyKeyPatterns: [], urlParamPatterns: [] };
+    const scrubbed = redactUrl(
+      'https://x/?q=foo%3Dbar%3Fx%3D1%23token%3DS',
+      rules,
+    );
+    const { session, events } = new SessionBuilder().net('GET', scrubbed).build();
+    const har = buildHar(session, events) as any;
+    const q = har.log.entries[0].request.queryString.find(
+      (h: { name: string }) => h.name === 'q',
+    );
+    expect(q.value).toBe('foo=bar?x=1#token=«redacted»');
+  });
+
+  it('does not rewrite raw values captured with redaction disabled', () => {
+    const { session, events } = new SessionBuilder()
+      .net('GET', 'https://x/?q=raw-value')
+      .build();
+    firstRequest(events).responseHeaders = [
+      { name: 'Location', value: 'https://idp/cb?code=RAW_SECRET' },
+    ];
+    const har = buildHar(session, events) as any;
+    expect(har.log.entries[0].request.queryString.find((h: any) => h.name === 'q').value)
+      .toBe('raw-value');
+    expect(har.log.entries[0].response.redirectURL).toBe('https://idp/cb?code=RAW_SECRET');
   });
 });

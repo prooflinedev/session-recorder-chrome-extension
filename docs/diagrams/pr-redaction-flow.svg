@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1160" viewBox="0 0 1600 1160">
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker></defs>
+<rect width="1600" height="1160" fill="#ffffff"/>
+<g font-family="Inter, Arial, Helvetica, sans-serif">
+<text x="80" y="84" font-size="38" fill="#1f2937" font-weight="700">Why this redaction fix exists</text>
+<text x="82" y="113" font-size="17" fill="#4b5563">Two credential leaks, one bounded fix  |  session-recorder-chrome-extension @ c1727d3  |  no new URL(), no dependency</text>
+<rect x="80" y="170" width="380" height="120" rx="12" fill="#fff7ed" stroke="#fdba74" stroke-width="2"/>
+<text x="102" y="206" font-size="20" fill="#92400e" font-weight="700">Untrusted page URL</text>
+<text x="102" y="237" font-size="15" fill="#4b5563">?q=foo%3Dbar%3Fx%3D1</text>
+<text x="102" y="262" font-size="15" fill="#4b5563">%23token%3DS</text>
+<rect x="610" y="170" width="380" height="120" rx="12" fill="#eff6ff" stroke="#93c5fd" stroke-width="2"/>
+<text x="632" y="206" font-size="20" fill="#1d4ed8" font-weight="700">CDP capture</text>
+<text x="632" y="237" font-size="15" fill="#4b5563">network.ts:209</text>
+<text x="632" y="262" font-size="15" fill="#4b5563">request.url stored raw</text>
+<rect x="1140" y="170" width="380" height="120" rx="12" fill="#eff6ff" stroke="#93c5fd" stroke-width="2"/>
+<text x="1162" y="206" font-size="20" fill="#1d4ed8" font-weight="700">Budget checks FIRST</text>
+<text x="1162" y="237" font-size="15" fill="#4b5563">depth 3  |  4,096 B encoded</text>
+<text x="1162" y="262" font-size="15" fill="#4b5563">65,536 ops remaining</text>
+<path d="M 460 230 L 610 230" fill="none" stroke="#64748b" stroke-width="2.5" marker-end="url(#ah)"/>
+<path d="M 990 230 L 1140 230" fill="none" stroke="#64748b" stroke-width="2.5" marker-end="url(#ah)"/>
+<rect x="500" y="370" width="600" height="130" rx="12" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+<text x="522" y="406" font-size="20" fill="#92400e" font-weight="700">DECODE ONCE, THEN SPLIT</text>
+<text x="522" y="437" font-size="15" fill="#4b5563">decoded-size check after decode  |  head + fragment split</text>
+<text x="522" y="462" font-size="15" fill="#4b5563">one shared budget: never reset, never refunded</text>
+<path d="M 1330 290 L 1330 330 L 800 330 L 800 370" fill="none" stroke="#f59e0b" stroke-width="2.5" marker-end="url(#ah)"/>
+<rect x="130" y="580" width="600" height="140" rx="12" fill="#f0fdf4" stroke="#86efac" stroke-width="2"/>
+<text x="152" y="616" font-size="20" fill="#15803d" font-weight="700">STRUCTURAL PATH</text>
+<text x="152" y="647" font-size="15" fill="#4b5563">scheme-less query + fragment scrubbed</text>
+<text x="152" y="672" font-size="15" fill="#4b5563">foo=bar?x=1#token=«redacted»</text>
+<rect x="870" y="580" width="600" height="140" rx="12" fill="#fef2f2" stroke="#fca5a5" stroke-width="2"/>
+<text x="892" y="616" font-size="20" fill="#b91c1c" font-weight="700">FAIL CLOSED (SMALLEST VALUE)</text>
+<text x="892" y="647" font-size="15" fill="#4b5563">malformed %  |  over cap  |  depth &gt; 3</text>
+<text x="892" y="672" font-size="15" fill="#4b5563">value → «redacted»; keys, path, siblings kept</text>
+<path d="M 680 500 L 680 540 L 430 540 L 430 580" fill="none" stroke="#f59e0b" stroke-width="2.5" marker-end="url(#ah)"/>
+<path d="M 920 500 L 920 540 L 1170 540 L 1170 580" fill="none" stroke="#f59e0b" stroke-width="2.5" marker-end="url(#ah)"/>
+<rect x="430" y="800" width="740" height="110" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2"/>
+<text x="452" y="836" font-size="20" fill="#1f2937" font-weight="700">BACKGROUND FUNNEL → DERIVED EXPORTS</text>
+<text x="452" y="867" font-size="15" fill="#4b5563">background.ts:315 before scoring, writer.add and broadcast</text>
+<text x="452" y="892" font-size="15" fill="#4b5563">session.json  |  network.har queryString  |  published report</text>
+<path d="M 430 720 L 430 760 L 700 760 L 700 800" fill="none" stroke="#15803d" stroke-width="2.5" marker-end="url(#ah)"/>
+<path d="M 1170 720 L 1170 760 L 900 760 L 900 800" fill="none" stroke="#b91c1c" stroke-width="2.5" marker-end="url(#ah)"/>
+<rect x="80" y="970" width="700" height="150" rx="12" fill="#fef2f2" stroke="#fca5a5" stroke-width="2"/>
+<text x="102" y="1006" font-size="20" fill="#b91c1c" font-weight="700">BEFORE — reproduced failures</text>
+<text x="102" y="1037" font-size="15" fill="#4b5563">HAR: foo=bar?x=1#token=S (plaintext credential)</text>
+<text x="102" y="1062" font-size="15" fill="#4b5563">500 layers: ~4.6 s / 324 MB  →  OOM at ~2000</text>
+<rect x="820" y="970" width="700" height="150" rx="12" fill="#f0fdf4" stroke="#86efac" stroke-width="2"/>
+<text x="842" y="1006" font-size="20" fill="#15803d" font-weight="700">AFTER — bounded and verified</text>
+<text x="842" y="1037" font-size="15" fill="#4b5563">HAR: foo=bar?x=1#token=«redacted»</text>
+<text x="842" y="1062" font-size="15" fill="#4b5563">500 layers: 9 ms, no secret in output</text>
+<text x="80" y="1157" font-size="15" fill="#4b5563">Evidence: 394 unit tests  |  126 targeted tests  |  32 E2E  |  compile + compile:e2e clean  |  4 independent review rounds</text>
+</g></svg>

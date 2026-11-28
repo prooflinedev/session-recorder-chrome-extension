@@ -1,6 +1,9 @@
 /**
- * Builds `network.har` from the same trimmed, already-redacted events as
- * `session.json`, so it never shows more than the rest of the zip.
+ * Builds `network.har` as a derived view of the same trimmed events as
+ * `session.json`, with no independent capture source: it never shows more than
+ * the rest of the zip. Every exported field — URLs, headers, derived
+ * `redirectURL`/`queryString`, bodies and WebSocket data — inherits capture-time
+ * redaction; this module performs no independent redaction.
  */
 
 import { version } from '@/package.json';
