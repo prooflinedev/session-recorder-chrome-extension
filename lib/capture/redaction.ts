@@ -35,10 +35,18 @@ export const DEFAULT_KEY_PATTERN: RegExp =
 
 /**
  * Candidate JWT/JWE: three or more dot-separated base64url segments whose
- * first segment starts with `e` (every base64url-encoded JSON object does,
- * because `{` encodes to `e`). Candidates are confirmed by decoding.
+ * first segment is a base64url-encoded JSON object with at least one key.
+ * Such a header starts with `{` followed by `"` or whitespace, which always
+ * encodes to `ey` + one of `A`–`D` or `I`–`L`, or `ew` + one of `k`–`r` or
+ * `0`–`3`. Requiring that prefix keeps ordinary text (`e.g.`, version
+ * strings, base64 blobs) from becoming candidates, so few strings ever reach
+ * the decode step. Candidates are confirmed by decoding.
  */
-const JWT_CANDIDATE_PATTERN = /(?<![A-Za-z0-9_-])e[A-Za-z0-9_-]+={0,2}(?:\.[A-Za-z0-9_-]*={0,2}){2,}/g;
+const JWT_CANDIDATE_PATTERN =
+  /(?<![A-Za-z0-9_-])e(?:y[A-DI-L]|w[k-r0-3])[A-Za-z0-9_-]*={0,2}(?:\.[A-Za-z0-9_-]*={0,2}){2,}/g;
+
+/** Shortest header with a string `alg`, `{"alg":""}`, is 14 base64url chars. */
+const MIN_JWT_HEADER_LENGTH = 14;
 
 /** Decode one base64url segment and parse it as a JSON object, or null. */
 function decodeJsonSegment(segment: string): Record<string, unknown> | null {
@@ -63,9 +71,11 @@ function decodeJsonSegment(segment: string): Record<string, unknown> | null {
  * pattern guarantees at least three segments.
  */
 function isJwt(token: string): boolean {
-  const segments = token.split('.');
-  const header = decodeJsonSegment(segments[0] ?? '');
+  const headerEnd = token.indexOf('.');
+  if (headerEnd < MIN_JWT_HEADER_LENGTH) return false;
+  const header = decodeJsonSegment(token.slice(0, headerEnd));
   if (!header || typeof header.alg !== 'string') return false;
+  const segments = token.split('.');
   // Extra trailing segments are tolerated, e.g. a sentence-ending `.`.
   if (typeof header.enc === 'string') return segments.length >= 5;
   return decodeJsonSegment(segments[1] ?? '') !== null;
@@ -73,6 +83,10 @@ function isJwt(token: string): boolean {
 
 /** True if the value contains a JWT or JWE anywhere, e.g. after `Bearer `. */
 function containsJwt(value: string): boolean {
+  // Cheap exits before running the pattern: a JWT needs two dots and a header.
+  if (value.length < MIN_JWT_HEADER_LENGTH + 2) return false;
+  const firstDot = value.indexOf('.');
+  if (firstDot === -1 || value.indexOf('.', firstDot + 1) === -1) return false;
   for (const match of value.matchAll(JWT_CANDIDATE_PATTERN)) {
     if (isJwt(match[0])) return true;
   }

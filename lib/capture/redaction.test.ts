@@ -478,6 +478,34 @@ describe('isSecretValue JWT edge cases', () => {
     expect(isSecretValue('e1.2.3')).toBe(false);
     expect(isSecretValue('eyJ-not-a-token')).toBe(false);
   });
+
+  it('detects headers in every JSON layout the candidate prefix allows', () => {
+    const headers = [
+      '{"alg":"HS256"}', // eyJ
+      '{"0":1,"alg":"HS256"}', // eyI, key starts with a digit
+      '{ "alg": "HS256" }', // eyA
+      '{\n"alg":"HS256"}', // ewo
+      '{\r\n"alg":"HS256"}', // ew0
+      '{\t"alg":"HS256"}', // ewk
+    ];
+    for (const h of headers) {
+      expect(isSecretValue(`${seg(h)}.${json({})}.c2ln`), h).toBe(true);
+    }
+  });
+
+  it('finds a JWT after many look-alike decoys in one value', () => {
+    const decoys = 'ea.b.c e.g. eyJa.b.c v1.2.3 '.repeat(2_000);
+    const token = `${json(HS256)}.${json({ sub: '1' })}.c2ln`;
+    expect(isSecretValue(decoys)).toBe(false);
+    expect(isSecretValue(`${decoys}${token}`)).toBe(true);
+  });
+
+  it('stays fast on large values full of JWT-like candidates', () => {
+    const big = `${json(HS256)}.e.x `.repeat(40_000); // ~1 MB, header valid, payload not
+    const start = performance.now();
+    expect(isSecretValue(big)).toBe(false);
+    expect(performance.now() - start).toBeLessThan(2_000);
+  });
 });
 
 describe('isSecretValue card edge cases', () => {
