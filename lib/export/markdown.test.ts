@@ -447,6 +447,81 @@ describe('renderReport', () => {
   });
 });
 
+describe('renderReport problems summary', () => {
+  const net = (
+    t: number,
+    method: string,
+    url: string,
+    extra: Record<string, unknown>,
+  ): SessionEvent =>
+    ev({
+      t,
+      tabId: 1,
+      type: 'net-request',
+      payload: {
+        requestId: `req_${t}`,
+        method,
+        url,
+        requestHeaders: [],
+        responseHeaders: [],
+        ...extra,
+      },
+    } as Parameters<typeof ev>[0]);
+
+  it('lists failed requests and errors above the timeline', () => {
+    const md = renderReport(buildSession());
+    const summary = md.indexOf('## Problems at a glance');
+    expect(summary).toBeGreaterThan(-1);
+    expect(summary).toBeLessThan(md.indexOf('## Timeline'));
+    expect(md).toContain('- [00:03] 500 POST /v1/orders');
+  });
+
+  it('does not list network-origin errors twice', () => {
+    const md = renderReport(buildSession());
+    expect(md).not.toContain('**Errors**');
+  });
+
+  it('collapses repeats into one line with a count', () => {
+    const input = buildSession();
+    const events = [
+      net(1000, 'GET', 'https://app.example.com/api/me', { status: 401 }),
+      net(2000, 'GET', 'https://app.example.com/api/me', { status: 401 }),
+      net(3000, 'GET', 'https://app.example.com/api/me', { status: 200 }),
+      ev({ t: 4000, tabId: 1, type: 'console', payload: { level: 'error', text: 'Boom', repeat: 2 } }),
+      ev({ t: 5000, tabId: 1, type: 'error', payload: { message: 'Boom', origin: 'exception' } }),
+    ];
+    const md = renderReport({ ...input, events });
+    expect(md).toContain('**Failed requests** (2):');
+    expect(md).toContain('- [00:01] 401 GET /api/me (×2)');
+    expect(md).not.toContain('200 GET /api/me\n- ');
+    expect(md).toContain('**Errors** (3):');
+    expect(md).toContain('- [00:04] Boom (×3)');
+  });
+
+  it('counts transport failures and caps the list', () => {
+    const input = buildSession();
+    const events = [
+      net(500, 'GET', 'https://app.example.com/down', { failed: true }),
+      ...Array.from({ length: 12 }, (_, i) =>
+        net(1000 + i, 'GET', `https://app.example.com/e${i}`, { status: 503 }),
+      ),
+    ];
+    const md = renderReport({ ...input, events });
+    expect(md).toContain('- [00:00] FAILED GET /down');
+    expect(md).toContain('- …and 3 more distinct');
+  });
+
+  it('is left out when nothing failed', () => {
+    const input = buildSession();
+    const events = [
+      net(1000, 'GET', 'https://app.example.com/ok', { status: 200 }),
+      ev({ t: 2000, tabId: 1, type: 'console', payload: { level: 'warn', text: 'careful' } }),
+    ];
+    const md = renderReport({ ...input, events });
+    expect(md).not.toContain('Problems at a glance');
+  });
+});
+
 describe('renderManifest', () => {
   it('lists every included asset with path, kind and size', () => {
     const md = renderManifest(buildSession());

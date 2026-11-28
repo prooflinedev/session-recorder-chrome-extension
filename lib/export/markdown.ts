@@ -60,6 +60,7 @@ export function renderReport(input: RenderInput): string {
 
   const anchors = buildAnchorMap(events);
   renderHeader(input, events, lines);
+  renderProblems(events, lines);
   lines.push('');
   lines.push('## Timeline');
   lines.push('');
@@ -171,6 +172,88 @@ function renderHeader(
       );
     }
   }
+}
+
+// ----------------------------------------------------------------------------
+// Problems at a glance
+// ----------------------------------------------------------------------------
+
+/** Distinct problems listed per group before the rest are counted. */
+const MAX_PROBLEMS_LISTED = 10;
+
+interface ProblemGroup {
+  label: string;
+  firstT: number;
+  count: number;
+}
+
+/**
+ * A short digest of what went wrong, placed above the timeline so a reader (or a
+ * coding agent) sees failed requests and errors before scrolling the full
+ * session. Identical problems collapse into one line with a count. Omitted
+ * entirely when nothing failed, so clean sessions render exactly as before.
+ */
+function renderProblems(events: SessionEvent[], lines: string[]): void {
+  const requests = new Map<string, ProblemGroup>();
+  const errors = new Map<string, ProblemGroup>();
+
+  for (const e of events) {
+    if (e.type === 'net-request') {
+      const p = e.payload;
+      const status = p.failed ? 'FAILED' : p.status;
+      if (!p.failed && !(typeof status === 'number' && status >= 400)) continue;
+      const label = `${status} ${p.method} ${urlPath(p.url)}`;
+      // A collapsed request already stands for several similar ones.
+      addProblem(requests, label, e.t, p.collapsed?.count ?? 1);
+    } else if (e.type === 'error') {
+      // Network errors are already listed as failed requests.
+      if (e.payload.origin === 'network') continue;
+      const label = oneLine(e.payload.message);
+      addProblem(errors, label, e.t, e.payload.repeat ?? 1);
+    } else if (e.type === 'console' && e.payload.level === 'error') {
+      const label = oneLine(e.payload.text);
+      addProblem(errors, label, e.t, e.payload.repeat ?? 1);
+    }
+  }
+
+  if (requests.size === 0 && errors.size === 0) return;
+
+  lines.push('');
+  lines.push('## Problems at a glance');
+  lines.push('');
+  listProblems('Failed requests', requests, lines);
+  listProblems('Errors', errors, lines);
+}
+
+function addProblem(
+  groups: Map<string, ProblemGroup>,
+  label: string,
+  t: number,
+  count: number,
+): void {
+  const existing = groups.get(label);
+  if (existing) existing.count += count;
+  else groups.set(label, { label, firstT: t, count });
+}
+
+function listProblems(
+  title: string,
+  groups: Map<string, ProblemGroup>,
+  lines: string[],
+): void {
+  if (groups.size === 0) return;
+  const all = [...groups.values()];
+  const total = all.reduce((sum, g) => sum + g.count, 0);
+  lines.push(`**${title}** (${total}):`);
+  lines.push('');
+  for (const g of all.slice(0, MAX_PROBLEMS_LISTED)) {
+    const times = g.count > 1 ? ` (×${g.count})` : '';
+    lines.push(`- [${formatClock(g.firstT)}] ${escapeInline(g.label)}${times}`);
+  }
+  if (all.length > MAX_PROBLEMS_LISTED) {
+    lines.push(`- …and ${all.length - MAX_PROBLEMS_LISTED} more distinct`);
+  }
+  lines.push('');
 }
 
 /**
