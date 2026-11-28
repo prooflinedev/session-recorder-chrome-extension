@@ -189,9 +189,10 @@ export async function storageEstimate(): Promise<{
  * background funnel never blocks on a write per event.
  *
  * A failed write does not stop later writes: its events go back to the front
- * of the buffer and the next flush retries them. While writes keep failing,
- * at most `maxPending` events wait; the oldest beyond that are dropped and
- * counted in `dropped`.
+ * of the buffer and a retry timer writes them again, even if no new events
+ * arrive. The wait starts at `flushMs` and doubles after each failure, up to
+ * `maxRetryMs`. While writes keep failing, at most `maxPending` events wait;
+ * the oldest beyond that are dropped and counted in `dropped`.
  */
 export class EventWriter {
   private buffer: SessionEvent[] = [];
@@ -199,13 +200,18 @@ export class EventWriter {
   private readonly flushMs: number;
   private readonly maxBatch: number;
   private readonly maxPending: number;
+  private readonly maxRetryMs: number;
   private readonly write: (events: SessionEvent[]) => Promise<void>;
   private readonly onFlush: ((n: number) => void) | undefined;
   private readonly onError: ((error: unknown, pending: number) => void) | undefined;
   /** Serializes flushes so batches are written in order. Never rejects. */
   private chain: Promise<void> = Promise.resolve();
-  /** True after a failed write; retries then wait for the idle timer. */
+  /** True after a failed write; the retry timer then decides when to write. */
   private failing = false;
+  /** Wait before the next retry; doubles after each failure. */
+  private retryDelay: number;
+  /** Set by `dispose()`: no retry is scheduled after that. */
+  private disposed = false;
   private droppedCount = 0;
 
   constructor(opts?: {
@@ -213,6 +219,8 @@ export class EventWriter {
     maxBatch?: number;
     /** Most events kept while writes are failing (default 5000). */
     maxPending?: number;
+    /** Longest wait between retries of a failed write (default 10000). */
+    maxRetryMs?: number;
     /** Persists a batch (default `appendEvents`). */
     write?: (events: SessionEvent[]) => Promise<void>;
     onFlush?: (n: number) => void;
@@ -222,6 +230,8 @@ export class EventWriter {
     this.flushMs = opts?.flushMs ?? 1000;
     this.maxBatch = opts?.maxBatch ?? 50;
     this.maxPending = opts?.maxPending ?? 5000;
+    this.maxRetryMs = Math.max(opts?.maxRetryMs ?? 10_000, this.flushMs);
+    this.retryDelay = this.flushMs;
     this.write = opts?.write ?? appendEvents;
     this.onFlush = opts?.onFlush;
     this.onError = opts?.onError;
@@ -235,25 +245,21 @@ export class EventWriter {
   /** Buffer an event; auto-flush when full, else arm the idle timer. */
   add(e: SessionEvent): void {
     this.buffer.push(e);
-    if (this.buffer.length >= this.maxBatch && !this.failing) {
+    // While failing, the retry timer is already armed and owns the timing.
+    if (this.failing) return;
+    if (this.buffer.length >= this.maxBatch) {
       this.flushInBackground();
     } else if (this.timer === undefined) {
-      this.timer = setTimeout(() => {
-        this.timer = undefined;
-        this.flushInBackground();
-      }, this.flushMs);
+      this.schedule(this.flushMs);
     }
   }
 
   /**
    * Write all buffered events after any earlier write settles. Rejects if
-   * this write fails; the events stay buffered for the next flush.
+   * this write fails; the events stay buffered and are retried on a timer.
    */
   flush(): Promise<void> {
-    if (this.timer !== undefined) {
-      clearTimeout(this.timer);
-      this.timer = undefined;
-    }
+    this.clearTimer();
     const run = this.chain.then(() => this.writeBuffered());
     this.chain = run.catch(() => {});
     return run;
@@ -263,18 +269,31 @@ export class EventWriter {
     return this.buffer.length;
   }
 
-  /** Clear the timer and flush any pending events (best-effort). */
+  /** Clear the timer and flush any pending events once (best-effort). */
   dispose(): void {
-    if (this.timer !== undefined) {
-      clearTimeout(this.timer);
-      this.timer = undefined;
-    }
+    this.disposed = true;
+    this.clearTimer();
     this.flushInBackground();
   }
 
   /** Flush without a caller to handle failure; `onError` reports it. */
   private flushInBackground(): void {
     this.flush().catch(() => {});
+  }
+
+  private schedule(ms: number): void {
+    this.clearTimer();
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      this.flushInBackground();
+    }, ms);
+  }
+
+  private clearTimer(): void {
+    if (this.timer !== undefined) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
   }
 
   private async writeBuffered(): Promise<void> {
@@ -291,10 +310,19 @@ export class EventWriter {
         this.buffer.splice(0, excess);
         this.droppedCount += excess;
       }
+      if (!this.disposed) {
+        this.schedule(this.retryDelay);
+        this.retryDelay = Math.min(this.retryDelay * 2, this.maxRetryMs);
+      }
       this.onError?.(error, this.buffer.length);
       throw error;
     }
     this.failing = false;
+    this.retryDelay = this.flushMs;
     this.onFlush?.(batch.length);
+    // Events that arrived while this write ran still need their idle flush.
+    if (this.buffer.length > 0 && this.timer === undefined && !this.disposed) {
+      this.schedule(this.flushMs);
+    }
   }
 }
