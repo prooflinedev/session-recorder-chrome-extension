@@ -9,6 +9,7 @@ import {
   DEFAULT_KEY_PATTERN,
   REDACTED,
   buildKeyMatcher,
+  isSecretValue,
   redactBody,
   redactHeaders,
   redactUrl,
@@ -353,5 +354,204 @@ describe('redactUrl', () => {
   it('matches param names after url-decoding', () => {
     const out = redactUrl('https://x.com/p?api%5Fkey=v&z=1', EMPTY_RULES);
     expect(out).toBe(`https://x.com/p?api%5Fkey=${REDACTED}&z=1`);
+  });
+});
+
+describe('isSecretValue', () => {
+  const JWT =
+    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+
+  it('detects a JWT on its own or inside a longer value', () => {
+    expect(isSecretValue(JWT)).toBe(true);
+    expect(isSecretValue(`Bearer ${JWT}`)).toBe(true);
+  });
+
+  it('detects card numbers that pass the Luhn check, with or without grouping', () => {
+    expect(isSecretValue('4111111111111111')).toBe(true);
+    expect(isSecretValue('4111 1111 1111 1111')).toBe(true);
+    expect(isSecretValue('5500-0000-0000-0004')).toBe(true);
+    expect(isSecretValue('378282246310005')).toBe(true);
+  });
+
+  it('leaves ordinary values alone', () => {
+    expect(isSecretValue('4111111111111112')).toBe(false); // fails Luhn
+    expect(isSecretValue('1234567890')).toBe(false); // too short
+    expect(isSecretValue('order 4111111111111111 shipped')).toBe(false); // not the whole value
+    expect(isSecretValue('2026-11-26')).toBe(false);
+    expect(isSecretValue('eyJ-not-a-token')).toBe(false);
+    expect(isSecretValue('hello world')).toBe(false);
+  });
+});
+
+describe('value-based redaction', () => {
+  const JWT =
+    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+
+  it('masks secret values under generic JSON keys, at any depth', () => {
+    const body = JSON.stringify({
+      data: JWT,
+      payment: { number: '4111 1111 1111 1111', holder: 'Jane Doe' },
+      items: [{ id: 42, ref: '5500000000000004' }],
+    });
+    const out = redactBody(body, 'application/json', EMPTY_RULES);
+    expect(out.redacted).toBe(true);
+    const parsed = JSON.parse(out.text);
+    expect(parsed.data).toBe(REDACTED);
+    expect(parsed.payment.number).toBe(REDACTED);
+    expect(parsed.payment.holder).toBe('Jane Doe');
+    expect(parsed.items[0]).toEqual({ id: 42, ref: REDACTED });
+  });
+
+  it('does not touch numbers stored as JSON numbers', () => {
+    const body = JSON.stringify({ id: 4111111111111111 });
+    expect(redactBody(body, 'application/json', EMPTY_RULES).redacted).toBe(false);
+  });
+
+  it('masks secret values in form bodies', () => {
+    const out = redactBody(
+      `cc=4111+1111+1111+1111&name=Jane&t=${JWT}`,
+      'application/x-www-form-urlencoded',
+      EMPTY_RULES,
+    );
+    expect(out.text).toBe(`cc=${REDACTED}&name=Jane&t=${REDACTED}`);
+  });
+
+  it('masks secret values in URL query params', () => {
+    expect(redactUrl(`https://x.com/cb?t=${JWT}&page=2`, EMPTY_RULES)).toBe(
+      `https://x.com/cb?t=${REDACTED}&page=2`,
+    );
+  });
+});
+
+describe('isSecretValue JWT edge cases', () => {
+  const seg = (s: string) => Buffer.from(s, 'utf8').toString('base64url');
+  const json = (o: unknown) => seg(JSON.stringify(o));
+  const HS256 = { alg: 'HS256', typ: 'JWT' };
+
+  it('detects a valid JWT with an empty JSON payload (`e30`)', () => {
+    const token = `${json(HS256)}.${json({})}.c2lnbmF0dXJl`;
+    expect(token.split('.')[1]).toBe('e30');
+    expect(isSecretValue(token)).toBe(true);
+    expect(isSecretValue(`Bearer ${token}`)).toBe(true);
+  });
+
+  it('detects an unsigned (`alg: none`) JWT with an empty signature', () => {
+    expect(isSecretValue(`${json({ alg: 'none' })}.${json({ sub: '1' })}.`)).toBe(true);
+  });
+
+  it('detects JWTs whose header or payload JSON contains whitespace', () => {
+    const header = seg('{ "alg": "RS256" }'); // starts with `eyA`, not `eyJ`
+    const payload = seg('{\n  "sub": "1"\n}'); // starts with `ewo`
+    expect(header.startsWith('eyJ')).toBe(false);
+    expect(isSecretValue(`${header}.${payload}.c2ln`)).toBe(true);
+  });
+
+  it('detects a JWT with non-ASCII claims and with base64 `=` padding', () => {
+    expect(
+      isSecretValue(`${json(HS256)}.${json({ name: 'Sarvar Шарипов' })}.c2ln`),
+    ).toBe(true);
+    const padded = Buffer.from(JSON.stringify({ a: 1 }))
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_');
+    expect(padded.endsWith('=')).toBe(true);
+    expect(isSecretValue(`${json(HS256)}.${padded}.c2ln`)).toBe(true);
+  });
+
+  it('detects an encrypted JWE (five segments, header has `enc`)', () => {
+    const header = json({ alg: 'RSA-OAEP', enc: 'A256GCM' });
+    expect(isSecretValue(`${header}.a2V5.aXY.Y2lwaGVy.dGFn`)).toBe(true);
+  });
+
+  it('detects a JWT at the end of a sentence', () => {
+    const token = `${json(HS256)}.${json({})}.c2ln`;
+    expect(isSecretValue(`your token is ${token}.`)).toBe(true);
+  });
+
+  it('does not flag dotted values that are not JWTs', () => {
+    expect(isSecretValue(`${json({})}.${json({})}.c2ln`)).toBe(false); // header has no alg
+    expect(isSecretValue(`${json(HS256)}.${seg('[]')}.c2ln`)).toBe(false); // payload not an object
+    expect(isSecretValue(`${json({ alg: 'RSA-OAEP', enc: 'A256GCM' })}.a2V5.aXY`)).toBe(
+      false,
+    ); // JWE too short
+    expect(isSecretValue('example.co.uk')).toBe(false);
+    expect(isSecretValue('e1.2.3')).toBe(false);
+    expect(isSecretValue('eyJ-not-a-token')).toBe(false);
+  });
+
+  it('detects headers in every JSON layout the candidate prefix allows', () => {
+    const headers = [
+      '{"alg":"HS256"}', // eyJ
+      '{"0":1,"alg":"HS256"}', // eyI, key starts with a digit
+      '{ "alg": "HS256" }', // eyA
+      '{\n"alg":"HS256"}', // ewo
+      '{\r\n"alg":"HS256"}', // ew0
+      '{\t"alg":"HS256"}', // ewk
+    ];
+    for (const h of headers) {
+      expect(isSecretValue(`${seg(h)}.${json({})}.c2ln`), h).toBe(true);
+    }
+  });
+
+  it('finds a JWT after many look-alike decoys in one value', () => {
+    const decoys = 'ea.b.c e.g. eyJa.b.c v1.2.3 '.repeat(2_000);
+    const token = `${json(HS256)}.${json({ sub: '1' })}.c2ln`;
+    expect(isSecretValue(decoys)).toBe(false);
+    expect(isSecretValue(`${decoys}${token}`)).toBe(true);
+  });
+
+  it('stays fast on large values full of JWT-like candidates', () => {
+    const big = `${json(HS256)}.e.x `.repeat(40_000); // ~1 MB, header valid, payload not
+    const start = performance.now();
+    expect(isSecretValue(big)).toBe(false);
+    expect(performance.now() - start).toBeLessThan(2_000);
+  });
+});
+
+describe('isSecretValue card edge cases', () => {
+  it('accepts the 13–19 digit range only', () => {
+    expect(isSecretValue('4222222222222')).toBe(true); // 13-digit Visa test number
+    expect(isSecretValue('6011000990139424')).toBe(true); // 16-digit Discover
+    expect(isSecretValue('4111111111111111110')).toBe(true); // 19 digits, Luhn-valid
+    expect(isSecretValue('424242424242')).toBe(false); // 12 digits
+    expect(isSecretValue('42424242424242424242')).toBe(false); // 20 digits
+  });
+
+  it('tolerates surrounding whitespace and mixed separators', () => {
+    expect(isSecretValue('  4111 1111-1111 1111  ')).toBe(true);
+  });
+
+  it('rejects doubled separators, letters and other punctuation', () => {
+    expect(isSecretValue('4111  1111 1111 1111')).toBe(false);
+    expect(isSecretValue('4111.1111.1111.1111')).toBe(false);
+    expect(isSecretValue('4111 1111 1111 111a')).toBe(false);
+  });
+
+  it('accepts card numbers from each major network', () => {
+    expect(isSecretValue('2223003122003222')).toBe(true); // Mastercard 2-series
+    expect(isSecretValue('5105105105105100')).toBe(true); // Mastercard 51–55
+    expect(isSecretValue('371449635398431')).toBe(true); // Amex
+    expect(isSecretValue('36227206271667')).toBe(true); // Diners
+    expect(isSecretValue('3530111333300000')).toBe(true); // JCB
+    expect(isSecretValue('6011 1111 1111 1117')).toBe(true); // Discover, grouped
+    expect(isSecretValue('6200000000000005')).toBe(true); // UnionPay
+  });
+
+  it('leaves Luhn-valid timestamps and IDs without a card prefix alone', () => {
+    expect(isSecretValue('1694736000000')).toBe(false); // epoch ms, passes Luhn
+    expect(isSecretValue('1597449600000000')).toBe(false); // epoch µs, passes Luhn
+    expect(isSecretValue('1234567812345670')).toBe(false); // Luhn-valid, no IIN
+    expect(isSecretValue('2720999999999996')).toBe(true); // top of Mastercard 2-series
+    expect(isSecretValue('2721000000000004')).toBe(false); // just past it
+    expect(isSecretValue('2220999999999991')).toBe(false); // just below it
+  });
+
+  it('keeps Luhn-valid timestamps in bodies, forms and URLs', () => {
+    const json = JSON.stringify({ createdAt: '1694736000000', ts: '1597449600000000' });
+    expect(redactBody(json, 'application/json', EMPTY_RULES).redacted).toBe(false);
+    const form = 'timestamp=1694736000000&name=Jane';
+    expect(redactBody(form, 'application/x-www-form-urlencoded', EMPTY_RULES).text).toBe(form);
+    const url = 'https://x.com/a?timestamp=1694736000000&page=2';
+    expect(redactUrl(url, EMPTY_RULES)).toBe(url);
   });
 });

@@ -34,6 +34,107 @@ export const DEFAULT_KEY_PATTERN: RegExp =
   /token|secret|password|passwd|api[-_]?key|session|auth|credential|bearer/i;
 
 /**
+ * Candidate JWT/JWE: three or more dot-separated base64url segments whose
+ * first segment is a base64url-encoded JSON object with at least one key.
+ * Such a header starts with `{` followed by `"` or whitespace, which always
+ * encodes to `ey` + one of `A`–`D` or `I`–`L`, or `ew` + one of `k`–`r` or
+ * `0`–`3`. Requiring that prefix keeps ordinary text (`e.g.`, version
+ * strings, base64 blobs) from becoming candidates, so few strings ever reach
+ * the decode step. Candidates are confirmed by decoding.
+ */
+const JWT_CANDIDATE_PATTERN =
+  /(?<![A-Za-z0-9_-])e(?:y[A-DI-L]|w[k-r0-3])[A-Za-z0-9_-]*={0,2}(?:\.[A-Za-z0-9_-]*={0,2}){2,}/g;
+
+/** Shortest header with a string `alg`, `{"alg":""}`, is 14 base64url chars. */
+const MIN_JWT_HEADER_LENGTH = 14;
+
+/** Decode one base64url segment and parse it as a JSON object, or null. */
+function decodeJsonSegment(segment: string): Record<string, unknown> | null {
+  try {
+    const b64 = segment.replace(/=+$/, '').replace(/-/g, '+').replace(/_/g, '/');
+    const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+    const json: unknown = JSON.parse(atob(padded));
+    return json !== null && typeof json === 'object' && !Array.isArray(json)
+      ? (json as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True if the token is a JWS or JWE (RFC 7515/7516/7519): the header decodes
+ * to a JSON object with a string `alg`. A JWE (header has `enc`, five
+ * segments) is accepted on its header alone, since its payload is encrypted.
+ * A JWS also needs a payload that decodes to a JSON object, empty `{}`
+ * (`e30`) included. The signature may be empty (`alg: none`). The candidate
+ * pattern guarantees at least three segments.
+ */
+function isJwt(token: string): boolean {
+  const headerEnd = token.indexOf('.');
+  if (headerEnd < MIN_JWT_HEADER_LENGTH) return false;
+  const header = decodeJsonSegment(token.slice(0, headerEnd));
+  if (!header || typeof header.alg !== 'string') return false;
+  const segments = token.split('.');
+  // Extra trailing segments are tolerated, e.g. a sentence-ending `.`.
+  if (typeof header.enc === 'string') return segments.length >= 5;
+  return decodeJsonSegment(segments[1] ?? '') !== null;
+}
+
+/** True if the value contains a JWT or JWE anywhere, e.g. after `Bearer `. */
+function containsJwt(value: string): boolean {
+  // Cheap exits before running the pattern: a JWT needs two dots and a header.
+  if (value.length < MIN_JWT_HEADER_LENGTH + 2) return false;
+  const firstDot = value.indexOf('.');
+  if (firstDot === -1 || value.indexOf('.', firstDot + 1) === -1) return false;
+  for (const match of value.matchAll(JWT_CANDIDATE_PATTERN)) {
+    if (isJwt(match[0])) return true;
+  }
+  return false;
+}
+
+/** A whole value that is 13–19 digits, optionally grouped by spaces or dashes. */
+const CARD_VALUE_PATTERN = /^\d(?:[ -]?\d){12,18}$/;
+
+/**
+ * Issuer prefixes (IIN) of the major card networks: Visa 4, Mastercard 51–55
+ * and 2221–2720, Amex 34/37, Diners 300–305/36/38–39, JCB 3528–3589,
+ * Discover 6011/644–649/65, UnionPay 62. Luhn alone is not specific enough:
+ * about 1 in 10 epoch-ms or epoch-µs timestamps pass it, and those start with
+ * 1 in this era, which no card network uses.
+ */
+const CARD_IIN_PATTERN =
+  /^(?:4|5[1-5]|222[1-9]|22[3-9]\d|2[3-6]\d\d|27[01]\d|2720|3[47]|30[0-5]|3[689]|352[89]|35[3-8]\d|6011|64[4-9]|65|62)/;
+
+/** Luhn checksum, the check digit every payment card number carries. */
+function passesLuhn(digits: string): boolean {
+  let sum = 0;
+  for (let i = 0; i < digits.length; i++) {
+    let d = digits.charCodeAt(digits.length - 1 - i) - 48;
+    if (i % 2 === 1) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    sum += d;
+  }
+  return sum % 10 === 0;
+}
+
+/**
+ * True if a string value is itself a secret, whatever key it sits under:
+ * it contains a JWT or JWE, or it is a payment card number (13–19 digits
+ * with a card-network prefix that pass the Luhn check). Key-based matching
+ * misses these when the key is generic, e.g. `{"data": "eyJ…"}` or `{"number": "4111 1111 1111 1111"}`.
+ */
+export function isSecretValue(value: string): boolean {
+  if (containsJwt(value)) return true;
+  const trimmed = value.trim();
+  if (!CARD_VALUE_PATTERN.test(trimmed)) return false;
+  const digits = trimmed.replace(/[ -]/g, '');
+  return CARD_IIN_PATTERN.test(digits) && passesLuhn(digits);
+}
+
+/**
  * Compile a set of extra regex source strings into predicates. Invalid patterns
  * are skipped rather than throwing, keeping the module robust to bad user input.
  */
@@ -123,6 +224,9 @@ function redactJsonValue(
     }
     return { value: obj, redacted };
   }
+  if (typeof value === 'string' && isSecretValue(value)) {
+    return { value: REDACTED, redacted: true };
+  }
   return { value, redacted: false };
 }
 
@@ -183,7 +287,7 @@ function redactForm(
     const eq = part.indexOf('=');
     if (eq === -1) return part;
     const rawKey = part.slice(0, eq);
-    if (matcher(safeDecode(rawKey))) {
+    if (matcher(safeDecode(rawKey)) || isSecretValue(safeDecode(part.slice(eq + 1)))) {
       redacted = true;
       return `${rawKey}=${REDACTED}`;
     }
@@ -256,7 +360,7 @@ export function redactUrl(url: string, rules: RedactionRules): string {
     const eq = part.indexOf('=');
     if (eq === -1) return part; // flag param, no value to redact
     const rawKey = part.slice(0, eq);
-    if (matcher(safeDecode(rawKey))) {
+    if (matcher(safeDecode(rawKey)) || isSecretValue(safeDecode(part.slice(eq + 1)))) {
       changed = true;
       return `${rawKey}=${REDACTED}`;
     }
