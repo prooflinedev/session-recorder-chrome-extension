@@ -1475,7 +1475,9 @@ class Orchestrator {
     if (this.current !== session || this.paused) return {ok:false,error:'Recording ended before this comment was saved.'};
     const payload: AnnotationPayload = {shapes:[{tool:'text', text, color:'#2f6df0', strokeWidth:2, rect:msg.rect, targetDescriptor:msg.descriptor}],screenshotAssetId,viewport:msg.viewport};
     this.recordEvent({type:'annotation',tabId,payload});
-    await this.writer?.flush();
+    // A failed save keeps the comment buffered for retry and the panel shows
+    // the save warning; reporting failure here would invite a duplicate.
+    await this.writer?.flush().catch(() => {});
     this.broadcastState();
     return {ok:true};
   }
